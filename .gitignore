@@ -1,36 +1,40 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Python
+.venv/
+__pycache__/
+*.pyc
 
-# dependencies
-/node_modules
-/.pnp
+# Datasets, captures, and model weights -- large binaries stay out of git.
+# (Datasets live in Roboflow + local disk; weights are reproducible from training.)
+runs/
+training/
+hard_frames/
+debug_frames/
+snapshots/
+unknowns/
+*.pt
+*.jpg
+*.mp4
+*.cache
+
+# Node / Next.js (mcc/ has its own .gitignore; this is belt-and-suspenders)
+node_modules/
+.pnp
 .pnp.js
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
+coverage/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
-.env*.local
-.env
-
-# vercel
+# misc
+.DS_Store
+*.pem
 .vercel
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# Local machine config and secrets
+.claude/
+.env*
