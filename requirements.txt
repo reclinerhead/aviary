@@ -1,0 +1,19 @@
+# Merle Python dependencies.
+#
+# The vision stack (live.py, prelabel.py, dedup.py) also needs ultralytics +
+# torch, which are large, GPU-specific, and installed out-of-band per machine --
+# so they're intentionally NOT pinned here. This file covers the daemon runtime
+# and the shared vision libs.
+#
+# Note on OpenCV: the daemon and live.py use full opencv-python (live.py's
+# imshow needs the GUI build). CI installs opencv-python-headless instead, since
+# it only runs the headless daemon tests -- see .github/workflows/tests.yml.
+
+fastapi
+uvicorn[standard]
+opencv-python
+numpy
+
+# Test-only:
+pytest
+httpx

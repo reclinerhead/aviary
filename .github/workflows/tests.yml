@@ -31,8 +31,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install pytest
-      # Only the daemon's pure-logic tests run in CI. They import stdlib-only
-      # modules (storage.py), so no ultralytics/opencv install is needed. Tests
-      # that touch the model or camera stay local, not in CI.
-      - run: pytest test_storage.py -q
+      # storage + daemon tests. The daemon runs against the synthetic frame
+      # source, so CI needs fastapi/opencv but NOT ultralytics/torch -- headless
+      # opencv avoids the libGL requirement of the full build. Model- and
+      # camera-dependent code (Phase 2b-ii) stays out of CI, verified locally.
+      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless
+      - run: pytest test_storage.py test_daemon.py -q
