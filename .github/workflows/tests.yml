@@ -36,4 +36,4 @@ jobs:
       # opencv avoids the libGL requirement of the full build. Model- and
       # camera-dependent code (Phase 2b-ii) stays out of CI, verified locally.
       - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless
-      - run: pytest test_storage.py test_daemon.py -q
+      - run: pytest test_storage.py test_perception.py test_daemon.py -q
