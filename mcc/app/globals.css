@@ -1,26 +1,113 @@
 @import "tailwindcss";
 
+/* =============================================================================
+   Merle Control Center -- "Ranger Station, Night Watch"
+   Deep pine-black field-station panel. The accent colors are the ACTUAL
+   detection-box colors the vision stack draws on the stream (BGR palette in
+   perception.py, here as RGB), so the UI and the video read as one instrument:
+     squirrel #FF7031 · chipmunk #FF3838 · turkey #CFD231
+   ========================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #0c1310;
+  --panel: #121c17;
+  --panel-2: #16231c;
+  --line: #27392e;
+  --line-bright: #3b5443;
+  --ink: #ece4cf;
+  --ink-dim: #93a794;
+  --ink-faint: #5c6f5f;
+
+  --squirrel: #ff7031;
+  --chipmunk: #ff3838;
+  --turkey: #cfd231;
+  --led: #6be585;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel-2);
+  --color-line: var(--line);
+  --color-linebright: var(--line-bright);
+  --color-ink: var(--ink);
+  --color-inkdim: var(--ink-dim);
+  --color-inkfaint: var(--ink-faint);
+  --color-squirrel: var(--squirrel);
+  --color-chipmunk: var(--chipmunk);
+  --color-turkey: var(--turkey);
+  --color-led: var(--led);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  /* Faint topographic contours + a soft vignette: field-map atmosphere,
+     no images -- two repeating gradients doing all the work. */
+  background-image:
+    radial-gradient(ellipse 120% 90% at 50% -10%, rgba(107, 229, 133, 0.045), transparent 60%),
+    repeating-radial-gradient(
+      ellipse 140% 110% at 85% 115%,
+      transparent 0px,
+      transparent 34px,
+      rgba(59, 84, 67, 0.16) 35px,
+      transparent 36px
+    ),
+    repeating-radial-gradient(
+      ellipse 130% 100% at -10% -20%,
+      transparent 0px,
+      transparent 46px,
+      rgba(59, 84, 67, 0.11) 47px,
+      transparent 48px
+    );
+  background-attachment: fixed;
+}
+
+/* Panel reveal on load: each .panel staggers in like instruments warming up. */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.panel {
+  animation: panel-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.panel:nth-child(1) { animation-delay: 0.05s; }
+.panel:nth-child(2) { animation-delay: 0.12s; }
+.panel:nth-child(3) { animation-delay: 0.19s; }
+.panel:nth-child(4) { animation-delay: 0.26s; }
+.panel:nth-child(5) { animation-delay: 0.33s; }
+.panel:nth-child(6) { animation-delay: 0.4s; }
+
+/* The LIVE lamp. */
+@keyframes lamp-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 1px currentColor; }
+  50% { opacity: 0.45; box-shadow: 0 0 2px 0 currentColor; }
+}
+.lamp {
+  animation: lamp-pulse 1.6s ease-in-out infinite;
+}
+
+/* Sleeping daemon: slow breathing, like something curled up in a burrow. */
+@keyframes breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.breathe {
+  animation: breathe 3.2s ease-in-out infinite;
+}
+
+/* Stamped label, like gear inventory lettering on a footlocker. */
+.stamp {
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
