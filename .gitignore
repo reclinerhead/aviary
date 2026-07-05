@@ -2,6 +2,12 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Merle daemon's local SQLite database (mutable state -- never committed)
+*.db
+*.db-wal
+*.db-shm
 
 # Datasets, captures, and model weights -- large binaries stay out of git.
 # (Datasets live in Roboflow + local disk; weights are reproducible from training.)
