@@ -79,7 +79,13 @@ body {
 }
 
 .panel {
-  animation: panel-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* `backwards` (not `both`): applies the hidden `from` state during the
+     stagger delay, but does NOT retain the `to` transform afterwards. A
+     retained transform would make each panel a containing block, which would
+     trap the fullscreen fallback's `position: fixed` overlay inside the panel
+     instead of the viewport. The panel ends at its natural position anyway, so
+     there's no visual difference. */
+  animation: panel-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .panel:nth-child(1) { animation-delay: 0.05s; }
 .panel:nth-child(2) { animation-delay: 0.12s; }
