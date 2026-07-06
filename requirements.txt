@@ -13,6 +13,8 @@ fastapi
 uvicorn[standard]
 opencv-python
 numpy
+paho-mqtt      # the MQTT bus (daemon publisher, narrator, replay script)
+pyyaml         # narrator personas + character bible
 
 # Test-only:
 pytest
