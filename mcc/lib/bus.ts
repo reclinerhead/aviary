@@ -15,12 +15,18 @@ export type NarrationLine = {
 export const NARRATION_TOPIC = "narration/lines";
 export const NARRATOR_STATUS_WILDCARD = "narrators/+/status";
 
-/** The broker's WebSocket URL: same host the dashboard was loaded from (works
- * on localhost and from a phone on the LAN alike), port 9001, unless
- * NEXT_PUBLIC_MERLE_MQTT_WS overrides the whole thing. */
+/** The broker's WebSocket URL: same host the dashboard was loaded from (so a
+ * phone reaching the dev server by LAN IP reaches the broker the same way),
+ * port 9001, unless NEXT_PUBLIC_MERLE_MQTT_WS overrides the whole thing.
+ *
+ * "localhost" is pinned to IPv4 127.0.0.1: Windows browsers resolve localhost
+ * to IPv6 ::1 first, and the WebSocket to Mosquitto over ::1 fails to complete
+ * the MQTT handshake even though the TCP connects (the daemon proxy dodges the
+ * identical trap -- see next.config.ts). A real LAN hostname/IP is left as-is. */
 export function busUrl(hostname: string, override?: string): string {
   if (override) return override;
-  return `ws://${hostname || "localhost"}:9001`;
+  const host = !hostname || hostname === "localhost" ? "127.0.0.1" : hostname;
+  return `ws://${host}:9001`;
 }
 
 // --- Pure parsing helpers (unit-tested in bus.test.ts) -----------------------

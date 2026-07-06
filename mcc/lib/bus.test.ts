@@ -5,8 +5,11 @@ describe("busUrl", () => {
   it("targets port 9001 on the page's host", () => {
     expect(busUrl("192.168.1.50")).toBe("ws://192.168.1.50:9001");
   });
-  it("falls back to localhost when the hostname is empty", () => {
-    expect(busUrl("")).toBe("ws://localhost:9001");
+  it("pins localhost to IPv4 (Windows resolves it to ::1, which the WS can't use)", () => {
+    expect(busUrl("localhost")).toBe("ws://127.0.0.1:9001");
+  });
+  it("pins an empty hostname to IPv4 loopback too", () => {
+    expect(busUrl("")).toBe("ws://127.0.0.1:9001");
   });
   it("lets the env override win entirely", () => {
     expect(busUrl("myhost", "wss://elsewhere:9002")).toBe("wss://elsewhere:9002");
