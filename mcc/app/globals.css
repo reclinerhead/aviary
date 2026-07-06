@@ -112,6 +112,21 @@ body {
   animation: breathe 3.2s ease-in-out infinite;
 }
 
+/* A fresh journal entry slides in under the masthead as it's filed. */
+@keyframes journal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.journal-in {
+  animation: journal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
 /* Stamped label, like gear inventory lettering on a footlocker. */
 .stamp {
   letter-spacing: 0.18em;

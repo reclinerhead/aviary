@@ -31,9 +31,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      # storage + daemon tests. The daemon runs against the synthetic frame
-      # source, so CI needs fastapi/opencv but NOT ultralytics/torch -- headless
-      # opencv avoids the libGL requirement of the full build. Model- and
-      # camera-dependent code (Phase 2b-ii) stays out of CI, verified locally.
-      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless
-      - run: pytest test_storage.py test_perception.py test_daemon.py -q
+      # The full pure-logic suite: storage, perception bookkeeping, the daemon
+      # against the synthetic frame source, narrator pacing/templates, and the
+      # replay timing math. CI needs fastapi/opencv/paho/yaml but NOT
+      # ultralytics/torch -- headless opencv avoids the libGL requirement of
+      # the full build. Model- and camera-dependent code stays out of CI,
+      # verified locally. (Deps listed inline rather than requirements.txt
+      # precisely because of the opencv-python -> headless swap.)
+      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml
+      - run: pytest test_storage.py test_perception.py test_daemon.py test_narrator.py test_replay.py -q
