@@ -1,8 +1,9 @@
 // Client for the Merle event bus (Mosquitto over WebSockets). Unlike daemon
 // HTTP traffic -- which rides the /daemon/* rewrite -- the browser connects to
 // the broker DIRECTLY: Next.js rewrites can't proxy WebSockets. The broker
-// listens on ws://<this host>:9001 (mosquitto.conf at the repo root), so a
-// phone on the LAN reaches it the same way it reaches the dev server.
+// lives on pearl (192.168.1.64, config at /etc/mosquitto/conf.d/squirrel.conf)
+// and listens on ws://192.168.1.64:9001 -- NEXT_PUBLIC_MERLE_MQTT_WS in
+// mcc/.env.local points there, and a phone on the LAN reaches it directly.
 
 export type NarrationLine = {
   ts: string;
@@ -15,9 +16,11 @@ export type NarrationLine = {
 export const NARRATION_TOPIC = "narration/lines";
 export const NARRATOR_STATUS_WILDCARD = "narrators/+/status";
 
-/** The broker's WebSocket URL: same host the dashboard was loaded from (so a
- * phone reaching the dev server by LAN IP reaches the broker the same way),
- * port 9001, unless NEXT_PUBLIC_MERLE_MQTT_WS overrides the whole thing.
+/** The broker's WebSocket URL. In the pearl topology NEXT_PUBLIC_MERLE_MQTT_WS
+ * (mcc/.env.local) supplies the whole URL; the fallback -- same host the page
+ * was loaded from, port 9001 -- only ever worked when the broker shared a
+ * machine with the dev server, and survives as a guard for any future
+ * same-host broker.
  *
  * "localhost" is pinned to IPv4 127.0.0.1: Windows browsers resolve localhost
  * to IPv6 ::1 first, and the WebSocket to Mosquitto over ::1 fails to complete
