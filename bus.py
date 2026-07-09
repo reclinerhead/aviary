@@ -34,9 +34,19 @@ def narrator_status_topic(mqtt_id):
 
 
 def broker_address():
-    """Broker host/port from MERLE_MQTT ("host" or "host:port"), default
-    localhost:1883 -- same spirit as MERLE_DB / MERLE_SOURCE."""
-    raw = os.environ.get("MERLE_MQTT", "localhost:1883")
+    """Broker host/port from MERLE_MQTT ("host" or "host:port"). REQUIRED --
+    no localhost default. The broker lives on pearl, not on the machine
+    running this code, so a silent localhost fallback meant a process that
+    looked healthy while publishing into the void. Missing config fails at
+    startup; a broker that's merely down is still tolerated (see
+    EventPublisher)."""
+    raw = os.environ.get("MERLE_MQTT", "").strip()
+    if not raw:
+        raise RuntimeError(
+            "MERLE_MQTT is not set. The MQTT broker does not run on this "
+            "machine -- set MERLE_MQTT=192.168.1.64:1883 (pearl) or the "
+            "host:port of wherever the broker lives."
+        )
     host, _, port = raw.partition(":")
     return host, int(port) if port else 1883
 
