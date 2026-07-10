@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   WeatherPoint,
+  ageText,
   compass,
   linePath,
   parseCurrent,
   parsePoints,
+  parseStatus,
   tempRange,
   trendSeries,
   windCeil,
@@ -68,6 +70,34 @@ describe("parsePoints", () => {
     ).toHaveLength(1);
     expect(parsePoints(JSON.stringify({}))).toBeNull();
     expect(parsePoints("nope")).toBeNull();
+  });
+});
+
+describe("parseStatus", () => {
+  it("accepts the two presence states, whitespace-tolerant", () => {
+    expect(parseStatus("online")).toBe("online");
+    expect(parseStatus("offline")).toBe("offline");
+    expect(parseStatus(" online\n")).toBe("online");
+  });
+  it("maps anything else to null (no presence info, never a fake state)", () => {
+    expect(parseStatus("")).toBeNull();
+    expect(parseStatus("ONLINE")).toBeNull();
+    expect(parseStatus('"offline"')).toBeNull(); // JSON-quoted is not the contract
+    expect(parseStatus("on coffee break")).toBeNull();
+  });
+});
+
+describe("ageText", () => {
+  const now = 1_000_000;
+  it("buckets by coarse unit", () => {
+    expect(ageText(now - 30, now)).toBe("just now");
+    expect(ageText(now - 90, now)).toBe("1m ago");
+    expect(ageText(now - 45 * 60, now)).toBe("45m ago");
+    expect(ageText(now - 3 * 3600 - 40 * 60, now)).toBe("3h ago");
+    expect(ageText(now - 50 * 3600, now)).toBe("2d ago");
+  });
+  it("clamps future timestamps to just now (clock skew)", () => {
+    expect(ageText(now + 120, now)).toBe("just now");
   });
 });
 

@@ -21,6 +21,11 @@
 #   weather/forecast         weather -> world    shaped forecast series, RETAINED
 #   weather/history          weather -> world    rolling 48h observed window,
 #                                                RETAINED (republished whole)
+#   weather/status           weather presence    "online"/"offline", RETAINED --
+#                            same contract as narrators/<id>/status ("offline"
+#                            is the Last Will), but in the weather namespace:
+#                            Willard is a reporter, not a narrator, and must
+#                            not light up the Field Journal's presence wildcard
 #
 # The weather topics are retained on purpose: weather is *state*, not a moment.
 # A late joiner (dashboard tab, restarted narrator) gets the latest report from
@@ -40,6 +45,7 @@ NARRATOR_STATUS_WILDCARD = "narrators/+/status"
 WEATHER_CURRENT_TOPIC = "weather/current"
 WEATHER_FORECAST_TOPIC = "weather/forecast"
 WEATHER_HISTORY_TOPIC = "weather/history"
+WEATHER_STATUS_TOPIC = "weather/status"
 
 
 def narrator_status_topic(mqtt_id):
@@ -74,9 +80,23 @@ class EventPublisher:
     blocks and never raises -- QoS 0, so with no broker the message is simply
     dropped (SQLite is the archive; the bus is live transport only)."""
 
-    def __init__(self, client_id):
+    def __init__(self, client_id, status_topic=None):
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                                    client_id=client_id)
+        self._status_topic = status_topic
+        if status_topic:
+            # Presence, the narrator contract: retained "online" on every
+            # (re)connect, retained "offline" as the Last Will. The will fires
+            # whenever the socket dies without an MQTT DISCONNECT -- a crash,
+            # but also systemd's SIGTERM -- so `systemctl stop` flips the
+            # dashboard lamp instantly with no signal handling here. Raw
+            # strings, not JSON: the status topics predate this and the
+            # dashboard renders them verbatim.
+            self._client.will_set(status_topic, "offline", retain=True)
+            self._client.on_connect = self._announce
+
+    def _announce(self, client, userdata, flags, reason_code, properties):
+        client.publish(self._status_topic, "online", qos=0, retain=True)
 
     def start(self):
         host, port = broker_address()
@@ -92,5 +112,16 @@ class EventPublisher:
         self._client.publish(topic, json.dumps(payload), qos=0, retain=retain)
 
     def close(self):
+        if self._status_topic:
+            # Graceful sign-off: say offline ourselves -- a clean DISCONNECT
+            # suppresses the Last Will (that's for crashes). wait_for_publish
+            # gives the network thread a beat to flush before we stop it;
+            # timing out just means the will does the job instead.
+            info = self._client.publish(self._status_topic, "offline",
+                                        qos=0, retain=True)
+            try:
+                info.wait_for_publish(timeout=2)
+            except (ValueError, RuntimeError):
+                pass  # no connection -> nothing to flush, nothing retained to fix
         self._client.loop_stop()
         self._client.disconnect()
