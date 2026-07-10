@@ -18,6 +18,10 @@
 #   publishes  weather/forecast   5-day/3-hour series shaped for charting
 #   publishes  weather/history    rolling 48h window of observations,
 #                                 republished whole every poll
+#   publishes  weather/status     presence, "online"/"offline" (issue #31):
+#                                 the narrator contract -- "offline" is the
+#                                 Last Will, so crashes and systemctl stop
+#                                 flip the dashboard immediately
 #
 # The history window is the one piece of state this service owns: ~288 points
 # at the 10-minute cadence, persisted to a small JSON file so a restart doesn't
@@ -207,34 +211,48 @@ def main():
     forecast_url = owm_url("forecast", loc, key)
 
     window = load_history(history_path)
-    publisher = bus.EventPublisher("weather").start()
+    # status_topic gives Willard the narrator presence contract (issue #31):
+    # retained online/offline with the Last Will covering crashes AND
+    # systemctl stop, so the dashboard masthead flips within seconds instead
+    # of waiting out the 30-minute staleness window.
+    publisher = bus.EventPublisher(
+        "weather", status_topic=bus.WEATHER_STATUS_TOPIC).start()
     print(f"[weather] on duty: loc={loc}, {len(window)} points of history, "
           f"polling every {CURRENT_INTERVAL_S // 60} min")
 
     next_forecast_at = 0.0   # 0 -> the first loop pass fetches the forecast
-    while True:
-        raw = fetch(current_url)
-        if raw is not None:
-            current = parse_current(raw)
-            publisher.publish(bus.WEATHER_CURRENT_TOPIC, current, retain=True)
-            window = roll_history(window, history_point(current))
-            save_history(history_path, window)
-            publisher.publish(bus.WEATHER_HISTORY_TOPIC, {"points": window},
-                              retain=True)
-            print(f"[weather] {current['temp_f']}F, {current['description']}, "
-                  f"wind {current['wind_mph']} mph "
-                  f"({len(window)} points in the window)")
-
-        if time.time() >= next_forecast_at:
-            raw = fetch(forecast_url)
+    try:
+        while True:
+            raw = fetch(current_url)
             if raw is not None:
-                publisher.publish(bus.WEATHER_FORECAST_TOPIC,
-                                  parse_forecast(raw), retain=True)
-                next_forecast_at = time.time() + FORECAST_INTERVAL_S
-            # on failure next_forecast_at stays put, so the NEXT current-poll
-            # pass retries the forecast instead of waiting out a full hour
+                current = parse_current(raw)
+                publisher.publish(bus.WEATHER_CURRENT_TOPIC, current,
+                                  retain=True)
+                window = roll_history(window, history_point(current))
+                save_history(history_path, window)
+                publisher.publish(bus.WEATHER_HISTORY_TOPIC,
+                                  {"points": window}, retain=True)
+                print(f"[weather] {current['temp_f']}F, "
+                      f"{current['description']}, "
+                      f"wind {current['wind_mph']} mph "
+                      f"({len(window)} points in the window)")
 
-        time.sleep(CURRENT_INTERVAL_S)
+            if time.time() >= next_forecast_at:
+                raw = fetch(forecast_url)
+                if raw is not None:
+                    publisher.publish(bus.WEATHER_FORECAST_TOPIC,
+                                      parse_forecast(raw), retain=True)
+                    next_forecast_at = time.time() + FORECAST_INTERVAL_S
+                # on failure next_forecast_at stays put, so the NEXT
+                # current-poll pass retries the forecast instead of waiting
+                # out a full hour
+
+            time.sleep(CURRENT_INTERVAL_S)
+    except KeyboardInterrupt:
+        # Manual desk runs: sign off cleanly (close() publishes the retained
+        # offline). Under systemd this never runs -- SIGTERM fires the will.
+        publisher.close()
+        print("\n[weather] off duty.")
 
 
 if __name__ == "__main__":

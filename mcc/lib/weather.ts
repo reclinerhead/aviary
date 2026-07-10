@@ -7,6 +7,7 @@
 export const WEATHER_CURRENT_TOPIC = "weather/current";
 export const WEATHER_FORECAST_TOPIC = "weather/forecast";
 export const WEATHER_HISTORY_TOPIC = "weather/history";
+export const WEATHER_STATUS_TOPIC = "weather/status";
 
 export type CurrentWeather = {
   ts: number;
@@ -46,6 +47,31 @@ export const FUTURE_S = 48 * 3600;
 
 const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+export type WeatherStatus = "online" | "offline";
+
+/** Parse a weather/status payload. Raw strings, not JSON -- the status topics
+ * follow the narrator presence convention (issue #31). Anything else maps to
+ * null ("no presence info"), so a stray payload can only ever demote the
+ * masthead to the freshness-based judgement, never fake a state. */
+export function parseStatus(payload: string): WeatherStatus | null {
+  const s = payload.trim();
+  return s === "online" || s === "offline" ? s : null;
+}
+
+/** Relative age for "last checked in" -- coarse on purpose (a field log, not
+ * a stopwatch). Future timestamps clamp to "just now" rather than counting
+ * negative (clock skew between pearl and the viewer is not the reader's
+ * problem). */
+export function ageText(ts: number, now: number): string {
+  const s = Math.max(0, now - ts);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 /** Parse a weather/current payload; null for anything malformed (the bus is a
  * shared room -- a stray message must never crash the panel). */
