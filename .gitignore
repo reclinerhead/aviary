@@ -9,6 +9,9 @@ __pycache__/
 *.db-wal
 *.db-shm
 
+# Weather service's rolling 48h window (mutable state on pearl -- see weather.py)
+weather_history.json
+
 # Datasets, captures, and model weights -- large binaries stay out of git.
 # (Datasets live in Roboflow + local disk; weights are reproducible from training.)
 runs/

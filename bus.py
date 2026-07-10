@@ -17,6 +17,16 @@
 #   narrators/<id>/status    narrator presence   "online"/"offline", RETAINED
 #                            ("offline" is each narrator's MQTT Last Will, so a
 #                            crash flips it without anyone noticing the crash)
+#   weather/current          weather -> world    latest conditions, RETAINED
+#   weather/forecast         weather -> world    shaped forecast series, RETAINED
+#   weather/history          weather -> world    rolling 48h observed window,
+#                                                RETAINED (republished whole)
+#
+# The weather topics are retained on purpose: weather is *state*, not a moment.
+# A late joiner (dashboard tab, restarted narrator) gets the latest report from
+# the broker instantly, so nobody needs an HTTP path or a poll loop. Nothing is
+# archived -- OpenWeather is the archive of record and a dropped report is
+# refetched on the next poll, so the bus stays live-transport-only.
 # =============================================================================
 
 import json
@@ -27,6 +37,9 @@ import paho.mqtt.client as mqtt
 EVENTS_TOPIC = "driveway/events"
 NARRATION_TOPIC = "narration/lines"
 NARRATOR_STATUS_WILDCARD = "narrators/+/status"
+WEATHER_CURRENT_TOPIC = "weather/current"
+WEATHER_FORECAST_TOPIC = "weather/forecast"
+WEATHER_HISTORY_TOPIC = "weather/history"
 
 
 def narrator_status_topic(mqtt_id):
@@ -71,8 +84,12 @@ class EventPublisher:
         self._client.loop_start()
         return self
 
-    def publish(self, topic, payload):
-        self._client.publish(topic, json.dumps(payload), qos=0)
+    def publish(self, topic, payload, retain=False):
+        # retain=True marks the payload as broker-held *state* (weather topics):
+        # late subscribers get the latest one immediately. Event-shaped topics
+        # stay retain=False -- replaying a stale event to every new subscriber
+        # would be worse than dropping it.
+        self._client.publish(topic, json.dumps(payload), qos=0, retain=retain)
 
     def close(self):
         self._client.loop_stop()
