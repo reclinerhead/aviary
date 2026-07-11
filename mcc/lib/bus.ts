@@ -1,6 +1,6 @@
 // Client for the Merle event bus (Mosquitto over WebSockets). Unlike daemon
-// HTTP traffic -- which rides the /daemon/* rewrite -- the browser connects to
-// the broker DIRECTLY: Next.js rewrites can't proxy WebSockets. The broker
+// HTTP traffic -- which rides the /daemon/* proxy route -- the browser connects
+// to the broker DIRECTLY: the HTTP proxy can't carry WebSockets. The broker
 // lives on pearl (192.168.1.64, config at /etc/mosquitto/conf.d/squirrel.conf)
 // and listens on ws://192.168.1.64:9001 -- NEXT_PUBLIC_MERLE_MQTT_WS in
 // mcc/.env.local points there, and a phone on the LAN reaches it directly.
