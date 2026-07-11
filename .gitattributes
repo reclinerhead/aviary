@@ -1,0 +1,4 @@
+# Shell scripts run on pearl (Linux) but are edited on Windows -- a CRLF
+# shebang line ("/usr/bin/env bash\r") breaks them, so pin LF regardless of
+# the local core.autocrlf setting.
+*.sh text eol=lf
