@@ -39,4 +39,4 @@ jobs:
       # verified locally. (Deps listed inline rather than requirements.txt
       # precisely because of the opencv-python -> headless swap.)
       - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml
-      - run: pytest test_storage.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_replay.py test_make_2class.py -q
+      - run: pytest test_storage.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_weather.py test_replay.py test_make_2class.py -q

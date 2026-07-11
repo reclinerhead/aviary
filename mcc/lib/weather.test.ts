@@ -8,6 +8,7 @@ import {
   nightBands,
   parseCurrent,
   parsePoints,
+  parseReport,
   parseStatus,
   tempRange,
   timeTicks,
@@ -55,6 +56,33 @@ describe("parseCurrent", () => {
     expect(parseCurrent(JSON.stringify({ temp_f: 70 }))).toBeNull();
     expect(parseCurrent("{not json")).toBeNull();
     expect(parseCurrent("null")).toBeNull();
+  });
+});
+
+describe("parseReport", () => {
+  it("accepts a segment", () => {
+    const got = parseReport(
+      JSON.stringify({
+        ts: 1752148800,
+        text: "WELL, folks, what a gorgeous afternoon!\n\nAnd tomorrow? Even better.",
+        model: "gemma3:12b",
+      }),
+    );
+    expect(got?.ts).toBe(1752148800);
+    expect(got?.text).toContain("gorgeous afternoon");
+    expect(got?.model).toBe("gemma3:12b");
+  });
+  it("tolerates a missing model", () => {
+    const got = parseReport(JSON.stringify({ ts: 5, text: "Hot out there." }));
+    expect(got?.model).toBeNull();
+  });
+  it("rejects no ts, empty or missing text, junk, and non-JSON", () => {
+    expect(parseReport(JSON.stringify({ text: "no clock" }))).toBeNull();
+    expect(parseReport(JSON.stringify({ ts: 5, text: "   " }))).toBeNull();
+    expect(parseReport(JSON.stringify({ ts: 5 }))).toBeNull();
+    expect(parseReport(JSON.stringify({ ts: 5, text: 42 }))).toBeNull();
+    expect(parseReport("{not json")).toBeNull();
+    expect(parseReport("null")).toBeNull();
   });
 });
 
