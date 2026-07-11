@@ -4,10 +4,13 @@ import {
   ageText,
   compass,
   linePath,
+  nearestPoint,
+  nightBands,
   parseCurrent,
   parsePoints,
   parseStatus,
   tempRange,
+  timeTicks,
   trendSeries,
   windCeil,
 } from "./weather";
@@ -174,6 +177,72 @@ describe("linePath", () => {
   it("returns empty for degenerate ranges", () => {
     expect(linePath([pt(1)], (p) => p.temp_f, 5, 5, 0, 10, 100, 100)).toBe("");
     expect(linePath([pt(1)], (p) => p.temp_f, 0, 10, 5, 5, 100, 100)).toBe("");
+  });
+});
+
+describe("nearestPoint", () => {
+  it("snaps to the closest point by timestamp", () => {
+    const pts = [pt(100), pt(200), pt(300)];
+    expect(nearestPoint(pts, 190)?.ts).toBe(200);
+    expect(nearestPoint(pts, 200)?.ts).toBe(200); // exact hit
+  });
+  it("snaps to the ends beyond the data", () => {
+    const pts = [pt(100), pt(200)];
+    expect(nearestPoint(pts, -5_000)?.ts).toBe(100);
+    expect(nearestPoint(pts, 9_000)?.ts).toBe(200);
+  });
+  it("breaks ties toward the earlier point", () => {
+    expect(nearestPoint([pt(100), pt(200)], 150)?.ts).toBe(100);
+  });
+  it("is null with nothing to snap to", () => {
+    expect(nearestPoint([], 100)).toBeNull();
+  });
+});
+
+describe("timeTicks", () => {
+  it("marks 12h steps across the default window, endpoints and now excluded", () => {
+    const ticks = timeTicks();
+    expect(ticks.map((t) => t.offsetS / 3600)).toEqual([-12, 12, 24, 36]);
+    expect(ticks.map((t) => t.frac)).toEqual([1 / 6, 3 / 6, 4 / 6, 5 / 6]);
+  });
+  it("handles a past window that is not a multiple of the step", () => {
+    const ticks = timeTicks(5 * 3600, 4 * 3600, 2 * 3600);
+    expect(ticks.map((t) => t.offsetS / 3600)).toEqual([-4, -2, 2]);
+  });
+  it("is empty for degenerate inputs", () => {
+    expect(timeTicks(0, 0)).toEqual([]);
+    expect(timeTicks(3600, 3600, 0)).toEqual([]);
+  });
+});
+
+describe("nightBands", () => {
+  const D = 86_400;
+  const sunrise = 6 * 3600; // 06:00 day zero
+  const sunset = 21 * 3600; // 21:00 day zero
+  it("repeats sunset->sunrise nights across the chart window", () => {
+    const now = 12 * 3600; // noon day zero
+    const bands = nightBands(sunrise, sunset, now - 24 * 3600, now + 48 * 3600);
+    expect(bands).toEqual([
+      { start: sunset - D, end: sunrise }, // last night
+      { start: sunset, end: sunrise + D }, // tonight
+      { start: sunset + D, end: sunrise + 2 * D }, // tomorrow night
+    ]);
+  });
+  it("clamps bands to the window edges", () => {
+    const bands = nightBands(sunrise, sunset, 0, D);
+    expect(bands).toEqual([
+      { start: 0, end: sunrise }, // last night, cut at the window start
+      { start: sunset, end: D }, // tonight, cut at the window end
+    ]);
+  });
+  it("is empty without sun times or with garbage ordering", () => {
+    expect(nightBands(null, sunset, 0, D)).toEqual([]);
+    expect(nightBands(sunrise, null, 0, D)).toEqual([]);
+    expect(nightBands(sunset, sunrise, 0, D)).toEqual([]); // swapped
+    expect(nightBands(sunrise, sunrise, 0, D)).toEqual([]);
+  });
+  it("is empty for a degenerate window", () => {
+    expect(nightBands(sunrise, sunset, D, D)).toEqual([]);
   });
 });
 

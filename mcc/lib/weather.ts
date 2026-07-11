@@ -203,6 +203,74 @@ export function linePath(
   return parts.join(" ");
 }
 
+/** The chart point nearest a hovered timestamp -- the tooltip reads real
+ * reports, never values interpolated between them. Ties go to the earlier
+ * point; null when there is nothing to snap to. */
+export function nearestPoint(
+  pts: WeatherPoint[],
+  ts: number,
+): WeatherPoint | null {
+  let best: WeatherPoint | null = null;
+  let bestD = Infinity;
+  for (const p of pts) {
+    const d = Math.abs(p.ts - ts);
+    if (d < bestD) {
+      best = p;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+export type TimeTick = { offsetS: number; frac: number };
+
+/** Interior time-axis ticks across [-pastS, +futureS] at stepS spacing, as
+ * fractions of the window width. The endpoints and "now" (offset 0) are
+ * excluded -- they already carry their own labels and divider. */
+export function timeTicks(
+  pastS = PAST_S,
+  futureS = FUTURE_S,
+  stepS = 12 * 3600,
+): TimeTick[] {
+  const span = pastS + futureS;
+  if (span <= 0 || stepS <= 0) return [];
+  const ticks: TimeTick[] = [];
+  const first = -Math.floor(pastS / stepS) * stepS;
+  for (let off = first; off <= futureS; off += stepS) {
+    if (off === 0 || off === -pastS || off === futureS) continue;
+    ticks.push({ offsetS: off, frac: (off + pastS) / span });
+  }
+  return ticks;
+}
+
+export type NightBand = { start: number; end: number };
+
+const DAY_S = 86_400;
+
+/** Night intervals (sunset -> next sunrise) intersecting [ts0, ts1], built by
+ * repeating today's sun times at 24h offsets -- day length drifts ~2 minutes
+ * per day, invisible at chart scale. Empty when the report has no sun times
+ * or they are out of order (garbage in, no bands out). */
+export function nightBands(
+  sunrise: number | null,
+  sunset: number | null,
+  ts0: number,
+  ts1: number,
+): NightBand[] {
+  if (sunrise === null || sunset === null) return [];
+  if (sunset <= sunrise || sunset - sunrise >= DAY_S) return [];
+  if (ts1 <= ts0) return [];
+  const bands: NightBand[] = [];
+  const k0 = Math.floor((ts0 - sunset) / DAY_S) - 1;
+  const k1 = Math.ceil((ts1 - sunset) / DAY_S) + 1;
+  for (let k = k0; k <= k1; k++) {
+    const start = Math.max(sunset + k * DAY_S, ts0);
+    const end = Math.min(sunrise + (k + 1) * DAY_S, ts1);
+    if (end > start) bands.push({ start, end });
+  }
+  return bands;
+}
+
 /** Wind bearing -> the 8-point compass a field notebook would use.
  * OpenWeather reports the direction the wind comes FROM. */
 export function compass(deg: number | null): string {
