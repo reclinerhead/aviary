@@ -21,6 +21,11 @@
 #   weather/forecast         weather -> world    shaped forecast series, RETAINED
 #   weather/history          weather -> world    rolling 48h observed window,
 #                                                RETAINED (republished whole)
+#   weather/report           weather -> world    Willard's on-air segment (issue
+#                                                #45): LLM-narrated conditions +
+#                                                outlook, RETAINED, ~every 30 min;
+#                                                absent entirely when the LLM
+#                                                tier is off (MERLE_OLLAMA unset)
 #   weather/status           weather presence    "online"/"offline", RETAINED --
 #                            same contract as narrators/<id>/status ("offline"
 #                            is the Last Will), but in the weather namespace:
@@ -45,6 +50,7 @@ NARRATOR_STATUS_WILDCARD = "narrators/+/status"
 WEATHER_CURRENT_TOPIC = "weather/current"
 WEATHER_FORECAST_TOPIC = "weather/forecast"
 WEATHER_HISTORY_TOPIC = "weather/history"
+WEATHER_REPORT_TOPIC = "weather/report"
 WEATHER_STATUS_TOPIC = "weather/status"
 
 

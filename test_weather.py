@@ -199,3 +199,150 @@ def test_load_history_wrong_shape(tmp_path):
     path = tmp_path / "history.json"
     path.write_text(json.dumps({"points": []}), encoding="utf-8")
     assert weather.load_history(path) == []
+
+
+# --- willard's on-air segment (issue #45) --------------------------------------
+# Pure prompt assembly and sanitation only; the live Ollama call is I/O and
+# stays desk-tested (the narrator's testing policy). Sun-time strings render
+# in the machine's local timezone, so assertions check presence, never the
+# clock face.
+
+NOW = 1_000_000
+
+
+def fpt(ts, temp=70.0, wind=5.0, gust=None, cond="Clear", pop=0):
+    return {"ts": ts, "temp_f": temp, "wind_mph": wind, "wind_gust_mph": gust,
+            "condition": cond, "pop": pop}
+
+
+def fresh_current(**over):
+    cur = weather.parse_current(OWM_CURRENT)
+    cur["ts"] = NOW - 60
+    cur.update(over)
+    return cur
+
+
+class StubOllama:
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = []
+
+    def complete(self, system, prompt, num_predict=None, temperature=None):
+        self.calls.append({"system": system, "prompt": prompt,
+                           "num_predict": num_predict,
+                           "temperature": temperature})
+        return self.reply
+
+
+def test_forecast_digest_clips_to_horizon():
+    points = [fpt(NOW - 100, temp=10.0),                        # behind now
+              fpt(NOW + 3600, temp=60.0),
+              fpt(NOW + weather.REPORT_HORIZON_S, temp=80.0),   # boundary: in
+              fpt(NOW + weather.REPORT_HORIZON_S + 1, temp=99.0)]
+    digest = weather.forecast_digest(points, NOW)
+    assert digest["low_f"] == 60.0
+    assert digest["high_f"] == 80.0
+
+
+def test_forecast_digest_wind_pop_conditions():
+    points = [fpt(NOW + 3600, wind=5.0, gust=19.9, cond="Rain", pop=0.4),
+              fpt(NOW + 7200, wind=12.0, cond="Clear"),
+              fpt(NOW + 10800, cond="Rain", pop=0.1)]
+    digest = weather.forecast_digest(points, NOW)
+    assert digest["max_wind_mph"] == 19.9   # the gust beats every speed
+    assert digest["max_pop"] == 0.4
+    assert digest["conditions"] == ["Rain", "Clear"]   # order of appearance
+
+
+def test_forecast_digest_nothing_ahead():
+    assert weather.forecast_digest([], NOW) is None
+    assert weather.forecast_digest([fpt(NOW - 100)], NOW) is None
+    # points in the window but none carrying a temperature
+    assert weather.forecast_digest([fpt(NOW + 3600, temp=None)], NOW) is None
+
+
+def test_current_facts_reads_the_report():
+    facts = weather.current_facts(fresh_current())
+    assert "It is 78F, feels like 79F." in facts
+    assert "Sky: broken clouds." in facts
+    assert "Wind 8 mph, gusting to 17." in facts
+    assert "Humidity 62 percent." in facts
+    assert "Sunrise " in facts and "sunset " in facts
+
+
+def test_current_facts_skips_matching_feels_like():
+    facts = weather.current_facts(fresh_current(feels_like_f=78.4))
+    assert "feels like" not in facts
+
+
+def test_current_facts_no_temp_is_no_broadcast():
+    assert weather.current_facts(fresh_current(temp_f=None)) == ""
+
+
+def test_build_report_prompt_labeled_paragraphs_then_cue():
+    prompt = weather.build_report_prompt(
+        fresh_current(), [fpt(NOW + 3600, temp=61.0, pop=0.4)], NOW)
+    paras = prompt.split("\n\n")
+    assert paras[0].startswith(weather.REPORT_CURRENT_HEADER)
+    # the clock face is timezone-dependent; pin the label, not the time
+    assert "The station clock reads " in paras[0]
+    assert paras[1].startswith(weather.REPORT_OUTLOOK_HEADER)
+    assert "Chance of precipitation up to 40 percent." in paras[1]
+    assert paras[-1] == "Your on-air weather segment:"
+
+
+def test_build_report_prompt_without_forecast_drops_the_outlook():
+    prompt = weather.build_report_prompt(fresh_current(), [], NOW)
+    assert weather.REPORT_OUTLOOK_HEADER not in prompt
+    assert prompt.endswith("Your on-air weather segment:")
+
+
+def test_build_report_prompt_stale_or_missing_current_is_none():
+    stale = fresh_current(ts=NOW - weather.REPORT_MAX_AGE_S - 1)
+    assert weather.build_report_prompt(stale, [], NOW) is None
+    assert weather.build_report_prompt(None, [], NOW) is None
+    assert weather.build_report_prompt(fresh_current(ts=None), [], NOW) is None
+
+
+def test_report_system_prompt_is_persona_plus_rules():
+    got = weather.report_system_prompt()
+    assert got.startswith(weather.WILLARD_PERSONALITY)
+    assert got.endswith(weather.REPORT_RULES)
+
+
+def test_sanitize_report_strips_markdown_and_quotes():
+    assert weather.sanitize_report('"**WELL** hello there!"') == \
+        "WELL hello there!"
+
+
+def test_sanitize_report_keeps_the_paragraph_break():
+    got = weather.sanitize_report("Now the\nconditions.\n\nAnd the outlook.")
+    assert got == "Now the conditions.\n\nAnd the outlook."
+
+
+def test_sanitize_report_unusable_is_none():
+    assert weather.sanitize_report("") is None
+    assert weather.sanitize_report(None) is None
+    assert weather.sanitize_report('  "" \n\n  ') is None
+
+
+def test_broadcast_sends_the_prompts_and_sanitizes():
+    stub = StubOllama('"A **gorgeous** day out there!"')
+    got = weather.broadcast(stub, fresh_current(), [fpt(NOW + 3600)], now=NOW)
+    assert got == "A gorgeous day out there!"
+    call = stub.calls[0]
+    assert call["system"] == weather.report_system_prompt()
+    assert call["prompt"].startswith(weather.REPORT_CURRENT_HEADER)
+    assert call["num_predict"] == weather.REPORT_NUM_PREDICT
+    assert call["temperature"] == weather.REPORT_TEMPERATURE
+
+
+def test_broadcast_dead_llm_is_none():
+    assert weather.broadcast(StubOllama(None), fresh_current(), [],
+                             now=NOW) is None
+
+
+def test_broadcast_nothing_to_say_never_calls_the_llm():
+    stub = StubOllama("unused")
+    assert weather.broadcast(stub, None, [], now=NOW) is None
+    assert stub.calls == []

@@ -7,6 +7,7 @@
 export const WEATHER_CURRENT_TOPIC = "weather/current";
 export const WEATHER_FORECAST_TOPIC = "weather/forecast";
 export const WEATHER_HISTORY_TOPIC = "weather/history";
+export const WEATHER_REPORT_TOPIC = "weather/report";
 export const WEATHER_STATUS_TOPIC = "weather/status";
 
 export type CurrentWeather = {
@@ -36,6 +37,18 @@ export type WeatherPoint = {
 // A report older than this is treated as no report: the panel goes stale
 // rather than presenting yesterday's weather as now (3 missed 10-min polls).
 export const STALE_AFTER_S = 30 * 60;
+
+/** Willard's on-air segment (issue #45), retained on weather/report. */
+export type WeatherReport = {
+  ts: number;
+  text: string;
+  model: string | null;
+};
+
+// Willard broadcasts every ~30 minutes; a retained segment older than three
+// missed broadcasts is history, not news -- the panel shows the between-
+// broadcasts state rather than presenting yesterday's showmanship as current.
+export const REPORT_STALE_S = 90 * 60;
 
 // The chart window: observed trail behind "now", forecast ahead of it.
 // 24h back + 48h forward puts "now" at the 1/3 mark -- enough trail to see
@@ -92,6 +105,19 @@ export function parseCurrent(payload: string): CurrentWeather | null {
       sunrise: num(o.sunrise),
       sunset: num(o.sunset),
     };
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a weather/report payload; null for anything malformed or empty --
+ * a segment with no words is no segment. */
+export function parseReport(payload: string): WeatherReport | null {
+  try {
+    const o = JSON.parse(payload);
+    if (typeof o?.ts !== "number") return null;
+    if (typeof o?.text !== "string" || o.text.trim() === "") return null;
+    return { ts: o.ts, text: o.text, model: str(o.model) };
   } catch {
     return null;
   }
