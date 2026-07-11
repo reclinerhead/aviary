@@ -127,6 +127,36 @@ body {
   animation: journal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
+/* A fresh dispatch flares like a signal lamp -- holds the glow while it has
+   your attention, then cuts out fast. The long hold (0->78%) followed by a
+   short drop is deliberate: a slow symmetric fade never registers as "new". */
+@keyframes journal-flash {
+  0%, 78% {
+    background-color: rgba(107, 229, 133, 0.08);
+    box-shadow: inset 14px 0 16px -12px rgba(107, 229, 133, 0.55);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+/* journal-in + journal-flash together (one class: `animation` is a single
+   property, so stacking two classes would just have one override the other).
+   Willard's weather segment keeps plain .journal-in -- no flash there. */
+.journal-filed {
+  animation:
+    journal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards,
+    journal-flash 4s ease-out;
+}
+
+/* Thin scroll gutter in panel line colors instead of the stock browser bar.
+   The standard properties cover Chrome 121+ and Firefox; when they're set,
+   Chrome ignores any ::-webkit-scrollbar styling, so these two lines are it. */
+.scrollpane {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-bright) transparent;
+}
+
 /* Stamped label, like gear inventory lettering on a footlocker. */
 .stamp {
   letter-spacing: 0.18em;
