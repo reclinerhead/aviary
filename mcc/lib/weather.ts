@@ -22,16 +22,45 @@ export type CurrentWeather = {
   description: string | null;
   sunrise: number | null;
   sunset: number | null;
+  // The station's own instruments (issue #51). Every field null on a
+  // pre-#51 payload -- the panel renders the em-dash placeholder, never NaN.
+  dew_point_f: number | null;
+  vpd_inhg: number | null;
+  wind_max_daily_gust_mph: number | null;
+  solar_wm2: number | null;
+  uv_index: number | null;
+  raining: number | null; // 0/1 -- the piezo's "falling right now" bit
+  rain_rate_inhr: number | null;
+  rain_event_in: number | null;
+  rain_day_in: number | null;
+  rain_week_in: number | null;
+  rain_month_in: number | null;
+  rain_year_in: number | null;
+  pressure_abs_inhg: number | null;
+  pressure_rel_inhg: number | null;
+  indoor_temp_f: number | null;
+  indoor_humidity_pct: number | null;
+  station_battery: number | null; // 0-5, the WH90's own scale
+  station_voltage: number | null;
+  station_signal: number | null; // 0-4 radio bars, from the sensor roster
 };
 
 /** One point of the trend chart -- the shape shared by weather/forecast and
- * weather/history payloads ({points: [...]}) . */
+ * weather/history payloads ({points: [...]}). History points carry the
+ * station's extra series (issue #51); forecast points leave them null. */
 export type WeatherPoint = {
   ts: number;
   temp_f: number | null;
   wind_mph: number | null;
   wind_gust_mph: number | null;
   condition: string | null;
+  humidity_pct: number | null;
+  dew_point_f: number | null;
+  pressure_rel_inhg: number | null;
+  rain_rate_inhr: number | null;
+  rain_day_in: number | null;
+  solar_wm2: number | null;
+  uv_index: number | null;
 };
 
 // A report older than this is treated as no report: the panel goes stale
@@ -104,6 +133,25 @@ export function parseCurrent(payload: string): CurrentWeather | null {
       description: str(o.description),
       sunrise: num(o.sunrise),
       sunset: num(o.sunset),
+      dew_point_f: num(o.dew_point_f),
+      vpd_inhg: num(o.vpd_inhg),
+      wind_max_daily_gust_mph: num(o.wind_max_daily_gust_mph),
+      solar_wm2: num(o.solar_wm2),
+      uv_index: num(o.uv_index),
+      raining: num(o.raining),
+      rain_rate_inhr: num(o.rain_rate_inhr),
+      rain_event_in: num(o.rain_event_in),
+      rain_day_in: num(o.rain_day_in),
+      rain_week_in: num(o.rain_week_in),
+      rain_month_in: num(o.rain_month_in),
+      rain_year_in: num(o.rain_year_in),
+      pressure_abs_inhg: num(o.pressure_abs_inhg),
+      pressure_rel_inhg: num(o.pressure_rel_inhg),
+      indoor_temp_f: num(o.indoor_temp_f),
+      indoor_humidity_pct: num(o.indoor_humidity_pct),
+      station_battery: num(o.station_battery),
+      station_voltage: num(o.station_voltage),
+      station_signal: num(o.station_signal),
     };
   } catch {
     return null;
@@ -140,6 +188,13 @@ export function parsePoints(payload: string): WeatherPoint[] | null {
         wind_mph: num(p.wind_mph),
         wind_gust_mph: num(p.wind_gust_mph),
         condition: str(p.condition),
+        humidity_pct: num(p.humidity_pct),
+        dew_point_f: num(p.dew_point_f),
+        pressure_rel_inhg: num(p.pressure_rel_inhg),
+        rain_rate_inhr: num(p.rain_rate_inhr),
+        rain_day_in: num(p.rain_day_in),
+        solar_wm2: num(p.solar_wm2),
+        uv_index: num(p.uv_index),
       }));
   } catch {
     return null;
@@ -197,6 +252,81 @@ export function windCeil(pts: WeatherPoint[]): number {
     .flatMap((p) => [p.wind_mph, p.wind_gust_mph])
     .filter((w): w is number => w !== null);
   return Math.max(10, Math.ceil(Math.max(0, ...winds) / 5) * 5);
+}
+
+/** Axis ceiling for one station series (issue #51): the windCeil recipe --
+ * floor so a quiet day hugs the baseline, round up to a clean step for the
+ * label. Three callers (rain, solar, UV in the large view) earn the
+ * extraction. */
+export function seriesCeil(
+  pts: WeatherPoint[],
+  value: (p: WeatherPoint) => number | null,
+  floor: number,
+  step: number,
+): number {
+  const vals = pts.map(value).filter((v): v is number => v !== null);
+  const ceil = Math.ceil(Math.max(0, ...vals) / step) * step;
+  // toFixed dodges float dust (0.30000000000000004) in axis labels
+  return Number(Math.max(floor, ceil).toFixed(4));
+}
+
+/** Pressure axis for the large view: barometric swings are small numbers on
+ * a big scale, so pad lightly and hold a minimum span of 0.3 inHg (a steady
+ * day reads as steady, the tempRange reasoning). Hundredths, not integers --
+ * that IS the unit's resolution. Null when nothing has a pressure. */
+export function pressureRange(
+  pts: WeatherPoint[],
+): { min: number; max: number } | null {
+  const vals = pts
+    .map((p) => p.pressure_rel_inhg)
+    .filter((v): v is number => v !== null);
+  if (vals.length === 0) return null;
+  let min = Math.min(...vals) - 0.05;
+  let max = Math.max(...vals) + 0.05;
+  const shortfall = 0.3 - (max - min);
+  if (shortfall > 0) {
+    min -= shortfall / 2;
+    max += shortfall / 2;
+  }
+  return { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) };
+}
+
+// Pressure tendency, the weather desk's oldest instrument: the barometer's
+// move over the last ~3h of observed trail. ±0.02 inHg over that span is
+// meteorologically "steady"; the trail must reach back at least half the
+// span before we call a trend at all (a fresh service has no opinion).
+export const PRESSURE_TREND_SPAN_S = 3 * 3600;
+export const PRESSURE_TREND_EPS_INHG = 0.02;
+
+export type PressureTrend = "rising" | "falling" | "steady";
+
+/** The barometer's tendency from the observed window, or null when the trail
+ * is too short (or pressure-less) to judge. Compares the newest reading to
+ * the one nearest 3h before it -- real reports, never interpolation. */
+export function pressureTrend(
+  history: WeatherPoint[],
+  now: number,
+): PressureTrend | null {
+  const pts = history
+    .filter((p) => p.pressure_rel_inhg !== null && p.ts <= now)
+    .sort((a, b) => a.ts - b.ts);
+  const latest = pts[pts.length - 1];
+  if (!latest) return null;
+  const target = latest.ts - PRESSURE_TREND_SPAN_S;
+  let anchor: WeatherPoint | null = null;
+  let anchorD = Infinity;
+  for (const p of pts) {
+    const d = Math.abs(p.ts - target);
+    if (d < anchorD) {
+      anchor = p;
+      anchorD = d;
+    }
+  }
+  if (!anchor || anchorD > PRESSURE_TREND_SPAN_S / 2) return null;
+  const delta = latest.pressure_rel_inhg! - anchor.pressure_rel_inhg!;
+  if (delta > PRESSURE_TREND_EPS_INHG) return "rising";
+  if (delta < -PRESSURE_TREND_EPS_INHG) return "falling";
+  return "steady";
 }
 
 /** SVG path for one series: ts -> x across [ts0, ts1], value -> y (inverted,

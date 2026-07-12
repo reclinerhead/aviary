@@ -19,8 +19,9 @@
 #                            crash flips it without anyone noticing the crash)
 #   weather/current          weather -> world    latest conditions, RETAINED
 #   weather/forecast         weather -> world    shaped forecast series, RETAINED
-#   weather/history          weather -> world    rolling 48h observed window,
-#                                                RETAINED (republished whole)
+#   weather/history          weather -> world    rolling 48h observed window at
+#                                                5-min resolution, RETAINED
+#                                                (republished whole)
 #   weather/report           weather -> world    Willard's on-air segment (issue
 #                                                #45): LLM-narrated conditions +
 #                                                outlook, RETAINED, ~every 30 min;
@@ -35,8 +36,8 @@
 # The weather topics are retained on purpose: weather is *state*, not a moment.
 # A late joiner (dashboard tab, restarted narrator) gets the latest report from
 # the broker instantly, so nobody needs an HTTP path or a poll loop. Nothing is
-# archived -- OpenWeather is the archive of record and a dropped report is
-# refetched on the next poll, so the bus stays live-transport-only.
+# archived -- the station keeps reporting and a dropped report is refetched on
+# the next poll, so the bus stays live-transport-only.
 # =============================================================================
 
 import json

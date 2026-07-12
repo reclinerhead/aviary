@@ -1,10 +1,14 @@
 # =============================================================================
 # project-squirrel -- weather.py
 #
-# The weather post (issue #25): a pearl-resident service that polls OpenWeather
-# for conditions at the station and publishes them to the bus. It needs neither
-# the GPU nor the camera -- just the bus and an internet connection -- so it
-# lives on pearl next to the broker and the narrator, 24/7.
+# The weather post (issue #25, re-instrumented in #51): a pearl-resident
+# service that reads the driveway's OWN weather station -- an Ecowitt GW2000B
+# gateway + WH90 sensor array on the LAN -- and publishes it to the bus. The
+# station is the system of truth for everything it can measure; OpenWeather
+# keeps exactly two jobs it can't: the forecast, and the sky garnish
+# (condition text, sunrise/sunset). It needs neither the GPU nor the camera --
+# just the bus, the gateway, and an internet connection -- so it lives on
+# pearl next to the broker and the narrator, 24/7.
 #
 #   python weather.py
 #
@@ -16,8 +20,8 @@
 #
 #   publishes  weather/current    latest observed conditions, one JSON object
 #   publishes  weather/forecast   5-day/3-hour series shaped for charting
-#   publishes  weather/history    rolling 48h window of observations,
-#                                 republished whole every poll
+#   publishes  weather/history    rolling 48h window of observations at 5-min
+#                                 resolution, republished whole every append
 #   publishes  weather/report     Willard's on-air segment (issue #45): the
 #                                 conditions + outlook narrated by the LLM in
 #                                 an exaggerated Willard Scott voice, ~every
@@ -28,16 +32,21 @@
 #                                 Last Will, so crashes and systemctl stop
 #                                 flip the dashboard immediately
 #
-# The history window is the one piece of state this service owns: ~288 points
-# at the 10-minute cadence, persisted to a small JSON file so a restart doesn't
+# The history window is the one piece of state this service owns: the station
+# reports every 60 seconds but the retained trail keeps 5-minute resolution
+# (~576 points over 48h -- fresh enough to chart, bounded enough to republish
+# whole every append), persisted to a small JSON file so a restart doesn't
 # blank the dashboard's observed-trend trail. Deliberately NOT SQLite -- the
 # window is bounded and rewritten whole, so a file is the honest data
 # structure. (A seasonal archive, if we ever want one, is a follow-up issue.)
 #
 # Config (env, following the MERLE_MQTT conventions):
-#   MERLE_OWM_KEY          OpenWeather API key. REQUIRED, no default -- a
-#                          weather service with no key has no job (same
-#                          fail-at-startup philosophy as MERLE_MQTT).
+#   MERLE_ECOWITT          the GW2000B gateway, "host" or "host:port".
+#                          REQUIRED, no default -- the station is the system
+#                          of truth now, and a weather service that can't
+#                          reach it has no job (the MERLE_MQTT philosophy).
+#   MERLE_OWM_KEY          OpenWeather API key. REQUIRED, no default -- the
+#                          forecast still rides on it.
 #   MERLE_WEATHER_LOC      "zip", "zip,CC", or "lat,lon" (default: 49001,US --
 #                          the station's home turf, Kalamazoo MI).
 #   MERLE_WEATHER_HISTORY  history file path (default: weather_history.json)
@@ -51,13 +60,22 @@
 #
 # We call the CLASSIC free APIs (api.openweathermap.org/data/2.5 weather +
 # forecast), not One Call 3.0 -- the classic pair needs no credit card and its
-# free limits (60 calls/min, 1M/month) dwarf our load: current every 10 min +
+# free limits (60 calls/min, 1M/month) dwarf our load: garnish every 10 min +
 # forecast every hour is ~170 calls/day. The 3-hour forecast step is plenty
 # for a what's-coming chart.
 #
-# Timestamps on the bus are UNIX EPOCH SECONDS (OpenWeather's native `dt`),
-# not ISO strings: the dashboard formats them in the viewer's locale and the
-# narrator compares against time.time() for staleness -- nobody wants to parse.
+# The gateway speaks unauthenticated local HTTP JSON: /get_livedata_info is
+# every live reading as unit-suffixed strings keyed by opaque ids ("0x02" ->
+# {"val": "78.8", "unit": "F"}), /get_sensors_info the attached-hardware
+# roster (battery, radio signal). The measured fields NEVER fall back to
+# OpenWeather -- one system of truth, and a silent source switch would lie on
+# the chart. A gateway that can't be reached means a skipped poll and a gap,
+# which the dashboard draws as a gap.
+#
+# Timestamps on the bus are UNIX EPOCH SECONDS, not ISO strings: the dashboard
+# formats them in the viewer's locale and the narrator compares against
+# time.time() for staleness -- nobody wants to parse. The station has no
+# observation clock of its own, so weather/current's `ts` is our fetch time.
 # =============================================================================
 
 import json
@@ -72,15 +90,17 @@ import bus
 # growing a second copy that could drift -- same reasoning as perception.py.
 from narrator import OLLAMA_DEFAULT_MODEL, Ollama, ollama_address
 
-CURRENT_INTERVAL_S = 600     # weather doesn't change faster than this
+STATION_INTERVAL_S = 60      # the gateway refreshes its live data every 60s
+GARNISH_INTERVAL_S = 600     # OWM sky/sun garnish; the old current cadence
 FORECAST_INTERVAL_S = 3600   # the 3-hour-step forecast changes even slower
 HISTORY_WINDOW_S = 48 * 3600  # the observed trail the dashboard charts
+HISTORY_STEP_S = 300         # the trail's resolution: keep 1 point per 5 min
 FETCH_TIMEOUT_S = 20
 
 REPORT_INTERVAL_S = 1800     # a broadcast every half hour is plenty of Willard
 REPORT_HORIZON_S = 24 * 3600  # the outlook paragraph covers the next day
 # A current report older than this isn't worth narrating (the narrator's
-# WEATHER_STALE_S reasoning): if fetches have failed for 3 straight polls,
+# WEATHER_STALE_S reasoning): if the station has been unreachable this long,
 # skip the broadcast rather than narrate yesterday's rain.
 REPORT_MAX_AGE_S = 30 * 60
 # A segment is longer than a narrator line (conditions + outlook), so it gets
@@ -130,6 +150,131 @@ def owm_url(endpoint, loc_params, key):
     return f"{OWM_BASE}/{endpoint}?{urllib.parse.urlencode(params)}"
 
 
+# --- the station (issue #51) --------------------------------------------------
+# The GW2000B's live-data JSON keys everything by opaque ids and wraps every
+# number in a unit-suffixed string ("0.00 in/Hr", "46%"). The maps below are
+# the Rosetta stone, verified against the real device; an id the firmware
+# stops sending simply parses to None, same posture as a missing OWM section.
+
+def ecowitt_base():
+    """Gateway base URL from MERLE_ECOWITT ("host" or "host:port").
+    REQUIRED -- the station is the system of truth, so a service that can't
+    name it fails at startup (the MERLE_MQTT philosophy)."""
+    raw = os.environ.get("MERLE_ECOWITT", "").strip()
+    if not raw:
+        raise RuntimeError(
+            "MERLE_ECOWITT is not set. Point it at the Ecowitt gateway "
+            "(\"host\" or \"host:port\", e.g. 192.168.1.210) before starting "
+            "the weather service."
+        )
+    return f"http://{raw}"
+
+
+# common_list ids -> bus field names (units ride in the names, the house rule)
+STATION_COMMON_IDS = {
+    "0x02": "temp_f",
+    "3": "feels_like_f",             # the station computes its own feels-like
+    "0x03": "dew_point_f",
+    "5": "vpd_inhg",                 # vapor pressure deficit
+    "0x07": "humidity_pct",
+    "0x0B": "wind_mph",
+    "0x0C": "wind_gust_mph",
+    "0x19": "wind_max_daily_gust_mph",
+    "0x0A": "wind_deg",
+    "0x15": "solar_wm2",
+    "0x17": "uv_index",
+}
+
+# piezoRain ids -> bus field names ("srain_piezo" is the raining-right-now bit)
+STATION_RAIN_IDS = {
+    "srain_piezo": "raining",
+    "0x0D": "rain_event_in",
+    "0x0E": "rain_rate_inhr",
+    "0x10": "rain_day_in",
+    "0x11": "rain_week_in",
+    "0x12": "rain_month_in",
+    "0x13": "rain_year_in",
+}
+
+# The four fields the station cannot measure -- OpenWeather's remaining
+# real-time job, merged into the payload as garnish.
+GARNISH_FIELDS = ("condition", "description", "sunrise", "sunset")
+
+
+def station_num(val):
+    """One gateway value string -> float, or None. The firmware suffixes
+    units ("29.24 inHg", "0.00 in/Hr") and percent signs ("46%"); the number
+    is always the leading token."""
+    if val is None:
+        return None
+    token = str(val).split()[0].rstrip("%") if str(val).split() else ""
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def parse_station(raw, ts):
+    """Gateway /get_livedata_info response -> the measured half of the
+    weather/current payload, every field a float or None. `ts` is injected
+    (our fetch time -- the station has no observation clock). None when no
+    measured field parsed at all: an empty shell is a failed poll, not a
+    report of forty Nones."""
+    common = {e.get("id"): e.get("val") for e in raw.get("common_list") or []}
+    rain = {e.get("id"): e for e in raw.get("piezoRain") or []}
+    wh25 = (raw.get("wh25") or [{}])[0]
+
+    out = {field: station_num(common.get(id_))
+           for id_, field in STATION_COMMON_IDS.items()}
+    for id_, field in STATION_RAIN_IDS.items():
+        out[field] = station_num((rain.get(id_) or {}).get("val"))
+    # the raining flag is a bit, not a measurement
+    if out["raining"] is not None:
+        out["raining"] = int(out["raining"])
+
+    # the WH90's battery/voltage ride the yearly-rain entry, of all places
+    batt = rain.get("0x13") or {}
+    battery = station_num(batt.get("battery"))
+    out["station_battery"] = int(battery) if battery is not None else None
+    out["station_voltage"] = station_num(batt.get("voltage"))
+
+    # the gateway's own WH25: indoor climate + the barometer (pressure is
+    # sky, not room -- it groups with outdoor on every consumer)
+    out["indoor_temp_f"] = station_num(wh25.get("intemp"))
+    out["indoor_humidity_pct"] = station_num(wh25.get("inhumi"))
+    out["pressure_abs_inhg"] = station_num(wh25.get("abs"))
+    out["pressure_rel_inhg"] = station_num(wh25.get("rel"))
+
+    if all(v is None for v in out.values()):
+        return None
+    out["ts"] = ts
+    return out
+
+
+def parse_sensors(raw):
+    """Gateway /get_sensors_info response -> the WH90's radio-link health
+    ({station_signal: 0-4}, or None value when the roster doesn't list a
+    registered WH90). Battery lives in the live data; signal only here."""
+    for entry in raw if isinstance(raw, list) else []:
+        if entry.get("img") == "wh90" and entry.get("idst") == "1":
+            signal = station_num(entry.get("signal"))
+            return {"station_signal": int(signal) if signal is not None
+                    else None}
+    return {"station_signal": None}
+
+
+def merge_current(station, garnish, signal):
+    """One weather/current payload: the station's measurements, OWM's sky
+    garnish (Nones until the first garnish fetch lands), the radio-link
+    health. The station half always wins -- measured fields NEVER come from
+    OpenWeather."""
+    current = dict(station)
+    for field in GARNISH_FIELDS:
+        current[field] = (garnish or {}).get(field)
+    current.update(signal or {"station_signal": None})
+    return current
+
+
 def parse_current(raw):
     """OpenWeather /weather response -> the weather/current bus payload.
     Field names carry their units so no consumer has to guess. `ts` is
@@ -173,16 +318,32 @@ def parse_forecast(raw):
     return {"points": points}
 
 
+# What the rolling window keeps per observation: what the charts draw, not
+# the full report. Grew from 5 fields to 12 with the station (issue #51) --
+# pressure, rain, solar and company are exactly what the big chart is FOR.
+HISTORY_FIELDS = (
+    "ts", "temp_f", "wind_mph", "wind_gust_mph", "condition",
+    "humidity_pct", "dew_point_f", "pressure_rel_inhg",
+    "rain_rate_inhr", "rain_day_in", "solar_wm2", "uv_index",
+)
+
+
 def history_point(current):
-    """The compact per-observation record the rolling window keeps -- the
-    trend chart needs temp + wind + condition, not the full report."""
-    return {
-        "ts": current["ts"],
-        "temp_f": current["temp_f"],
-        "wind_mph": current["wind_mph"],
-        "wind_gust_mph": current["wind_gust_mph"],
-        "condition": current["condition"],
-    }
+    """The compact per-observation record the rolling window keeps. .get():
+    a pre-#51 payload replayed through here simply lacks the new fields."""
+    return {k: current.get(k) for k in HISTORY_FIELDS}
+
+
+def should_record(window, point, step_s=HISTORY_STEP_S):
+    """Whether the trail wants this observation: polls run every 60s, the
+    window keeps 5-minute resolution (~576 points over 48h -- fresh enough
+    to chart, bounded enough to republish whole). Age is measured from the
+    newest kept point, never the wall clock (the roll_history rule)."""
+    if point.get("ts") is None:
+        return False
+    newest = max((p["ts"] for p in window if p.get("ts") is not None),
+                 default=None)
+    return newest is None or point["ts"] - newest >= step_s
 
 
 def roll_history(window, point, max_age_s=HISTORY_WINDOW_S):
@@ -285,6 +446,26 @@ def current_facts(current):
                      + ".")
     if current.get("humidity_pct") is not None:
         parts.append(f"Humidity {round(current['humidity_pct'])} percent.")
+    # The station's extras (issue #51), each only when measured -- Willard
+    # never narrates a hole. Dew point is the mugginess number, rain is news
+    # the moment it falls, UV matters when there IS sun to speak of, and the
+    # barometer is the oldest trick in the weather desk's book.
+    if current.get("dew_point_f") is not None:
+        parts.append(f"Dew point {round(current['dew_point_f'])}F.")
+    if current.get("raining"):
+        rate = current.get("rain_rate_inhr")
+        parts.append("It is raining right now"
+                     + (f", {rate:.2f} inches an hour" if rate else "")
+                     + ".")
+    rain_day = current.get("rain_day_in")
+    if rain_day:
+        parts.append(f"Rainfall today: {rain_day:.2f} inches.")
+    uv = current.get("uv_index")
+    if uv is not None and uv >= 1:
+        parts.append(f"UV index {round(uv)}.")
+    if current.get("pressure_rel_inhg") is not None:
+        parts.append(
+            f"Barometer {current['pressure_rel_inhg']:.2f} inches.")
     if current.get("sunrise") is not None and current.get("sunset") is not None:
         parts.append(f"Sunrise {clock_12h(current['sunrise'])}, "
                      f"sunset {clock_12h(current['sunset'])}.")
@@ -395,11 +576,14 @@ def fetch(url):
 
 
 def main():
+    station_base = ecowitt_base()
     key = owm_key()
     loc = location_params(os.environ.get("MERLE_WEATHER_LOC"))
     history_path = os.environ.get("MERLE_WEATHER_HISTORY", "").strip() \
         or DEFAULT_HISTORY_PATH
-    current_url = owm_url("weather", loc, key)
+    livedata_url = f"{station_base}/get_livedata_info"
+    sensors_url = f"{station_base}/get_sensors_info?page=1"
+    garnish_url = owm_url("weather", loc, key)
     forecast_url = owm_url("forecast", loc, key)
 
     # Willard's voice (issue #45): the narrator's LLM tier, same env vars,
@@ -424,27 +608,49 @@ def main():
     # of waiting out the 30-minute staleness window.
     publisher = bus.EventPublisher(
         "weather", status_topic=bus.WEATHER_STATUS_TOPIC).start()
-    print(f"[weather] on duty: loc={loc}, {len(window)} points of history, "
-          f"polling every {CURRENT_INTERVAL_S // 60} min")
+    print(f"[weather] on duty: station={station_base}, loc={loc}, "
+          f"{len(window)} points of history, "
+          f"polling every {STATION_INTERVAL_S} s")
 
     current = None           # the freshest observed report, for the segment
+    garnish = None           # OWM's sky/sun fields, merged into every current
+    signal = None            # the WH90's radio-link health, sensors-info pace
     forecast_points = []     # the freshest forecast series, for the outlook
-    next_forecast_at = 0.0   # 0 -> the first loop pass fetches the forecast
+    next_garnish_at = 0.0    # 0 -> the first loop pass fetches everything
+    next_forecast_at = 0.0
     next_report_at = 0.0     # 0 -> Willard goes on the air on the first pass
     try:
         while True:
-            raw = fetch(current_url)
-            if raw is not None:
-                current = parse_current(raw)
+            # The garnish rides the OLD current cadence (10 min): condition
+            # text and sun times drift slowly, and OWM's free tier deserves
+            # mercy. Sensors-info (radio signal) is a LAN call but changes
+            # just as slowly, so it shares the timer. On failure the timer
+            # stays put and the next 60s pass retries (the forecast pattern).
+            if time.time() >= next_garnish_at:
+                raw = fetch(garnish_url)
+                raw_sensors = fetch(sensors_url)
+                if raw_sensors is not None:
+                    signal = parse_sensors(raw_sensors)
+                if raw is not None:
+                    garnish = parse_current(raw)
+                    next_garnish_at = time.time() + GARNISH_INTERVAL_S
+
+            raw = fetch(livedata_url)
+            station = parse_station(raw, int(time.time())) \
+                if raw is not None else None
+            if station is not None:
+                current = merge_current(station, garnish, signal)
                 publisher.publish(bus.WEATHER_CURRENT_TOPIC, current,
                                   retain=True)
-                window = roll_history(window, history_point(current))
-                save_history(history_path, window)
-                publisher.publish(bus.WEATHER_HISTORY_TOPIC,
-                                  {"points": window}, retain=True)
+                point = history_point(current)
+                if should_record(window, point):
+                    window = roll_history(window, point)
+                    save_history(history_path, window)
+                    publisher.publish(bus.WEATHER_HISTORY_TOPIC,
+                                      {"points": window}, retain=True)
                 print(f"[weather] {current['temp_f']}F, "
-                      f"{current['description']}, "
-                      f"wind {current['wind_mph']} mph "
+                      f"wind {current['wind_mph']} mph, "
+                      f"rain today {current['rain_day_in']} in "
                       f"({len(window)} points in the window)")
 
             if time.time() >= next_forecast_at:
@@ -456,14 +662,15 @@ def main():
                                       forecast, retain=True)
                     next_forecast_at = time.time() + FORECAST_INTERVAL_S
                 # on failure next_forecast_at stays put, so the NEXT
-                # current-poll pass retries the forecast instead of waiting
+                # station-poll pass retries the forecast instead of waiting
                 # out a full hour
 
             if ollama is not None and time.time() >= next_report_at:
                 # Blocking (up to OLLAMA_TIMEOUT_S) is fine here: this is the
-                # main loop's own thread, not paho's, and a poll cycle has
-                # 10 minutes of slack. Retained, like the rest of the weather
-                # set -- a fresh dashboard tab paints the segment instantly.
+                # main loop's own thread, not paho's, and a delayed station
+                # poll costs one 60s beat, not a report. Retained, like the
+                # rest of the weather set -- a fresh dashboard tab paints the
+                # segment instantly.
                 text = broadcast(ollama, current, forecast_points)
                 if text:
                     publisher.publish(
@@ -474,10 +681,10 @@ def main():
                     next_report_at = time.time() + REPORT_INTERVAL_S
                     print(f"[weather] willard on the air: {text.splitlines()[0][:80]}...")
                 # on failure (LLM down, no fresh report) next_report_at stays
-                # put -- the forecast-retry pattern: the next 10-min pass
+                # put -- the forecast-retry pattern: the next 60s pass
                 # tries again instead of waiting out the half hour
 
-            time.sleep(CURRENT_INTERVAL_S)
+            time.sleep(STATION_INTERVAL_S)
     except KeyboardInterrupt:
         # Manual desk runs: sign off cleanly (close() publishes the retained
         # offline). Under systemd this never runs -- SIGTERM fires the will.

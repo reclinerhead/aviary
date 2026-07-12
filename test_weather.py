@@ -1,14 +1,17 @@
 # =============================================================================
 # project-squirrel -- test_weather.py
 #
-# Pure logic of the weather service: config parsing, OpenWeather response ->
-# bus payload mapping, and the rolling history window. The fetch loop and the
-# MQTT plumbing are I/O and get desk-tested against the real services (the
-# testing policy: cover the deterministic parts, not the boundary).
+# Pure logic of the weather service: config parsing, station and OpenWeather
+# response -> bus payload mapping, and the rolling history window. The fetch
+# loop and the MQTT plumbing are I/O and get desk-tested against the real
+# services (the testing policy: cover the deterministic parts, not the
+# boundary).
 #
-# The OWM fixtures are trimmed-down but structurally faithful copies of real
-# classic-API responses -- if OpenWeather renames a field, these tests keep
-# passing (they pin OUR mapping, not their API); the desk test catches that.
+# The fixtures are trimmed-down but structurally faithful copies of real
+# responses -- the Ecowitt one is lifted from the actual GW2000B on the LAN,
+# unit-suffixed strings and opaque ids and all. If a provider renames a
+# field, these tests keep passing (they pin OUR mapping, not their API); the
+# desk test catches that.
 # =============================================================================
 
 import json
@@ -48,6 +51,48 @@ OWM_FORECAST = {
         },
     ],
 }
+
+
+# A structurally faithful /get_livedata_info, values verbatim from the real
+# GW2000B (2026-07-12, the sensor pod on the workbench).
+ECOWITT_LIVE = {
+    "common_list": [
+        {"id": "0x02", "val": "78.8", "unit": "F"},
+        {"id": "0x07", "val": "46%"},
+        {"id": "3", "val": "78.8", "unit": "F"},
+        {"id": "5", "val": "0.536 inHg"},
+        {"id": "0x03", "val": "56.3", "unit": "F"},
+        {"id": "0x0B", "val": "0.00 mph"},
+        {"id": "0x0C", "val": "0.00 mph"},
+        {"id": "0x19", "val": "1.79 mph"},
+        {"id": "0x15", "val": "0.63 W/m2"},
+        {"id": "0x17", "val": "0"},
+        {"id": "0x0A", "val": "224"},
+    ],
+    "piezoRain": [
+        {"id": "srain_piezo", "val": "0"},
+        {"id": "0x0D", "val": "0.00 in"},
+        {"id": "0x0E", "val": "0.12 in/Hr"},
+        {"id": "0x10", "val": "0.25 in"},
+        {"id": "0x11", "val": "0.25 in"},
+        {"id": "0x12", "val": "1.50 in"},
+        {"id": "0x13", "val": "12.00 in", "battery": "5", "voltage": "3.20"},
+    ],
+    "wh25": [{"intemp": "72.9", "unit": "F", "inhumi": "55%",
+              "abs": "29.24 inHg", "rel": "29.24 inHg"}],
+    "debug": [{"heap": "100000", "runtime": "1176"}],
+}
+
+# A trimmed /get_sensors_info roster: one registered WH90, one unregistered
+# slot (id FFFFFFFF, the firmware's "nothing paired here").
+ECOWITT_SENSORS = [
+    {"img": "wh85", "type": "49", "name": "Wind & Rain",
+     "id": "FFFFFFFF", "batt": "9", "signal": "0", "idst": "1"},
+    {"img": "wh90", "type": "48", "name": "Temp & Humidity & Solar & Wind & Rain",
+     "id": "12F9D", "batt": "5", "signal": "4", "idst": "1"},
+    {"img": "wh25", "type": "4", "name": "Temp & Humidity & Pressure",
+     "id": "FFFFFFFE", "batt": "9", "signal": "0", "idst": "0"},
+]
 
 
 def pt(ts, temp=70.0):
@@ -95,6 +140,123 @@ def test_owm_url_carries_key_units_and_location():
     assert "units=imperial" in url
 
 
+def test_ecowitt_base_missing_raises(monkeypatch):
+    monkeypatch.delenv("MERLE_ECOWITT", raising=False)
+    with pytest.raises(RuntimeError, match="MERLE_ECOWITT"):
+        weather.ecowitt_base()
+
+
+def test_ecowitt_base_host_and_port(monkeypatch):
+    monkeypatch.setenv("MERLE_ECOWITT", "192.168.1.210")
+    assert weather.ecowitt_base() == "http://192.168.1.210"
+    monkeypatch.setenv("MERLE_ECOWITT", "gw2000.local:8080")
+    assert weather.ecowitt_base() == "http://gw2000.local:8080"
+
+
+# --- station parsing (issue #51) -------------------------------------------------
+
+def test_station_num_strips_units_and_percent():
+    assert weather.station_num("78.8") == 78.8
+    assert weather.station_num("46%") == 46.0
+    assert weather.station_num("0.12 in/Hr") == 0.12
+    assert weather.station_num("29.24 inHg") == 29.24
+    assert weather.station_num("0.63 W/m2") == 0.63
+
+
+def test_station_num_junk_is_none():
+    assert weather.station_num(None) is None
+    assert weather.station_num("") is None
+    assert weather.station_num("--") is None
+    assert weather.station_num("  ") is None
+
+
+def test_parse_station_maps_the_live_data():
+    got = weather.parse_station(ECOWITT_LIVE, ts=1752300000)
+    assert got == {
+        "ts": 1752300000,
+        "temp_f": 78.8,
+        "feels_like_f": 78.8,
+        "dew_point_f": 56.3,
+        "vpd_inhg": 0.536,
+        "humidity_pct": 46.0,
+        "wind_mph": 0.0,
+        "wind_gust_mph": 0.0,
+        "wind_max_daily_gust_mph": 1.79,
+        "wind_deg": 224.0,
+        "solar_wm2": 0.63,
+        "uv_index": 0.0,
+        "raining": 0,
+        "rain_event_in": 0.0,
+        "rain_rate_inhr": 0.12,
+        "rain_day_in": 0.25,
+        "rain_week_in": 0.25,
+        "rain_month_in": 1.5,
+        "rain_year_in": 12.0,
+        "station_battery": 5,
+        "station_voltage": 3.2,
+        "indoor_temp_f": 72.9,
+        "indoor_humidity_pct": 55.0,
+        "pressure_abs_inhg": 29.24,
+        "pressure_rel_inhg": 29.24,
+    }
+
+
+def test_parse_station_tolerates_missing_sections():
+    got = weather.parse_station(
+        {"common_list": [{"id": "0x02", "val": "70.0", "unit": "F"}]},
+        ts=100)
+    assert got["temp_f"] == 70.0
+    assert got["rain_day_in"] is None
+    assert got["indoor_temp_f"] is None
+    assert got["station_battery"] is None
+
+
+def test_parse_station_all_junk_is_a_failed_poll():
+    assert weather.parse_station({}, ts=100) is None
+    assert weather.parse_station({"common_list": [], "piezoRain": [],
+                                  "wh25": []}, ts=100) is None
+    assert weather.parse_station(
+        {"common_list": [{"id": "0x02", "val": "--"}]}, ts=100) is None
+
+
+def test_parse_station_raining_is_a_bit():
+    live = {"piezoRain": [{"id": "srain_piezo", "val": "1"}]}
+    assert weather.parse_station(live, ts=100)["raining"] == 1
+
+
+def test_parse_sensors_reads_the_wh90_signal():
+    assert weather.parse_sensors(ECOWITT_SENSORS) == {"station_signal": 4}
+
+
+def test_parse_sensors_no_registered_wh90_is_none():
+    assert weather.parse_sensors([]) == {"station_signal": None}
+    assert weather.parse_sensors("garbage") == {"station_signal": None}
+    unregistered = [{"img": "wh90", "id": "FFFFFFFF", "signal": "0",
+                     "idst": "0"}]
+    assert weather.parse_sensors(unregistered) == {"station_signal": None}
+
+
+def test_merge_current_station_wins_garnish_rides():
+    station = weather.parse_station(ECOWITT_LIVE, ts=1752300000)
+    garnish = weather.parse_current(OWM_CURRENT)   # temp 78.3 -- must NOT win
+    got = weather.merge_current(station, garnish, {"station_signal": 4})
+    assert got["temp_f"] == 78.8              # the station's number
+    assert got["condition"] == "Clouds"       # OWM's garnish
+    assert got["description"] == "broken clouds"
+    assert got["sunrise"] == 1752116400
+    assert got["sunset"] == 1752170700
+    assert got["station_signal"] == 4
+    assert got["ts"] == 1752300000            # fetch time, not OWM's dt
+
+
+def test_merge_current_before_first_garnish_or_roster():
+    station = weather.parse_station(ECOWITT_LIVE, ts=100)
+    got = weather.merge_current(station, None, None)
+    assert got["condition"] is None
+    assert got["sunrise"] is None
+    assert got["station_signal"] is None
+
+
 # --- response parsing ----------------------------------------------------------
 
 def test_parse_current_maps_the_report():
@@ -137,10 +299,41 @@ def test_parse_forecast_empty_response():
     assert weather.parse_forecast({}) == {"points": []}
 
 
-def test_history_point_is_the_compact_subset():
-    got = weather.history_point(weather.parse_current(OWM_CURRENT))
-    assert got == {"ts": 1752148800, "temp_f": 78.3, "wind_mph": 8.5,
-                   "wind_gust_mph": 17.2, "condition": "Clouds"}
+def test_history_point_is_the_charted_subset():
+    station = weather.parse_station(ECOWITT_LIVE, ts=1752300000)
+    got = weather.history_point(
+        weather.merge_current(station, weather.parse_current(OWM_CURRENT),
+                              {"station_signal": 4}))
+    assert set(got) == set(weather.HISTORY_FIELDS)
+    assert got["ts"] == 1752300000
+    assert got["temp_f"] == 78.8
+    assert got["pressure_rel_inhg"] == 29.24
+    assert got["rain_day_in"] == 0.25
+    assert got["condition"] == "Clouds"
+    # the full report's extras stay out of the trail
+    assert "station_signal" not in got
+    assert "indoor_temp_f" not in got
+
+
+def test_history_point_tolerates_old_payloads():
+    # a pre-#51 payload replayed through a restart lacks the new fields
+    got = weather.history_point({"ts": 5, "temp_f": 70.0})
+    assert got["ts"] == 5
+    assert got["pressure_rel_inhg"] is None
+
+
+def test_should_record_keeps_five_minute_resolution():
+    assert weather.should_record([], pt(1000)) is True
+    window = [pt(1000)]
+    assert weather.should_record(window, pt(1000 + 60)) is False
+    assert weather.should_record(window, pt(1000 + weather.HISTORY_STEP_S)) \
+        is True
+
+
+def test_should_record_ignores_tsless_points():
+    assert weather.should_record([], {"ts": None}) is False
+    # a corrupt window entry without a ts doesn't crash the newest-point scan
+    assert weather.should_record([{"ts": None}], pt(1000)) is True
 
 
 # --- the rolling window --------------------------------------------------------
@@ -277,6 +470,32 @@ def test_current_facts_skips_matching_feels_like():
 
 def test_current_facts_no_temp_is_no_broadcast():
     assert weather.current_facts(fresh_current(temp_f=None)) == ""
+
+
+def test_current_facts_station_extras():
+    facts = weather.current_facts(fresh_current(
+        dew_point_f=56.3, raining=1, rain_rate_inhr=0.12, rain_day_in=0.25,
+        uv_index=7.0, pressure_rel_inhg=29.24))
+    assert "Dew point 56F." in facts
+    assert "It is raining right now, 0.12 inches an hour." in facts
+    assert "Rainfall today: 0.25 inches." in facts
+    assert "UV index 7." in facts
+    assert "Barometer 29.24 inches." in facts
+
+
+def test_current_facts_extras_skipped_when_absent():
+    # an OWM-shaped report (no station fields) reads exactly as before
+    facts = weather.current_facts(fresh_current())
+    for word in ("Dew point", "raining", "Rainfall", "UV", "Barometer"):
+        assert word not in facts
+
+
+def test_current_facts_dry_day_and_zero_uv_stay_quiet():
+    facts = weather.current_facts(fresh_current(
+        raining=0, rain_rate_inhr=0.0, rain_day_in=0.0, uv_index=0.0))
+    assert "raining" not in facts
+    assert "Rainfall" not in facts
+    assert "UV" not in facts
 
 
 def test_build_report_prompt_labeled_paragraphs_then_cue():
