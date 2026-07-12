@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  PRESSURE_TREND_SPAN_S,
   WeatherPoint,
   ageText,
   compass,
@@ -10,6 +11,9 @@ import {
   parsePoints,
   parseReport,
   parseStatus,
+  pressureRange,
+  pressureTrend,
+  seriesCeil,
   tempRange,
   timeTicks,
   trendSeries,
@@ -22,6 +26,13 @@ const pt = (ts: number, over: Partial<WeatherPoint> = {}): WeatherPoint => ({
   wind_mph: 5,
   wind_gust_mph: null,
   condition: "Clear",
+  humidity_pct: null,
+  dew_point_f: null,
+  pressure_rel_inhg: null,
+  rain_rate_inhr: null,
+  rain_day_in: null,
+  solar_wm2: null,
+  uv_index: null,
   ...over,
 });
 
@@ -46,11 +57,40 @@ describe("parseCurrent", () => {
     expect(got?.description).toBe("broken clouds");
     expect(got?.wind_gust_mph).toBe(17.2);
   });
+  it("reads the station fields (issue #51)", () => {
+    const got = parseCurrent(
+      JSON.stringify({
+        ts: 1752300000,
+        temp_f: 78.8,
+        dew_point_f: 56.3,
+        uv_index: 7,
+        solar_wm2: 612.4,
+        raining: 1,
+        rain_rate_inhr: 0.12,
+        rain_day_in: 0.25,
+        pressure_rel_inhg: 29.24,
+        indoor_temp_f: 72.9,
+        indoor_humidity_pct: 55,
+        station_battery: 5,
+        station_voltage: 3.2,
+        station_signal: 4,
+      }),
+    );
+    expect(got?.dew_point_f).toBe(56.3);
+    expect(got?.raining).toBe(1);
+    expect(got?.rain_day_in).toBe(0.25);
+    expect(got?.pressure_rel_inhg).toBe(29.24);
+    expect(got?.indoor_temp_f).toBe(72.9);
+    expect(got?.station_signal).toBe(4);
+  });
   it("nulls missing or mistyped fields but keeps the report", () => {
     const got = parseCurrent(JSON.stringify({ ts: 5, temp_f: "warm" }));
     expect(got?.ts).toBe(5);
     expect(got?.temp_f).toBeNull();
     expect(got?.condition).toBeNull();
+    // a pre-#51 payload: every station field null, never undefined
+    expect(got?.dew_point_f).toBeNull();
+    expect(got?.station_battery).toBeNull();
   });
   it("rejects a report with no ts, junk, and non-JSON", () => {
     expect(parseCurrent(JSON.stringify({ temp_f: 70 }))).toBeNull();
@@ -89,10 +129,23 @@ describe("parseReport", () => {
 describe("parsePoints", () => {
   it("maps a points payload", () => {
     const got = parsePoints(
-      JSON.stringify({ points: [{ ts: 100, temp_f: 71.5, wind_mph: 4 }] }),
+      JSON.stringify({
+        points: [
+          { ts: 100, temp_f: 71.5, wind_mph: 4, pressure_rel_inhg: 29.24,
+            rain_rate_inhr: 0.12, solar_wm2: 610, uv_index: 6 },
+        ],
+      }),
     );
     expect(got).toEqual([
-      { ts: 100, temp_f: 71.5, wind_mph: 4, wind_gust_mph: null, condition: null },
+      pt(100, {
+        temp_f: 71.5,
+        wind_mph: 4,
+        condition: null,
+        pressure_rel_inhg: 29.24,
+        rain_rate_inhr: 0.12,
+        solar_wm2: 610,
+        uv_index: 6,
+      }),
     ]);
   });
   it("drops ts-less points, rejects payloads without a points array", () => {
@@ -283,5 +336,65 @@ describe("compass", () => {
   });
   it("is blank when the bearing is unknown", () => {
     expect(compass(null)).toBe("");
+  });
+});
+
+describe("seriesCeil", () => {
+  it("rounds the peak up to a clean step with a floor", () => {
+    const pts = [pt(1, { rain_rate_inhr: 0.32 }), pt(2, { rain_rate_inhr: 0.1 })];
+    expect(seriesCeil(pts, (p) => p.rain_rate_inhr, 0.25, 0.25)).toBe(0.5);
+  });
+  it("holds the floor on a quiet (or empty) series", () => {
+    expect(seriesCeil([pt(1)], (p) => p.rain_rate_inhr, 0.25, 0.25)).toBe(0.25);
+    expect(seriesCeil([], (p) => p.solar_wm2, 200, 100)).toBe(200);
+  });
+});
+
+describe("pressureRange", () => {
+  it("pads around the data", () => {
+    const pts = [
+      pt(1, { pressure_rel_inhg: 29.2 }),
+      pt(2, { pressure_rel_inhg: 29.8 }),
+    ];
+    expect(pressureRange(pts)).toEqual({ min: 29.15, max: 29.85 });
+  });
+  it("holds a minimum span so a steady day reads as steady", () => {
+    const got = pressureRange([pt(1, { pressure_rel_inhg: 29.9 })]);
+    expect(got).not.toBeNull();
+    expect(got!.max - got!.min).toBeCloseTo(0.3, 5);
+  });
+  it("is null with no pressure in view", () => {
+    expect(pressureRange([pt(1)])).toBeNull();
+    expect(pressureRange([])).toBeNull();
+  });
+});
+
+describe("pressureTrend", () => {
+  const NOW = 1_000_000;
+  const trail = (deltaInhg: number) => [
+    pt(NOW - PRESSURE_TREND_SPAN_S, { pressure_rel_inhg: 29.5 }),
+    pt(NOW, { pressure_rel_inhg: 29.5 + deltaInhg }),
+  ];
+  it("calls rising, falling, and steady past the epsilon", () => {
+    expect(pressureTrend(trail(0.05), NOW)).toBe("rising");
+    expect(pressureTrend(trail(-0.05), NOW)).toBe("falling");
+    expect(pressureTrend(trail(0.01), NOW)).toBe("steady");
+  });
+  it("has no opinion on a short or pressure-less trail", () => {
+    // both points too recent: the anchor sits far from the 3h target
+    const short = [
+      pt(NOW - 600, { pressure_rel_inhg: 29.5 }),
+      pt(NOW, { pressure_rel_inhg: 29.9 }),
+    ];
+    expect(pressureTrend(short, NOW)).toBeNull();
+    expect(pressureTrend([pt(NOW)], NOW)).toBeNull();
+    expect(pressureTrend([], NOW)).toBeNull();
+  });
+  it("ignores forecast points ahead of now", () => {
+    const withFuture = [
+      ...trail(0.05),
+      pt(NOW + 3600, { pressure_rel_inhg: 20 }),
+    ];
+    expect(pressureTrend(withFuture, NOW)).toBe("rising");
   });
 });
