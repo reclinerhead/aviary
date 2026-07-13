@@ -88,6 +88,13 @@ export const REPORT_STALE_S = 90 * 60;
 // where the day came from, enough forecast to plan the next feeding.
 export const PAST_S = 24 * 3600;
 export const FUTURE_S = 48 * 3600;
+// The station view stretches to everything the free API publishes (issue
+// #60): OWM's classic /forecast runs 5 days at 3-hour steps, so 120h ahead
+// with "now" at the 1/6 mark. Fixed, never sized to the payload -- a short
+// payload leaves the far end honestly blank instead of reflowing the axis
+// (the no-layout-shift rule). The panel chart keeps the 48h window above:
+// six days in ~400px would be a smear, not a chart.
+export const STATION_FUTURE_S = 120 * 3600;
 
 // --- Pure payload parsing (unit-tested in weather.test.ts) -------------------
 
@@ -400,6 +407,44 @@ export function timeTicks(
   for (let off = first; off <= futureS; off += stepS) {
     if (off === 0 || off === -pastS || off === futureS) continue;
     ticks.push({ offsetS: off, frac: (off + pastS) / span });
+  }
+  return ticks;
+}
+
+export type DayTick = { ts: number; frac: number; label: string };
+
+/** Local-midnight gridlines for the station view's 6-day window (issue #60):
+ * every midnight strictly inside (ts0, ts1), each labeled with the short
+ * weekday of the day it begins, lowercased into the telemetry voice. At 144h
+ * the offset arithmetic of timeTicks ("+108h") stops meaning anything -- days
+ * are the honest unit, and they're the viewer's local days (same reasoning as
+ * the epoch-seconds convention: the dashboard formats, nobody parses).
+ * Stepping is +36h then re-floor to midnight, so DST's 23/25h days can't
+ * skip or double a tick. Empty for a degenerate window. */
+export function dayTicks(
+  now: number,
+  pastS = PAST_S,
+  futureS = STATION_FUTURE_S,
+): DayTick[] {
+  const ts0 = now - pastS;
+  const ts1 = now + futureS;
+  if (ts1 <= ts0) return [];
+  const ticks: DayTick[] = [];
+  const d = new Date(ts0 * 1000);
+  d.setHours(0, 0, 0, 0);
+  while (d.getTime() / 1000 < ts1) {
+    const ts = d.getTime() / 1000;
+    if (ts > ts0) {
+      ticks.push({
+        ts,
+        frac: (ts - ts0) / (ts1 - ts0),
+        label: d
+          .toLocaleDateString(undefined, { weekday: "short" })
+          .toLowerCase(),
+      });
+    }
+    d.setTime(d.getTime() + 36 * 3600 * 1000);
+    d.setHours(0, 0, 0, 0);
   }
   return ticks;
 }
