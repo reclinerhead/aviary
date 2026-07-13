@@ -42,6 +42,7 @@ OWM_FORECAST = {
             "wind": {"speed": 10.1, "deg": 250, "gust": 19.9},
             "weather": [{"main": "Rain", "description": "light rain"}],
             "pop": 0.4,
+            "rain": {"3h": 7.62},
         },
         {
             "dt": 1752170400,
@@ -288,11 +289,23 @@ def test_parse_forecast_shapes_chart_points():
     got = weather.parse_forecast(OWM_FORECAST)
     assert [p["ts"] for p in got["points"]] == [1752159600, 1752170400]
     first, second = got["points"]
+    # 7.62 mm over the 3h step = 0.3 in total = 0.1 in/hr average (issue #56)
     assert first == {"ts": 1752159600, "temp_f": 81.0, "wind_mph": 10.1,
-                     "wind_gust_mph": 19.9, "condition": "Rain", "pop": 0.4}
-    # calm step: no gust key, no pop key -> None gust, 0 pop
+                     "wind_gust_mph": 19.9, "condition": "Rain", "pop": 0.4,
+                     "rain_rate_inhr": 0.1}
+    # calm step: no gust key, no pop key, no rain/snow -> None gust, 0 pop,
+    # 0 rate (a dry forecast step is a real zero, not a gap)
     assert second["wind_gust_mph"] is None
     assert second["pop"] == 0
+    assert second["rain_rate_inhr"] == 0
+
+
+def test_parse_forecast_sums_rain_and_snow():
+    # wintry mix: both volumes are water-equivalent mm, so they add
+    got = weather.parse_forecast({"list": [
+        {"dt": 100, "rain": {"3h": 3.81}, "snow": {"3h": 3.81}},
+    ]})
+    assert got["points"][0]["rain_rate_inhr"] == 0.1
 
 
 def test_parse_forecast_empty_response():

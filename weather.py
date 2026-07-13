@@ -301,12 +301,20 @@ def parse_current(raw):
 def parse_forecast(raw):
     """OpenWeather /forecast response (5 days, 3-hour steps, 40 points) ->
     the weather/forecast bus payload: just what the trends chart draws, one
-    compact point per step. `pop` is precipitation probability 0..1."""
+    compact point per step. `pop` is precipitation probability 0..1.
+    `rain_rate_inhr` (issue #56) is the step's precipitation volume --
+    rain["3h"] + snow["3h"], both water-equivalent mm, omitted entirely on
+    dry steps -- as an average in/hr rate, so it shares the rain strip's
+    scale with the station's observed piezo trail. Default 0, not None: a
+    step the forecast left dry is a real forecast of zero, unlike a station
+    gap (which stays an honest hole in the observed trail)."""
     points = []
     for step in raw.get("list") or []:
         main = step.get("main") or {}
         wind = step.get("wind") or {}
         weather = (step.get("weather") or [{}])[0]
+        precip_mm = ((step.get("rain") or {}).get("3h") or 0) \
+            + ((step.get("snow") or {}).get("3h") or 0)
         points.append({
             "ts": step.get("dt"),
             "temp_f": main.get("temp"),
@@ -314,6 +322,7 @@ def parse_forecast(raw):
             "wind_gust_mph": wind.get("gust"),
             "condition": weather.get("main"),
             "pop": step.get("pop", 0),
+            "rain_rate_inhr": round(precip_mm / 25.4 / 3, 4),
         })
     return {"points": points}
 
