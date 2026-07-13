@@ -14,12 +14,19 @@
 # Topics:
 #   driveway/events          daemon -> world     one JSON object per event
 #   narration/lines          narrator -> world   one JSON object per spoken line
-#   narration/journal        narrator -> world   the field journal: the last 50
-#                                                spoken lines, RETAINED and
-#                                                republished whole (issue #58) --
-#                                                a fresh dashboard tab gets the
-#                                                journal back the way a late
-#                                                joiner gets the weather
+#   narration/journal/<id>   narrator -> world   the field journal: each
+#                                                narrator's last 50 spoken lines,
+#                                                RETAINED and republished whole
+#                                                (issue #58) -- a fresh dashboard
+#                                                tab gets the journal back the
+#                                                way a late joiner gets the
+#                                                weather. Namespaced per narrator
+#                                                (issue #80): a single shared
+#                                                topic republished whole by each
+#                                                narrator meant every republish
+#                                                clobbered the other's window
+#                                                -- the dashboard subscribes the
+#                                                wildcard and merges
 #   narrators/<id>/status    narrator presence   "online"/"offline", RETAINED
 #                            ("offline" is each narrator's MQTT Last Will, so a
 #                            crash flips it without anyone noticing the crash)
@@ -53,7 +60,7 @@ import paho.mqtt.client as mqtt
 
 EVENTS_TOPIC = "driveway/events"
 NARRATION_TOPIC = "narration/lines"
-NARRATION_JOURNAL_TOPIC = "narration/journal"
+NARRATION_JOURNAL_WILDCARD = "narration/journal/+"
 NARRATOR_STATUS_WILDCARD = "narrators/+/status"
 WEATHER_CURRENT_TOPIC = "weather/current"
 WEATHER_FORECAST_TOPIC = "weather/forecast"
@@ -64,6 +71,10 @@ WEATHER_STATUS_TOPIC = "weather/status"
 
 def narrator_status_topic(mqtt_id):
     return f"narrators/{mqtt_id}/status"
+
+
+def narration_journal_topic(mqtt_id):
+    return f"narration/journal/{mqtt_id}"
 
 
 def broker_address():
