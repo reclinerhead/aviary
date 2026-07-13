@@ -9,6 +9,7 @@ import {
   pickVoice,
   statusTopicId,
   toJournalEntries,
+  voiceColor,
 } from "./bus";
 
 describe("busUrl", () => {
@@ -198,6 +199,21 @@ describe("statusTopicId", () => {
     expect(statusTopicId("narration/lines")).toBeNull();
     expect(statusTopicId("narrators/marlin/mood")).toBeNull();
     expect(statusTopicId("narrators/a/b/status")).toBeNull();
+  });
+});
+
+describe("voiceColor", () => {
+  it("art-directs the named cast: warm host, khaki field man", () => {
+    expect(voiceColor("Marlin")).toBe("var(--squirrel)");
+    expect(voiceColor("Jim")).toBe("var(--turkey)");
+  });
+  it("keeps the cast visually distinct", () => {
+    expect(voiceColor("Marlin")).not.toBe(voiceColor("Jim"));
+  });
+  it("gives a guest voice a stable color from the palette", () => {
+    const guest = voiceColor("Rover");
+    expect(guest).toBe(voiceColor("Rover")); // deterministic
+    expect(guest).toMatch(/^var\(--(squirrel|turkey|chipmunk|led)\)$/);
   });
 });
 

@@ -44,3 +44,16 @@ def test_narration_journal_topic_is_namespaced_under_the_wildcard():
 def test_narrator_status_topic_matches_the_wildcard_shape():
     assert bus.narrator_status_topic("jim") == "narrators/jim/status"
     assert bus.NARRATOR_STATUS_WILDCARD == "narrators/+/status"
+
+
+def test_narrator_status_id_round_trips_the_topic():
+    # Issue #88: a deferring narrator parses colleague presence topics; the
+    # parser and the builder must agree.
+    assert bus.narrator_status_id(bus.narrator_status_topic("jim")) == "jim"
+
+
+def test_narrator_status_id_rejects_other_topics():
+    assert bus.narrator_status_id("narration/lines") is None
+    assert bus.narrator_status_id("weather/status") is None
+    assert bus.narrator_status_id("narrators/jim/mood") is None
+    assert bus.narrator_status_id("narrators/a/b/status") is None

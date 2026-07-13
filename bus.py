@@ -55,6 +55,7 @@
 
 import json
 import os
+import re
 
 import paho.mqtt.client as mqtt
 
@@ -71,6 +72,14 @@ WEATHER_STATUS_TOPIC = "weather/status"
 
 def narrator_status_topic(mqtt_id):
     return f"narrators/{mqtt_id}/status"
+
+
+def narrator_status_id(topic):
+    """"narrators/marlin/status" -> "marlin"; None for any other topic (the
+    dashboard's statusTopicId, needed Python-side since issue #88: a narrator
+    deferring the play-by-play watches its colleagues' presence topics)."""
+    m = re.fullmatch(r"narrators/([^/]+)/status", topic)
+    return m.group(1) if m else None
 
 
 def narration_journal_topic(mqtt_id):
