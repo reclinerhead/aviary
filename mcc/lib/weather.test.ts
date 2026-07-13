@@ -37,6 +37,7 @@ const pt = (ts: number, over: Partial<WeatherPoint> = {}): WeatherPoint => ({
   solar_wm2: null,
   uv_index: null,
   pop: null,
+  snow_3h_in: null,
   ...over,
 });
 
@@ -152,18 +153,23 @@ describe("parsePoints", () => {
       }),
     ]);
   });
-  it("maps a forecast point's precip fields (issue #56)", () => {
+  it("maps a forecast point's precip fields (issues #56/#65)", () => {
     const got = parsePoints(
       JSON.stringify({
-        points: [{ ts: 100, temp_f: 80, pop: 0.4, rain_rate_inhr: 0.1 }],
+        points: [
+          { ts: 100, temp_f: 80, pop: 0.4, rain_rate_inhr: 0.1,
+            snow_3h_in: 1.5 },
+        ],
       }),
     );
     expect(got?.[0]?.pop).toBe(0.4);
     expect(got?.[0]?.rain_rate_inhr).toBe(0.1);
+    expect(got?.[0]?.snow_3h_in).toBe(1.5);
   });
-  it("leaves pop null when absent (history points, old payloads)", () => {
+  it("leaves pop and snow null when absent (history, old payloads)", () => {
     const got = parsePoints(JSON.stringify({ points: [{ ts: 100 }] }));
     expect(got?.[0]?.pop).toBeNull();
+    expect(got?.[0]?.snow_3h_in).toBeNull();
   });
   it("drops ts-less points, rejects payloads without a points array", () => {
     expect(

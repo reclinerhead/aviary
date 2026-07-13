@@ -65,6 +65,7 @@ export type WeatherPoint = {
   solar_wm2: number | null;
   uv_index: number | null;
   pop: number | null; // precipitation probability 0..1, forecast points only
+  snow_3h_in: number | null; // the step's snow, inches -- forecast only (#65)
 };
 
 // A report older than this is treated as no report: the panel goes stale
@@ -207,6 +208,7 @@ export function parsePoints(payload: string): WeatherPoint[] | null {
         solar_wm2: num(p.solar_wm2),
         uv_index: num(p.uv_index),
         pop: num(p.pop),
+        snow_3h_in: num(p.snow_3h_in),
       }));
   } catch {
     return null;
