@@ -129,6 +129,33 @@ export function mergeJournals(
     .slice(-limit);
 }
 
+/** Voice colors (issue #89 follow-up): a stable accent per narrator so the
+ * Field Journal's back-and-forth reads at a glance -- worn by the name stamp
+ * and the entry rail, never the body text (the voice stays ink; hue carries
+ * identity, intensity carries recency). The named cast is art-directed --
+ * the host warm squirrel-orange, the field man turkey-khaki -- and any
+ * future guest voice gets a deterministic pick from the same palette (led
+ * last: it moonlights as the live/newest signal elsewhere in the panel). */
+const CAST_COLORS: Record<string, string> = {
+  Marlin: "var(--squirrel)",
+  Jim: "var(--turkey)",
+};
+const VOICE_PALETTE = [
+  "var(--squirrel)",
+  "var(--turkey)",
+  "var(--chipmunk)",
+  "var(--led)",
+];
+
+export function voiceColor(narrator: string): string {
+  const cast = CAST_COLORS[narrator];
+  if (cast) return cast;
+  let h = 0;
+  for (let i = 0; i < narrator.length; i++)
+    h = (h * 31 + narrator.charCodeAt(i)) >>> 0;
+  return VOICE_PALETTE[h % VOICE_PALETTE.length];
+}
+
 /** Match a persona's tts_voice hint ("David") against the browser's installed
  * voices by substring, case-insensitive. Null means "use the default voice". */
 export function pickVoice<V extends { name: string }>(
