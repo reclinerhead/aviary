@@ -1,0 +1,46 @@
+name: Bug
+description: Something behaves wrong — the contract a fix branch works against
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behavior, verbatim errors and all.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: The shortest path to seeing it — commands, clicks, replay scripts.
+    validations:
+      required: true
+  - type: textarea
+    id: suspected-area
+    attributes:
+      label: Suspected area / affected files
+      description: Where the fault likely lives, if known.
+    validations:
+      required: false
+  - type: textarea
+    id: do-not-change
+    attributes:
+      label: Do-not-change list
+      description: Contracts, defaults, and behaviors the fix must leave alone.
+    validations:
+      required: false
+  - type: textarea
+    id: regression-test
+    attributes:
+      label: Regression test contract
+      description: Logic bugs get a regression test that fails on the old code and passes on the new (per CLAUDE.md). Name it here, or say why the bug is I/O-bound and exempt.
+    validations:
+      required: false

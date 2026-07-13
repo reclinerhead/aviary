@@ -1,0 +1,56 @@
+name: Feature
+description: A new feature, refactor, or improvement — the contract Claude Code implements against
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What's wrong or missing today, and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: The approach agreed in the project chat — concrete enough to implement against.
+    validations:
+      required: true
+  - type: textarea
+    id: affected-files
+    attributes:
+      label: Affected files
+      description: Files expected to change. Not exhaustive, but the implementation shouldn't wander far beyond it.
+    validations:
+      required: false
+  - type: textarea
+    id: do-not-change
+    attributes:
+      label: Do-not-change list
+      description: Contracts, defaults, and behaviors this change must leave alone.
+    validations:
+      required: false
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art / related context
+      description: Existing patterns to mirror, related issues/PRs, relevant TechnicalGuide.md sections.
+    validations:
+      required: false
+  - type: textarea
+    id: test-contract
+    attributes:
+      label: Test contract
+      description: Does this introduce or modify pure logic that needs Vitest/pytest coverage (per CLAUDE.md "When to write unit tests")? If yes, name what gets tested; if no, say why not.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist of observable outcomes that mean "done".
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true

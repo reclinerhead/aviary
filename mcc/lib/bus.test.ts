@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { busUrl, parseLine, pickVoice, statusTopicId } from "./bus";
+import {
+  busUrl,
+  parseJournal,
+  parseLine,
+  pickVoice,
+  statusTopicId,
+  toJournalEntries,
+} from "./bus";
 
 describe("busUrl", () => {
   it("targets port 9001 on the page's host", () => {
@@ -46,6 +53,70 @@ describe("parseLine", () => {
   });
   it("rejects non-JSON garbage", () => {
     expect(parseLine("not json")).toBeNull();
+  });
+});
+
+describe("parseJournal", () => {
+  const line = (i: number) => ({
+    ts: `2026-07-06T10:00:0${i}`,
+    narrator: "Marlin",
+    voice: "David",
+    text: `line ${i}`,
+    event_kind: "arrival",
+  });
+
+  it("accepts a window and keeps its order", () => {
+    const lines = parseJournal(JSON.stringify({ lines: [line(0), line(1)] }));
+    expect(lines?.map((l) => l.text)).toEqual(["line 0", "line 1"]);
+  });
+  it("drops bad lines without discarding the window", () => {
+    const lines = parseJournal(
+      JSON.stringify({ lines: [line(0), { text: "" }, "junk", line(1)] }),
+    );
+    expect(lines?.map((l) => l.text)).toEqual(["line 0", "line 1"]);
+  });
+  it("accepts an empty window (a fresh narrator with nothing filed)", () => {
+    expect(parseJournal(JSON.stringify({ lines: [] }))).toEqual([]);
+  });
+  it("rejects payloads that aren't a window", () => {
+    expect(parseJournal(JSON.stringify({ lines: "nope" }))).toBeNull();
+    expect(parseJournal(JSON.stringify(line(0)))).toBeNull();
+    expect(parseJournal("not json")).toBeNull();
+  });
+});
+
+describe("toJournalEntries", () => {
+  const line = (ts: string, text: string) => ({
+    ts,
+    narrator: "Marlin",
+    voice: "",
+    text,
+    event_kind: "arrival",
+  });
+
+  it("flips oldest-first wire order to newest-first display order", () => {
+    const entries = toJournalEntries([
+      line("2026-07-06T10:00:00", "first"),
+      line("2026-07-06T10:00:05", "second"),
+    ]);
+    expect(entries.map((e) => e.text)).toEqual(["second", "first"]);
+  });
+  it("derives stable keys from content, so a republished window keeps them", () => {
+    const window = [
+      line("2026-07-06T10:00:00", "first"),
+      line("2026-07-06T10:00:05", "second"),
+    ];
+    const before = toJournalEntries(window);
+    const after = toJournalEntries([
+      ...window,
+      line("2026-07-06T10:00:09", "third"),
+    ]);
+    expect(after.slice(1).map((e) => e.key)).toEqual(before.map((e) => e.key));
+  });
+  it("keeps keys unique when the same line files twice in one second", () => {
+    const twin = line("2026-07-06T10:00:00", "again");
+    const entries = toJournalEntries([twin, twin]);
+    expect(new Set(entries.map((e) => e.key)).size).toBe(2);
   });
 });
 
