@@ -103,10 +103,11 @@ REPORT_HORIZON_S = 24 * 3600  # the outlook paragraph covers the next day
 # WEATHER_STALE_S reasoning): if the station has been unreachable this long,
 # skip the broadcast rather than narrate yesterday's rain.
 REPORT_MAX_AGE_S = 30 * 60
-# A segment is longer than a narrator line (conditions + outlook), so it gets
-# more headroom than narrate()'s 120; the temperature keeps two half-hour
-# broadcasts over the same numbers from reading like reruns.
-REPORT_NUM_PREDICT = 220
+# A segment is longer than a narrator line (conditions + outlook + a look at
+# the days ahead, issue #60), so it gets more headroom than narrate()'s 120;
+# the temperature keeps two half-hour broadcasts over the same numbers from
+# reading like reruns.
+REPORT_NUM_PREDICT = 280
 REPORT_TEMPERATURE = 0.9
 
 OWM_BASE = "https://api.openweathermap.org/data/2.5"
@@ -409,17 +410,21 @@ WILLARD_PERSONALITY = (
 )
 
 REPORT_RULES = (
-    "Deliver your on-air weather segment in ONE or TWO short paragraphs, four "
-    "to six sentences in all: current conditions first, then what's on the "
-    "way. Use the measurements you are given -- never invent numbers. Spoken "
-    "words only: no stage directions, no quotation marks, no emoji, no "
-    "markdown, no preamble, no sign-off name. Never break character."
+    "Deliver your on-air weather segment in ONE or TWO short paragraphs, five "
+    "to eight sentences in all: current conditions first, then what's on the "
+    "way. When you are given the days ahead, close with a sentence or two "
+    "about them -- pick out what matters (the hot one, the wet one, the one "
+    "for gathering acorns), never recite the whole list. Use the "
+    "measurements you are given -- never invent numbers. Spoken words only: "
+    "no stage directions, no quotation marks, no emoji, no markdown, no "
+    "preamble, no sign-off name. Never break character."
 )
 
 # Labeled paragraphs, the narrator's desk-tested prompt shape (issue #26):
 # bare facts buried in prose get ignored; labeled blocks get woven in.
 REPORT_CURRENT_HEADER = "Current conditions at the station:"
 REPORT_OUTLOOK_HEADER = "The next 24 hours:"
+REPORT_EXTENDED_HEADER = "The days ahead:"
 
 
 def report_system_prompt():
@@ -481,30 +486,70 @@ def current_facts(current):
     return " ".join(parts)
 
 
-def forecast_digest(points, now, horizon_s=REPORT_HORIZON_S):
-    """Boil the 3-hour forecast steps ahead of `now` down to what one outlook
-    paragraph needs: the temperature span, the strongest wind or gust, the
-    peak precipitation chance, and the conditions in order of appearance.
-    None when no temperature-bearing point falls inside the horizon."""
-    ahead = [p for p in points
-             if p.get("ts") is not None and now < p["ts"] <= now + horizon_s]
-    temps = [p["temp_f"] for p in ahead if p.get("temp_f") is not None]
+def _digest(steps):
+    """Aggregate one window of forecast steps into what an outlook sentence
+    needs: temperature span, strongest wind or gust, peak precipitation
+    chance, expected rainfall, and the conditions in order of appearance.
+    None when nothing in the window carries a temperature. Two callers --
+    the next-24h outlook and the per-day extended digest (issue #60)."""
+    temps = [p["temp_f"] for p in steps if p.get("temp_f") is not None]
     if not temps:
         return None
-    winds = [w for p in ahead
+    winds = [w for p in steps
              for w in (p.get("wind_mph"), p.get("wind_gust_mph"))
              if w is not None]
     conditions = []
-    for p in ahead:
+    for p in steps:
         if p.get("condition") and p["condition"] not in conditions:
             conditions.append(p["condition"])
     return {
         "high_f": max(temps),
         "low_f": min(temps),
         "max_wind_mph": max(winds) if winds else None,
-        "max_pop": max((p.get("pop") or 0) for p in ahead),
+        "max_pop": max((p.get("pop") or 0) for p in steps),
+        # each step's rate (issue #56) is an average over its 3 hours, so
+        # rate x 3 is the step's volume and the sum is the window's expected
+        # rainfall; `or 0` rides through pre-#56 payloads without a field
+        "rain_total_in": round(sum((p.get("rain_rate_inhr") or 0) * 3
+                                   for p in steps), 2),
         "conditions": conditions,
     }
+
+
+def forecast_digest(points, now, horizon_s=REPORT_HORIZON_S):
+    """The next-24h outlook: boil the 3-hour forecast steps ahead of `now`
+    down to what one paragraph needs. None when no temperature-bearing point
+    falls inside the horizon."""
+    return _digest([p for p in points
+                    if p.get("ts") is not None
+                    and now < p["ts"] <= now + horizon_s])
+
+
+def local_day(ts):
+    """Epoch seconds -> local calendar-day key (the service runs where the
+    station is, the clock_12h reasoning)."""
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def extended_digest(points, now):
+    """The days ahead (issue #60): one digest per LOCAL calendar day after
+    the day holding `now`, [(weekday_name, digest), ...] in order -- the
+    whole 5-day series the free API publishes, not just the outlook's 24h.
+    Tomorrow overlaps the rolling 24h outlook on purpose: that's how a
+    broadcast desk talks, today in detail and the week at a glance."""
+    by_day = {}
+    for p in points:
+        ts = p.get("ts")
+        if ts is None or ts <= now or local_day(ts) == local_day(now):
+            continue
+        by_day.setdefault(local_day(ts), []).append(p)
+    out = []
+    for day in sorted(by_day):
+        d = _digest(by_day[day])
+        if d:
+            name = time.strftime("%A", time.localtime(by_day[day][0]["ts"]))
+            out.append((name, d))
+    return out
 
 
 def outlook_facts(digest):
@@ -516,9 +561,30 @@ def outlook_facts(digest):
     if digest["max_pop"] > 0:
         parts.append("Chance of precipitation up to "
                      f"{round(digest['max_pop'] * 100)} percent.")
+    if digest["rain_total_in"] >= 0.01:
+        parts.append(f"Expected rainfall about "
+                     f"{digest['rain_total_in']:.2f} inches.")
     if digest["conditions"]:
         parts.append("Conditions: "
                      + ", ".join(c.lower() for c in digest["conditions"]) + ".")
+    return " ".join(parts)
+
+
+def extended_facts(days):
+    """The per-day digests as one dry paragraph, weekday-labeled and terser
+    than the 24h outlook -- raw material for a sentence or two of week-ahead
+    color, not five mini-reports."""
+    parts = []
+    for name, d in days:
+        bits = [f"{name}: {round(d['low_f'])}F to {round(d['high_f'])}F"]
+        if d["max_pop"] > 0:
+            bits.append("precipitation chance "
+                        f"{round(d['max_pop'] * 100)} percent")
+        if d["rain_total_in"] >= 0.01:
+            bits.append(f"about {d['rain_total_in']:.2f} inches")
+        if d["conditions"]:
+            bits.append(", ".join(c.lower() for c in d["conditions"]))
+        parts.append("; ".join(bits) + ".")
     return " ".join(parts)
 
 
@@ -542,6 +608,9 @@ def build_report_prompt(current, forecast_points, now):
     digest = forecast_digest(forecast_points, now)
     if digest:
         parts.append(f"{REPORT_OUTLOOK_HEADER} {outlook_facts(digest)}")
+    extended = extended_digest(forecast_points, now)
+    if extended:
+        parts.append(f"{REPORT_EXTENDED_HEADER} {extended_facts(extended)}")
     parts.append("Your on-air weather segment:")
     return "\n\n".join(parts)
 
