@@ -21,6 +21,7 @@ import {
   pressureTrend,
   seriesCeil,
   seriesTrend,
+  snowSeason,
   tempRange,
   timeTicks,
   trendSeries,
@@ -371,6 +372,20 @@ describe("dayTicks", () => {
   });
   it("is empty for a degenerate window", () => {
     expect(dayTicks(now, 0, 0)).toEqual([]);
+  });
+});
+
+describe("snowSeason", () => {
+  // local-date constructed timestamps, so the boundaries hold in any TZ
+  const mid = (y: number, month0: number) =>
+    Math.floor(new Date(y, month0, 15, 12).getTime() / 1000);
+  it("is on November through March, off April through October (#69)", () => {
+    expect(snowSeason(mid(2026, 10))).toBe(true); // november
+    expect(snowSeason(mid(2026, 0))).toBe(true); // january
+    expect(snowSeason(mid(2026, 2))).toBe(true); // march
+    expect(snowSeason(mid(2026, 3))).toBe(false); // april
+    expect(snowSeason(mid(2026, 6))).toBe(false); // july
+    expect(snowSeason(mid(2026, 9))).toBe(false); // october
   });
 });
 

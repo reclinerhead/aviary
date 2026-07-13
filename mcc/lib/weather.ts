@@ -474,6 +474,16 @@ export function dayTicks(
   return ticks;
 }
 
+/** Whether the station view's snow strip earns its row (issue #69): local
+ * months November through March. Outside the season the strip hides rather
+ * than sitting dead for seven months -- the owner-sanctioned exception to
+ * the reserve-the-space rule, with a safety valve at the call site: a
+ * forecast actually carrying snow shows the strip in any month. */
+export function snowSeason(ts: number): boolean {
+  const m = new Date(ts * 1000).getMonth(); // 0 = january, local time
+  return m >= 10 || m <= 2;
+}
+
 export type NightBand = { start: number; end: number };
 
 const DAY_S = 86_400;
