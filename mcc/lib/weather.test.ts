@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  PRESSURE_TREND_SPAN_S,
+  DEW_TREND_EPS_F,
+  HUMIDITY_TREND_EPS_PCT,
+  TEMP_TREND_EPS_F,
+  TREND_SPAN_S,
   WeatherPoint,
   PAST_S,
   STATION_FUTURE_S,
@@ -17,6 +20,7 @@ import {
   pressureRange,
   pressureTrend,
   seriesCeil,
+  seriesTrend,
   tempRange,
   timeTicks,
   trendSeries,
@@ -446,7 +450,7 @@ describe("pressureRange", () => {
 describe("pressureTrend", () => {
   const NOW = 1_000_000;
   const trail = (deltaInhg: number) => [
-    pt(NOW - PRESSURE_TREND_SPAN_S, { pressure_rel_inhg: 29.5 }),
+    pt(NOW - TREND_SPAN_S, { pressure_rel_inhg: 29.5 }),
     pt(NOW, { pressure_rel_inhg: 29.5 + deltaInhg }),
   ];
   it("calls rising, falling, and steady past the epsilon", () => {
@@ -470,5 +474,62 @@ describe("pressureTrend", () => {
       pt(NOW + 3600, { pressure_rel_inhg: 20 }),
     ];
     expect(pressureTrend(withFuture, NOW)).toBe("rising");
+  });
+});
+
+describe("seriesTrend", () => {
+  const NOW = 1_000_000;
+  const trail = (over0: Partial<WeatherPoint>, over1: Partial<WeatherPoint>) =>
+    [pt(NOW - TREND_SPAN_S, over0), pt(NOW, over1)];
+  it("judges any series with its own epsilon (issue #67)", () => {
+    expect(
+      seriesTrend(
+        trail({ temp_f: 70 }, { temp_f: 72 }),
+        NOW,
+        (p) => p.temp_f,
+        TEMP_TREND_EPS_F,
+      ),
+    ).toBe("rising");
+    // ±1.5F is steady for temperature but a fall for dew point's ±1F
+    expect(
+      seriesTrend(
+        trail({ temp_f: 70 }, { temp_f: 68.6 }),
+        NOW,
+        (p) => p.temp_f,
+        TEMP_TREND_EPS_F,
+      ),
+    ).toBe("steady");
+    expect(
+      seriesTrend(
+        trail({ dew_point_f: 60 }, { dew_point_f: 58.6 }),
+        NOW,
+        (p) => p.dew_point_f,
+        DEW_TREND_EPS_F,
+      ),
+    ).toBe("falling");
+    expect(
+      seriesTrend(
+        trail({ humidity_pct: 60 }, { humidity_pct: 64 }),
+        NOW,
+        (p) => p.humidity_pct,
+        HUMIDITY_TREND_EPS_PCT,
+      ),
+    ).toBe("rising");
+  });
+  it("skips points where the series is null when anchoring", () => {
+    // pressure-bearing points that lack a temperature must not anchor a
+    // temperature trend
+    const pts = [
+      pt(NOW - TREND_SPAN_S, { temp_f: null, pressure_rel_inhg: 29.5 }),
+      pt(NOW, { temp_f: 80 }),
+    ];
+    expect(seriesTrend(pts, NOW, (p) => p.temp_f, TEMP_TREND_EPS_F)).toBeNull();
+  });
+  it("has no opinion on a short trail", () => {
+    const short = [pt(NOW - 600, { temp_f: 70 }), pt(NOW, { temp_f: 80 })];
+    expect(
+      seriesTrend(short, NOW, (p) => p.temp_f, TEMP_TREND_EPS_F),
+    ).toBeNull();
+    expect(seriesTrend([], NOW, (p) => p.temp_f, TEMP_TREND_EPS_F)).toBeNull();
   });
 });

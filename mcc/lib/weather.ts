@@ -305,28 +305,38 @@ export function pressureRange(
   return { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) };
 }
 
-// Pressure tendency, the weather desk's oldest instrument: the barometer's
-// move over the last ~3h of observed trail. ±0.02 inHg over that span is
-// meteorologically "steady"; the trail must reach back at least half the
-// span before we call a trend at all (a fresh service has no opinion).
-export const PRESSURE_TREND_SPAN_S = 3 * 3600;
+// Tendency, the weather desk's oldest instrument: a series' move over the
+// last ~3h of observed trail. The span was born with the barometer (issue
+// #51) and generalized in #67 -- temperature, dew point, and humidity read
+// the same way, each with its own idea of "steady": ±0.02 inHg is the
+// meteorological convention for pressure; the others are set just above
+// sensor jitter so the arrow doesn't twitch on noise. The trail must reach
+// back at least half the span before we call a trend at all (a fresh
+// service has no opinion).
+export const TREND_SPAN_S = 3 * 3600;
 export const PRESSURE_TREND_EPS_INHG = 0.02;
+export const TEMP_TREND_EPS_F = 1.5;
+export const DEW_TREND_EPS_F = 1;
+export const HUMIDITY_TREND_EPS_PCT = 3;
 
-export type PressureTrend = "rising" | "falling" | "steady";
+export type SeriesTrend = "rising" | "falling" | "steady";
 
-/** The barometer's tendency from the observed window, or null when the trail
- * is too short (or pressure-less) to judge. Compares the newest reading to
- * the one nearest 3h before it -- real reports, never interpolation. */
-export function pressureTrend(
+/** One series' tendency from the observed window, or null when the trail is
+ * too short (or empty of the series) to judge. Compares the newest reading
+ * to the one nearest 3h before it -- real reports, never interpolation. */
+export function seriesTrend(
   history: WeatherPoint[],
   now: number,
-): PressureTrend | null {
+  value: (p: WeatherPoint) => number | null,
+  eps: number,
+  spanS = TREND_SPAN_S,
+): SeriesTrend | null {
   const pts = history
-    .filter((p) => p.pressure_rel_inhg !== null && p.ts <= now)
+    .filter((p) => value(p) !== null && p.ts <= now)
     .sort((a, b) => a.ts - b.ts);
   const latest = pts[pts.length - 1];
   if (!latest) return null;
-  const target = latest.ts - PRESSURE_TREND_SPAN_S;
+  const target = latest.ts - spanS;
   let anchor: WeatherPoint | null = null;
   let anchorD = Infinity;
   for (const p of pts) {
@@ -336,11 +346,24 @@ export function pressureTrend(
       anchorD = d;
     }
   }
-  if (!anchor || anchorD > PRESSURE_TREND_SPAN_S / 2) return null;
-  const delta = latest.pressure_rel_inhg! - anchor.pressure_rel_inhg!;
-  if (delta > PRESSURE_TREND_EPS_INHG) return "rising";
-  if (delta < -PRESSURE_TREND_EPS_INHG) return "falling";
+  if (!anchor || anchorD > spanS / 2) return null;
+  const delta = value(latest)! - value(anchor)!;
+  if (delta > eps) return "rising";
+  if (delta < -eps) return "falling";
   return "steady";
+}
+
+/** The barometer's tendency -- seriesTrend's original caller. */
+export function pressureTrend(
+  history: WeatherPoint[],
+  now: number,
+): SeriesTrend | null {
+  return seriesTrend(
+    history,
+    now,
+    (p) => p.pressure_rel_inhg,
+    PRESSURE_TREND_EPS_INHG,
+  );
 }
 
 /** SVG path for one series: ts -> x across [ts0, ts1], value -> y (inverted,
