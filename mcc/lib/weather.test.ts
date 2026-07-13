@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   PRESSURE_TREND_SPAN_S,
   WeatherPoint,
+  PAST_S,
+  STATION_FUTURE_S,
   ageText,
   compass,
+  dayTicks,
   linePath,
   nearestPoint,
   nightBands,
@@ -307,6 +310,57 @@ describe("timeTicks", () => {
   it("is empty for degenerate inputs", () => {
     expect(timeTicks(0, 0)).toEqual([]);
     expect(timeTicks(3600, 3600, 0)).toEqual([]);
+  });
+});
+
+describe("dayTicks", () => {
+  // Structural assertions against the runtime's own local clock, so the
+  // suite passes in any timezone (CI runs UTC, the dev box does not).
+  const now = 1752408000; // 2025-07-13 12:00:00 UTC
+  it("marks every local midnight strictly inside the station window", () => {
+    const got = dayTicks(now);
+    // 24h + 120h = 144h spans 5-7 local midnights depending on time of day
+    expect(got.length).toBeGreaterThanOrEqual(5);
+    expect(got.length).toBeLessThanOrEqual(7);
+    for (const t of got) {
+      const d = new Date(t.ts * 1000);
+      expect([d.getHours(), d.getMinutes(), d.getSeconds()]).toEqual([0, 0, 0]);
+    }
+    const ts = got.map((t) => t.ts);
+    expect([...ts].sort((a, b) => a - b)).toEqual(ts);
+    expect(got.every((t) => t.frac > 0 && t.frac < 1)).toBe(true);
+    expect(got[0].ts).toBeGreaterThan(now - PAST_S);
+    expect(got[got.length - 1].ts).toBeLessThan(now + STATION_FUTURE_S);
+  });
+  it("maps ts to frac linearly across the window", () => {
+    for (const t of dayTicks(now)) {
+      expect(t.frac).toBeCloseTo(
+        (t.ts - (now - PAST_S)) / (PAST_S + STATION_FUTURE_S),
+        10,
+      );
+    }
+  });
+  it("labels each tick with the lowercased weekday of the day it begins", () => {
+    for (const t of dayTicks(now)) {
+      expect(t.label).toBe(
+        new Date(t.ts * 1000)
+          .toLocaleDateString(undefined, { weekday: "short" })
+          .toLowerCase(),
+      );
+      expect(t.label.length).toBeGreaterThan(0);
+    }
+  });
+  it("consecutive ticks are one calendar day apart", () => {
+    const got = dayTicks(now);
+    for (let i = 1; i < got.length; i++) {
+      const gap = got[i].ts - got[i - 1].ts;
+      // 23-25h covers DST spring/fall days
+      expect(gap).toBeGreaterThanOrEqual(23 * 3600);
+      expect(gap).toBeLessThanOrEqual(25 * 3600);
+    }
+  });
+  it("is empty for a degenerate window", () => {
+    expect(dayTicks(now, 0, 0)).toEqual([]);
   });
 });
 

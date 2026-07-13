@@ -15,6 +15,7 @@
 # =============================================================================
 
 import json
+import time
 
 import pytest
 
@@ -416,9 +417,19 @@ def test_load_history_wrong_shape(tmp_path):
 NOW = 1_000_000
 
 
-def fpt(ts, temp=70.0, wind=5.0, gust=None, cond="Clear", pop=0):
+def fpt(ts, temp=70.0, wind=5.0, gust=None, cond="Clear", pop=0, rain=None):
     return {"ts": ts, "temp_f": temp, "wind_mph": wind, "wind_gust_mph": gust,
-            "condition": cond, "pop": pop}
+            "condition": cond, "pop": pop, "rain_rate_inhr": rain}
+
+
+def next_local_day(ts):
+    """The first hourly step after `ts` that lands on the following LOCAL
+    calendar day -- so day-grouping tests hold in any timezone (CI runs UTC,
+    the dev box does not)."""
+    t = ts
+    while weather.local_day(t) == weather.local_day(ts):
+        t += 3600
+    return t
 
 
 def fresh_current(**over):
@@ -465,6 +476,65 @@ def test_forecast_digest_nothing_ahead():
     assert weather.forecast_digest([fpt(NOW - 100)], NOW) is None
     # points in the window but none carrying a temperature
     assert weather.forecast_digest([fpt(NOW + 3600, temp=None)], NOW) is None
+
+
+def test_forecast_digest_sums_expected_rainfall():
+    # each step's rate is an average over its 3 hours: rate x 3 = volume
+    points = [fpt(NOW + 3600, rain=0.1), fpt(NOW + 3 * 3600, rain=0.05),
+              fpt(NOW + 6 * 3600)]  # rain=None reads as dry
+    assert weather.forecast_digest(points, NOW)["rain_total_in"] == 0.45
+
+
+def test_forecast_digest_survives_pre56_points():
+    # a retained forecast from before issue #56 has no rain_rate_inhr key
+    digest = weather.forecast_digest([{"ts": NOW + 3600, "temp_f": 70.0}], NOW)
+    assert digest["rain_total_in"] == 0
+
+
+def test_outlook_facts_includes_expected_rainfall():
+    digest = weather.forecast_digest([fpt(NOW + 3600, rain=0.1)], NOW)
+    got = weather.outlook_facts(digest)
+    assert "Expected rainfall about 0.30 inches." in got
+
+
+def test_outlook_facts_dry_forecast_stays_quiet_about_rainfall():
+    digest = weather.forecast_digest([fpt(NOW + 3600)], NOW)
+    assert "rainfall" not in weather.outlook_facts(digest).lower()
+
+
+def test_extended_digest_groups_by_local_day_and_skips_today():
+    t = next_local_day(NOW)  # first hour of tomorrow, local
+    pts = [fpt(NOW + 1800, temp=60.0),                    # today: outlook turf
+           fpt(t + 3600, temp=70.0, rain=0.1),
+           fpt(t + 7200, temp=90.0, cond="Rain", pop=0.6),
+           fpt(t + 86400 + 3600, temp=50.0)]              # the day after
+    got = weather.extended_digest(pts, NOW)
+    assert len(got) == 2
+    name, d = got[0]
+    assert name == time.strftime("%A", time.localtime(t + 3600))
+    assert (d["low_f"], d["high_f"]) == (70.0, 90.0)
+    assert d["max_pop"] == 0.6
+    assert d["rain_total_in"] == 0.3
+    assert d["conditions"] == ["Clear", "Rain"]
+    assert got[1][1]["high_f"] == 50.0
+
+
+def test_extended_digest_empty_without_tomorrow():
+    assert weather.extended_digest([fpt(NOW + 1800)], NOW) == []
+    assert weather.extended_digest([], NOW) == []
+
+
+def test_extended_facts_reads_like_a_ledger():
+    days = [("Tuesday", {"low_f": 61.0, "high_f": 88.0, "max_wind_mph": 12.0,
+                         "max_pop": 0.6, "rain_total_in": 0.25,
+                         "conditions": ["Rain", "Clear"]}),
+            ("Wednesday", {"low_f": 55.0, "high_f": 75.0,
+                           "max_wind_mph": None, "max_pop": 0,
+                           "rain_total_in": 0.0, "conditions": []})]
+    got = weather.extended_facts(days)
+    assert ("Tuesday: 61F to 88F; precipitation chance 60 percent; "
+            "about 0.25 inches; rain, clear.") in got
+    assert "Wednesday: 55F to 75F." in got
 
 
 def test_current_facts_reads_the_report():
@@ -526,7 +596,23 @@ def test_build_report_prompt_labeled_paragraphs_then_cue():
 def test_build_report_prompt_without_forecast_drops_the_outlook():
     prompt = weather.build_report_prompt(fresh_current(), [], NOW)
     assert weather.REPORT_OUTLOOK_HEADER not in prompt
+    assert weather.REPORT_EXTENDED_HEADER not in prompt
     assert prompt.endswith("Your on-air weather segment:")
+
+
+def test_build_report_prompt_carries_the_days_ahead():
+    t = next_local_day(NOW)
+    prompt = weather.build_report_prompt(
+        fresh_current(),
+        [fpt(NOW + 1800, temp=61.0), fpt(t + 3600, temp=80.0, pop=0.5)],
+        NOW)
+    paras = prompt.split("\n\n")
+    ext = [p for p in paras if p.startswith(weather.REPORT_EXTENDED_HEADER)]
+    assert len(ext) == 1
+    assert "precipitation chance 50 percent" in ext[0]
+    # the cue stays last, after the extended paragraph
+    assert paras.index(ext[0]) == len(paras) - 2
+    assert paras[-1] == "Your on-air weather segment:"
 
 
 def test_build_report_prompt_stale_or_missing_current_is_none():
