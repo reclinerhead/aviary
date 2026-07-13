@@ -219,9 +219,62 @@ export function parsePoints(payload: string): WeatherPoint[] | null {
 
 export type Trend = { observed: WeatherPoint[]; coming: WeatherPoint[] };
 
+// How long the station's calibration outranks the model (issue #71): the
+// forecast is fully pulled to the station at the seam and is its raw self
+// again half a day out, where the model genuinely knows better than a
+// constant offset.
+export const BLEND_HORIZON_S = 12 * 3600;
+
+/** Station-anchored bias correction for the forecast's temperature (issue
+ * #71) -- MOS-style calibration, not cosmetic smoothing. The offset between
+ * the last observed temperature and the forecast's opinion of that same
+ * moment (linearly interpolated; clamped to the first point when the anchor
+ * precedes the whole series) is added to each forecast temp, decaying
+ * linearly to zero across the horizon. TEMPERATURE ONLY: an additive offset
+ * on the station's sheltered wind would go negative. Returns fresh points,
+ * never mutates; unchanged input when either side lacks a temperature. */
+export function blendForecast(
+  observed: WeatherPoint[],
+  coming: WeatherPoint[],
+  horizonS = BLEND_HORIZON_S,
+): WeatherPoint[] {
+  const anchor = [...observed]
+    .reverse()
+    .find((p) => p.temp_f !== null);
+  if (!anchor || horizonS <= 0) return coming;
+  const temps = coming
+    .filter((p) => p.temp_f !== null)
+    .sort((a, b) => a.ts - b.ts);
+  const first = temps[0];
+  if (!first) return coming;
+  // The forecast's temperature at the anchor's moment: the first point's
+  // when the anchor precedes the series (the usual case -- forecast points
+  // live in the future), otherwise interpolated between its neighbors.
+  let at = first.temp_f!;
+  for (let i = 0; i + 1 < temps.length; i++) {
+    const a = temps[i];
+    const b = temps[i + 1];
+    if (anchor.ts >= a.ts && anchor.ts <= b.ts) {
+      at = a.temp_f! +
+        ((anchor.ts - a.ts) / (b.ts - a.ts)) * (b.temp_f! - a.temp_f!);
+      break;
+    }
+    if (anchor.ts > b.ts) at = b.temp_f!;
+  }
+  const offset = anchor.temp_f! - at;
+  return coming.map((p) => {
+    if (p.temp_f === null) return { ...p };
+    // clamped both ways: a point somehow behind the anchor gets the full
+    // offset, never an amplified one
+    const decay = Math.min(1, Math.max(0, 1 - (p.ts - anchor.ts) / horizonS));
+    return { ...p, temp_f: p.temp_f + offset * decay };
+  });
+}
+
 /** Clip history to the trailing window and forecast to the leading one, both
- * sorted by ts. The last observed point is PREPENDED to `coming` so the two
- * polylines meet at "now" instead of leaving a gap. */
+ * sorted by ts. The forecast temps are blendForecast-calibrated against the
+ * trail (issue #71), and the last observed point is PREPENDED to `coming` so
+ * the two polylines meet at "now" instead of leaving a gap. */
 export function trendSeries(
   history: WeatherPoint[],
   forecast: WeatherPoint[],
@@ -233,9 +286,10 @@ export function trendSeries(
   const observed = history
     .filter((p) => p.ts >= now - pastS && p.ts <= now)
     .sort(byTs);
-  const coming = forecast
-    .filter((p) => p.ts > now && p.ts <= now + futureS)
-    .sort(byTs);
+  const coming = blendForecast(
+    observed,
+    forecast.filter((p) => p.ts > now && p.ts <= now + futureS).sort(byTs),
+  );
   const last = observed[observed.length - 1];
   return { observed, coming: last ? [last, ...coming] : coming };
 }
