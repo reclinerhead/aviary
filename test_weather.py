@@ -293,20 +293,23 @@ def test_parse_forecast_shapes_chart_points():
     # 7.62 mm over the 3h step = 0.3 in total = 0.1 in/hr average (issue #56)
     assert first == {"ts": 1752159600, "temp_f": 81.0, "wind_mph": 10.1,
                      "wind_gust_mph": 19.9, "condition": "Rain", "pop": 0.4,
-                     "rain_rate_inhr": 0.1}
+                     "rain_rate_inhr": 0.1, "snow_3h_in": 0}
     # calm step: no gust key, no pop key, no rain/snow -> None gust, 0 pop,
     # 0 rate (a dry forecast step is a real zero, not a gap)
     assert second["wind_gust_mph"] is None
     assert second["pop"] == 0
     assert second["rain_rate_inhr"] == 0
+    assert second["snow_3h_in"] == 0
 
 
-def test_parse_forecast_sums_rain_and_snow():
-    # wintry mix: both volumes are water-equivalent mm, so they add
+def test_parse_forecast_keeps_rain_and_snow_apart():
+    # wintry mix (issue #65, un-summing #56): rain stays a rate, snow is the
+    # step's plain inches, and neither leaks into the other
     got = weather.parse_forecast({"list": [
-        {"dt": 100, "rain": {"3h": 3.81}, "snow": {"3h": 3.81}},
+        {"dt": 100, "rain": {"3h": 3.81}, "snow": {"3h": 25.4}},
     ]})
-    assert got["points"][0]["rain_rate_inhr"] == 0.1
+    assert got["points"][0]["rain_rate_inhr"] == 0.05
+    assert got["points"][0]["snow_3h_in"] == 1.0
 
 
 def test_parse_forecast_empty_response():
@@ -417,9 +420,11 @@ def test_load_history_wrong_shape(tmp_path):
 NOW = 1_000_000
 
 
-def fpt(ts, temp=70.0, wind=5.0, gust=None, cond="Clear", pop=0, rain=None):
+def fpt(ts, temp=70.0, wind=5.0, gust=None, cond="Clear", pop=0, rain=None,
+        snow=None):
     return {"ts": ts, "temp_f": temp, "wind_mph": wind, "wind_gust_mph": gust,
-            "condition": cond, "pop": pop, "rain_rate_inhr": rain}
+            "condition": cond, "pop": pop, "rain_rate_inhr": rain,
+            "snow_3h_in": snow}
 
 
 def next_local_day(ts):
@@ -486,9 +491,21 @@ def test_forecast_digest_sums_expected_rainfall():
 
 
 def test_forecast_digest_survives_pre56_points():
-    # a retained forecast from before issue #56 has no rain_rate_inhr key
+    # a retained forecast from before issues #56/#65 has neither precip key
     digest = weather.forecast_digest([{"ts": NOW + 3600, "temp_f": 70.0}], NOW)
     assert digest["rain_total_in"] == 0
+    assert digest["snow_total_in"] == 0
+
+
+def test_forecast_digest_sums_snow():
+    digest = weather.forecast_digest(
+        [fpt(NOW + 3600, snow=1.2), fpt(NOW + 3 * 3600, snow=0.8)], NOW)
+    assert digest["snow_total_in"] == 2.0
+
+
+def test_outlook_facts_speaks_snow():
+    digest = weather.forecast_digest([fpt(NOW + 3600, snow=2.0)], NOW)
+    assert "Expected snow about 2.0 inches." in weather.outlook_facts(digest)
 
 
 def test_outlook_facts_includes_expected_rainfall():
@@ -527,14 +544,22 @@ def test_extended_digest_empty_without_tomorrow():
 def test_extended_facts_reads_like_a_ledger():
     days = [("Tuesday", {"low_f": 61.0, "high_f": 88.0, "max_wind_mph": 12.0,
                          "max_pop": 0.6, "rain_total_in": 0.25,
+                         "snow_total_in": 0.0,
                          "conditions": ["Rain", "Clear"]}),
             ("Wednesday", {"low_f": 55.0, "high_f": 75.0,
                            "max_wind_mph": None, "max_pop": 0,
-                           "rain_total_in": 0.0, "conditions": []})]
+                           "rain_total_in": 0.0, "snow_total_in": 0.0,
+                           "conditions": []}),
+            ("Thursday", {"low_f": 20.0, "high_f": 30.0,
+                          "max_wind_mph": None, "max_pop": 0.9,
+                          "rain_total_in": 0.0, "snow_total_in": 3.5,
+                          "conditions": ["Snow"]})]
     got = weather.extended_facts(days)
     assert ("Tuesday: 61F to 88F; precipitation chance 60 percent; "
-            "about 0.25 inches; rain, clear.") in got
+            "about 0.25 inches of rain; rain, clear.") in got
     assert "Wednesday: 55F to 75F." in got
+    assert ("Thursday: 20F to 30F; precipitation chance 90 percent; "
+            "about 3.5 inches of snow; snow.") in got
 
 
 def test_current_facts_reads_the_report():

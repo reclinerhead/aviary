@@ -303,19 +303,22 @@ def parse_forecast(raw):
     """OpenWeather /forecast response (5 days, 3-hour steps, 40 points) ->
     the weather/forecast bus payload: just what the trends chart draws, one
     compact point per step. `pop` is precipitation probability 0..1.
-    `rain_rate_inhr` (issue #56) is the step's precipitation volume --
-    rain["3h"] + snow["3h"], both water-equivalent mm, omitted entirely on
-    dry steps -- as an average in/hr rate, so it shares the rain strip's
-    scale with the station's observed piezo trail. Default 0, not None: a
-    step the forecast left dry is a real forecast of zero, unlike a station
-    gap (which stays an honest hole in the observed trail)."""
+    `rain_rate_inhr` (issue #56) is the step's RAIN volume -- rain["3h"] mm,
+    omitted entirely on dry steps -- as an average in/hr rate, so it shares
+    the rain strip's scale with the station's observed piezo trail.
+    `snow_3h_in` (issue #65, which un-summed #56's rain+snow) is the step's
+    snow volume as plain inches -- its own strip charts it per step, and no
+    station instrument shares a scale with it (the piezo is snow-blind).
+    Both default 0, not None: a step the forecast left dry is a real
+    forecast of zero, unlike a station gap (which stays an honest hole in
+    the observed trail)."""
     points = []
     for step in raw.get("list") or []:
         main = step.get("main") or {}
         wind = step.get("wind") or {}
         weather = (step.get("weather") or [{}])[0]
-        precip_mm = ((step.get("rain") or {}).get("3h") or 0) \
-            + ((step.get("snow") or {}).get("3h") or 0)
+        rain_mm = (step.get("rain") or {}).get("3h") or 0
+        snow_mm = (step.get("snow") or {}).get("3h") or 0
         points.append({
             "ts": step.get("dt"),
             "temp_f": main.get("temp"),
@@ -323,7 +326,8 @@ def parse_forecast(raw):
             "wind_gust_mph": wind.get("gust"),
             "condition": weather.get("main"),
             "pop": step.get("pop", 0),
-            "rain_rate_inhr": round(precip_mm / 25.4 / 3, 4),
+            "rain_rate_inhr": round(rain_mm / 25.4 / 3, 4),
+            "snow_3h_in": round(snow_mm / 25.4, 4),
         })
     return {"points": points}
 
@@ -509,8 +513,13 @@ def _digest(steps):
         "max_pop": max((p.get("pop") or 0) for p in steps),
         # each step's rate (issue #56) is an average over its 3 hours, so
         # rate x 3 is the step's volume and the sum is the window's expected
-        # rainfall; `or 0` rides through pre-#56 payloads without a field
+        # rainfall; `or 0` rides through pre-#56 payloads without a field.
+        # Snow (issue #65) is its own ledger -- the fields were un-summed,
+        # and Willard should say "two inches of snow", never fold it into
+        # the rain number.
         "rain_total_in": round(sum((p.get("rain_rate_inhr") or 0) * 3
+                                   for p in steps), 2),
+        "snow_total_in": round(sum((p.get("snow_3h_in") or 0)
                                    for p in steps), 2),
         "conditions": conditions,
     }
@@ -564,6 +573,9 @@ def outlook_facts(digest):
     if digest["rain_total_in"] >= 0.01:
         parts.append(f"Expected rainfall about "
                      f"{digest['rain_total_in']:.2f} inches.")
+    if digest["snow_total_in"] >= 0.01:
+        parts.append(f"Expected snow about "
+                     f"{digest['snow_total_in']:.1f} inches.")
     if digest["conditions"]:
         parts.append("Conditions: "
                      + ", ".join(c.lower() for c in digest["conditions"]) + ".")
@@ -581,7 +593,9 @@ def extended_facts(days):
             bits.append("precipitation chance "
                         f"{round(d['max_pop'] * 100)} percent")
         if d["rain_total_in"] >= 0.01:
-            bits.append(f"about {d['rain_total_in']:.2f} inches")
+            bits.append(f"about {d['rain_total_in']:.2f} inches of rain")
+        if d["snow_total_in"] >= 0.01:
+            bits.append(f"about {d['snow_total_in']:.1f} inches of snow")
         if d["conditions"]:
             bits.append(", ".join(c.lower() for c in d["conditions"]))
         parts.append("; ".join(bits) + ".")
