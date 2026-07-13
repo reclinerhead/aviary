@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  BLEND_HORIZON_S,
   DEW_TREND_EPS_F,
+  blendForecast,
   HUMIDITY_TREND_EPS_PCT,
   TEMP_TREND_EPS_F,
   TREND_SPAN_S,
@@ -238,6 +240,77 @@ describe("trendSeries", () => {
   it("sorts both series by ts", () => {
     const { observed } = trendSeries([pt(now - 10), pt(now - 20)], [], now);
     expect(observed.map((p) => p.ts)).toEqual([now - 20, now - 10]);
+  });
+  it("calibrates a biased forecast to the trail, raw observed bridge intact", () => {
+    const { coming } = trendSeries(
+      [pt(now - 100, { temp_f: 75 })],
+      [pt(now + 100, { temp_f: 70 })],
+      now,
+    );
+    expect(coming[0].temp_f).toBe(75); // the bridge is the real observed point
+    expect(coming[1].temp_f).toBeCloseTo(
+      70 + 5 * (1 - 200 / BLEND_HORIZON_S), // offset 5F, 200s into the decay
+    );
+  });
+});
+
+describe("blendForecast", () => {
+  const now = 100_000;
+  const H = BLEND_HORIZON_S;
+  it("applies the full offset at the seam and decays it to zero", () => {
+    const out = blendForecast(
+      [pt(now, { temp_f: 75 })],
+      [
+        pt(now, { temp_f: 70 }), // at the anchor: full 5F offset
+        pt(now + H / 2, { temp_f: 70 }), // halfway out: half the offset
+        pt(now + H, { temp_f: 70 }), // horizon: raw again
+        pt(now + H * 2, { temp_f: 70 }), // beyond: still raw, never negative
+      ],
+    );
+    expect(out.map((p) => p.temp_f)).toEqual([75, 72.5, 70, 70]);
+  });
+  it("reads the forecast at the anchor's moment by interpolation", () => {
+    // anchor sits 1/4 of the way between forecast points at 60F and 80F
+    const out = blendForecast(
+      [pt(now + 25, { temp_f: 75 })],
+      [pt(now, { temp_f: 60 }), pt(now + 100, { temp_f: 80 })],
+    );
+    // forecast-at-anchor = 65, offset = 10, decay ~1 at these tiny spans
+    expect(out[1].temp_f).toBeCloseTo(90, 1);
+  });
+  it("anchors on the LAST temp-bearing observed point", () => {
+    const out = blendForecast(
+      [pt(now - 50, { temp_f: 40 }), pt(now, { temp_f: 75 }), pt(now + 1, { temp_f: null })],
+      [pt(now + 10, { temp_f: 70 })],
+    );
+    expect(out[0].temp_f).toBeCloseTo(75, 1);
+  });
+  it("returns the forecast untouched when either side lacks a temperature", () => {
+    const coming = [pt(now + 10, { temp_f: 70 })];
+    expect(blendForecast([], coming)).toEqual(coming);
+    expect(blendForecast([pt(now, { temp_f: null })], coming)).toEqual(coming);
+    const noTemps = [pt(now + 10, { temp_f: null })];
+    expect(blendForecast([pt(now, { temp_f: 75 })], noTemps)).toEqual(noTemps);
+  });
+  it("rides null temps through and leaves every other series alone", () => {
+    const out = blendForecast(
+      [pt(now, { temp_f: 75 })],
+      [
+        pt(now + 10, { temp_f: null, wind_mph: 12 }),
+        pt(now + 20, { temp_f: 70, wind_mph: 12, pop: 0.4 }),
+      ],
+    );
+    expect(out[0].temp_f).toBeNull();
+    expect(out[0].wind_mph).toBe(12);
+    expect(out[1].wind_mph).toBe(12);
+    expect(out[1].pop).toBe(0.4);
+  });
+  it("never mutates its inputs", () => {
+    const observed = [pt(now, { temp_f: 75 })];
+    const coming = [pt(now + 10, { temp_f: 70 })];
+    blendForecast(observed, coming);
+    expect(coming[0].temp_f).toBe(70);
+    expect(observed[0].temp_f).toBe(75);
   });
 });
 
