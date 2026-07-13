@@ -14,7 +14,11 @@ export type NarrationLine = {
 };
 
 export const NARRATION_TOPIC = "narration/lines";
-export const NARRATION_JOURNAL_TOPIC = "narration/journal";
+// Per-narrator retained journal windows (issue #80): each narrator republishes
+// only its own window to narration/journal/<mqtt_id>, and the dashboard merges
+// them -- a single shared retained topic meant each narrator's republish
+// clobbered the other's window.
+export const NARRATION_JOURNAL_WILDCARD = "narration/journal/+";
 export const NARRATOR_STATUS_WILDCARD = "narrators/+/status";
 
 // A journal entry with a stable client-side key. Keys are derived from the
@@ -100,6 +104,29 @@ export function toJournalEntries(lines: NarrationLine[]): JournalEntry[] {
 export function statusTopicId(topic: string): string | null {
   const m = /^narrators\/([^/]+)\/status$/.exec(topic);
   return m ? m[1] : null;
+}
+
+/** "narration/journal/marlin" -> "marlin"; null for any other topic --
+ * including the retired bare "narration/journal" (a stale retained blob from
+ * before issue #80 must not be mistaken for a narrator's window). */
+export function journalTopicId(topic: string): string | null {
+  const m = /^narration\/journal\/([^/]+)$/.exec(topic);
+  return m ? m[1] : null;
+}
+
+/** Merge per-narrator journal windows (issue #80) into one show-wide window:
+ * oldest first (the wire order toJournalEntries expects), interleaved by ts,
+ * capped at `limit` keeping the newest. Line ts values are ISO strings, so
+ * string comparison is chronological; the sort is stable, so same-second
+ * lines keep their within-window order. */
+export function mergeJournals(
+  windows: Record<string, NarrationLine[]>,
+  limit: number,
+): NarrationLine[] {
+  return Object.values(windows)
+    .flat()
+    .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+    .slice(-limit);
 }
 
 /** Match a persona's tts_voice hint ("David") against the browser's installed

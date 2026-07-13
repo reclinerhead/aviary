@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  NARRATION_JOURNAL_WILDCARD,
   busUrl,
+  journalTopicId,
+  mergeJournals,
   parseJournal,
   parseLine,
   pickVoice,
@@ -117,6 +120,73 @@ describe("toJournalEntries", () => {
     const twin = line("2026-07-06T10:00:00", "again");
     const entries = toJournalEntries([twin, twin]);
     expect(new Set(entries.map((e) => e.key)).size).toBe(2);
+  });
+});
+
+describe("journalTopicId", () => {
+  it("extracts the narrator id from a per-narrator journal topic", () => {
+    expect(journalTopicId("narration/journal/marlin")).toBe("marlin");
+    expect(journalTopicId("narration/journal/jim")).toBe("jim");
+  });
+  it("rejects the retired bare topic (a stale pre-#80 retained blob)", () => {
+    expect(journalTopicId("narration/journal")).toBeNull();
+  });
+  it("ignores unrelated topics and deeper paths", () => {
+    expect(journalTopicId("narration/lines")).toBeNull();
+    expect(journalTopicId("narration/journal/a/b")).toBeNull();
+  });
+  it("matches the subscribed wildcard shape", () => {
+    expect(NARRATION_JOURNAL_WILDCARD).toBe("narration/journal/+");
+  });
+});
+
+describe("mergeJournals", () => {
+  const line = (narrator: string, ts: string, text: string) => ({
+    ts,
+    narrator,
+    voice: "",
+    text,
+    event_kind: "arrival",
+  });
+
+  it("interleaves windows chronologically, oldest first", () => {
+    const merged = mergeJournals(
+      {
+        marlin: [
+          line("Marlin", "2026-07-13T10:00:00", "m1"),
+          line("Marlin", "2026-07-13T10:02:00", "m2"),
+        ],
+        jim: [line("Jim", "2026-07-13T10:01:00", "j1")],
+      },
+      50,
+    );
+    expect(merged.map((l) => l.text)).toEqual(["m1", "j1", "m2"]);
+  });
+  it("caps at the limit keeping the newest lines", () => {
+    const merged = mergeJournals(
+      {
+        marlin: [
+          line("Marlin", "2026-07-13T10:00:00", "old"),
+          line("Marlin", "2026-07-13T10:02:00", "kept"),
+        ],
+        jim: [line("Jim", "2026-07-13T10:01:00", "also kept")],
+      },
+      2,
+    );
+    expect(merged.map((l) => l.text)).toEqual(["also kept", "kept"]);
+  });
+  it("keeps within-window order for same-second lines (stable sort)", () => {
+    const ts = "2026-07-13T10:00:00";
+    const merged = mergeJournals(
+      { marlin: [line("Marlin", ts, "first"), line("Marlin", ts, "second")] },
+      50,
+    );
+    expect(merged.map((l) => l.text)).toEqual(["first", "second"]);
+  });
+  it("passes a single window through unchanged and survives none at all", () => {
+    const window = [line("Marlin", "2026-07-13T10:00:00", "solo")];
+    expect(mergeJournals({ marlin: window }, 50)).toEqual(window);
+    expect(mergeJournals({}, 50)).toEqual([]);
   });
 });
 
