@@ -47,7 +47,10 @@ export type CurrentWeather = {
 
 /** One point of the trend chart -- the shape shared by weather/forecast and
  * weather/history payloads ({points: [...]}). History points carry the
- * station's extra series (issue #51); forecast points leave them null. */
+ * station's extra series (issue #51); forecast points leave them null --
+ * except rain_rate_inhr, which forecast points also carry since issue #56
+ * (the 3-hour step's precip volume as an average rate), plus pop, which is
+ * forecast-only (the station doesn't deal in probabilities). */
 export type WeatherPoint = {
   ts: number;
   temp_f: number | null;
@@ -61,6 +64,7 @@ export type WeatherPoint = {
   rain_day_in: number | null;
   solar_wm2: number | null;
   uv_index: number | null;
+  pop: number | null; // precipitation probability 0..1, forecast points only
 };
 
 // A report older than this is treated as no report: the panel goes stale
@@ -195,6 +199,7 @@ export function parsePoints(payload: string): WeatherPoint[] | null {
         rain_day_in: num(p.rain_day_in),
         solar_wm2: num(p.solar_wm2),
         uv_index: num(p.uv_index),
+        pop: num(p.pop),
       }));
   } catch {
     return null;
