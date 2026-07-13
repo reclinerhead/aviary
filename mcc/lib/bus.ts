@@ -14,7 +14,15 @@ export type NarrationLine = {
 };
 
 export const NARRATION_TOPIC = "narration/lines";
+export const NARRATION_JOURNAL_TOPIC = "narration/journal";
 export const NARRATOR_STATUS_WILDCARD = "narrators/+/status";
+
+// A journal entry with a stable client-side key. Keys are derived from the
+// line's CONTENT (not a mint-on-arrival counter): the retained journal window
+// is republished whole on every new line, and content-derived keys let React
+// keep the existing <li> DOM nodes, so the filed-entry animation plays only
+// for genuinely new lines -- never for the 49 the window re-delivered.
+export type JournalEntry = NarrationLine & { key: string };
 
 /** The broker's WebSocket URL. In the pearl topology NEXT_PUBLIC_MERLE_MQTT_WS
  * (mcc/.env.local) supplies the whole URL; the fallback -- same host the page
@@ -34,22 +42,58 @@ export function busUrl(hostname: string, override?: string): string {
 
 // --- Pure parsing helpers (unit-tested in bus.test.ts) -----------------------
 
+/** One narration line from an already-parsed JSON value; null when unusable.
+ * Shared by the live topic and the journal window so the two can't drift. */
+function lineFrom(o: unknown): NarrationLine | null {
+  const l = o as Record<string, unknown> | null;
+  if (typeof l?.text !== "string" || l.text === "") return null;
+  return {
+    ts: typeof l.ts === "string" ? l.ts : "",
+    narrator: typeof l.narrator === "string" ? l.narrator : "unknown",
+    voice: typeof l.voice === "string" ? l.voice : "",
+    text: l.text,
+    event_kind: typeof l.event_kind === "string" ? l.event_kind : "",
+  };
+}
+
 /** Parse a narration/lines payload; null for anything malformed (the bus is a
  * shared room -- never let a stray message crash the journal). */
 export function parseLine(payload: string): NarrationLine | null {
   try {
-    const o = JSON.parse(payload);
-    if (typeof o?.text !== "string" || o.text === "") return null;
-    return {
-      ts: typeof o.ts === "string" ? o.ts : "",
-      narrator: typeof o.narrator === "string" ? o.narrator : "unknown",
-      voice: typeof o.voice === "string" ? o.voice : "",
-      text: o.text,
-      event_kind: typeof o.event_kind === "string" ? o.event_kind : "",
-    };
+    return lineFrom(JSON.parse(payload));
   } catch {
     return null;
   }
+}
+
+/** Parse a narration/journal window payload ({lines: [...]}, oldest first):
+ * the retained field journal (issue #58). Null when the payload isn't a
+ * window at all; individual bad lines are dropped without discarding the
+ * rest -- one stray line must not blank the whole journal. */
+export function parseJournal(payload: string): NarrationLine[] | null {
+  try {
+    const o = JSON.parse(payload) as { lines?: unknown } | null;
+    if (!Array.isArray(o?.lines)) return null;
+    return o.lines
+      .map(lineFrom)
+      .filter((l): l is NarrationLine => l !== null);
+  } catch {
+    return null;
+  }
+}
+
+/** Journal window (oldest first, as published) -> display entries (newest
+ * first) with stable, unique keys. A same-second duplicate line gets an
+ * occurrence suffix so keys stay unique without giving up stability. */
+export function toJournalEntries(lines: NarrationLine[]): JournalEntry[] {
+  const seen = new Map<string, number>();
+  const entries = lines.map((line) => {
+    const base = `${line.ts}|${line.narrator}|${line.text}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return { ...line, key: n ? `${base}|${n}` : base };
+  });
+  return entries.reverse();
 }
 
 /** "narrators/marlin/status" -> "marlin"; null for any other topic. */
