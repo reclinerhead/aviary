@@ -6,8 +6,12 @@ import {
   HUMIDITY_TREND_EPS_PCT,
   TEMP_TREND_EPS_F,
   TREND_SPAN_S,
+  CurrentWeather,
+  WINDY_GUST_MPH,
+  WINDY_SUSTAINED_MPH,
   WeatherPoint,
   PAST_S,
+  conditionIcon,
   STATION_FUTURE_S,
   ageText,
   compass,
@@ -619,5 +623,112 @@ describe("seriesTrend", () => {
       seriesTrend(short, NOW, (p) => p.temp_f, TEMP_TREND_EPS_F),
     ).toBeNull();
     expect(seriesTrend([], NOW, (p) => p.temp_f, TEMP_TREND_EPS_F)).toBeNull();
+  });
+});
+
+describe("conditionIcon", () => {
+  // A calm, clear report; each case overrides what its sky needs.
+  const cur = (over: Partial<CurrentWeather> = {}): CurrentWeather =>
+    ({
+      ...(parseCurrent(
+        JSON.stringify({
+          ts: 1752148800,
+          temp_f: 70,
+          condition: "Clear",
+          description: "clear sky",
+          wind_mph: 5,
+          wind_gust_mph: 8,
+          raining: 0,
+        }),
+      ) as CurrentWeather),
+      ...over,
+    });
+
+  it("maps each sky to its icon", () => {
+    expect(conditionIcon(cur())).toBe("sunny");
+    expect(
+      conditionIcon(cur({ condition: "Clouds", description: "few clouds" })),
+    ).toBe("mostly-sunny");
+    expect(
+      conditionIcon(
+        cur({ condition: "Clouds", description: "scattered clouds" }),
+      ),
+    ).toBe("partly-cloudy");
+    expect(
+      conditionIcon(
+        cur({ condition: "Clouds", description: "broken clouds" }),
+      ),
+    ).toBe("cloudy");
+    expect(
+      conditionIcon(
+        cur({ condition: "Clouds", description: "overcast clouds" }),
+      ),
+    ).toBe("cloudy");
+    expect(
+      conditionIcon(cur({ condition: "Rain", description: "light rain" })),
+    ).toBe("raining");
+    expect(
+      conditionIcon(cur({ condition: "Drizzle", description: "drizzle" })),
+    ).toBe("raining");
+    expect(
+      conditionIcon(cur({ condition: "Snow", description: "light snow" })),
+    ).toBe("snowing");
+    expect(
+      conditionIcon(
+        cur({ condition: "Thunderstorm", description: "thunderstorm" }),
+      ),
+    ).toBe("stormy");
+  });
+
+  it("goes windy on sustained wind or gusts at the thresholds", () => {
+    expect(conditionIcon(cur({ wind_mph: WINDY_SUSTAINED_MPH }))).toBe(
+      "windy",
+    );
+    expect(conditionIcon(cur({ wind_gust_mph: WINDY_GUST_MPH }))).toBe(
+      "windy",
+    );
+    // just under either threshold, the sky keeps the billing
+    expect(
+      conditionIcon(
+        cur({
+          wind_mph: WINDY_SUSTAINED_MPH - 1,
+          wind_gust_mph: WINDY_GUST_MPH - 1,
+        }),
+      ),
+    ).toBe("sunny");
+  });
+
+  it("lets drama outrank wind", () => {
+    // a gale during a thunderstorm is still a thunderstorm
+    expect(
+      conditionIcon(cur({ condition: "Thunderstorm", wind_mph: 40 })),
+    ).toBe("stormy");
+    expect(conditionIcon(cur({ condition: "Snow", wind_gust_mph: 45 }))).toBe(
+      "snowing",
+    );
+  });
+
+  it("believes the piezo over OWM's word", () => {
+    // the driveway instrument says water is falling; the grid cell says clouds
+    expect(
+      conditionIcon(
+        cur({ condition: "Clouds", description: "overcast clouds", raining: 1 }),
+      ),
+    ).toBe("raining");
+  });
+
+  it("reads the atmosphere group as a grey sky", () => {
+    expect(conditionIcon(cur({ condition: "Mist", description: "mist" }))).toBe(
+      "cloudy",
+    );
+    expect(conditionIcon(cur({ condition: "Fog", description: "fog" }))).toBe(
+      "cloudy",
+    );
+  });
+
+  it("has nothing to say without a report or a sky", () => {
+    expect(conditionIcon(null)).toBeNull();
+    // station-only payload: no OWM garnish yet, calm and dry
+    expect(conditionIcon(cur({ condition: null, description: null }))).toBeNull();
   });
 });

@@ -566,6 +566,60 @@ export function nightBands(
   return bands;
 }
 
+/** The eight skies the station can draw (issue #78). Hyphenated keys double
+ * as stable identifiers for the SVG components in Dashboard.tsx. */
+export type ConditionIconKey =
+  | "sunny"
+  | "mostly-sunny"
+  | "partly-cloudy"
+  | "cloudy"
+  | "stormy"
+  | "raining"
+  | "snowing"
+  | "windy";
+
+// "Super windy" thresholds: sustained wind or gusts strong enough that wind
+// IS the story, whatever the sky is doing behind it.
+export const WINDY_SUSTAINED_MPH = 20;
+export const WINDY_GUST_MPH = 30;
+
+/** Which icon tells the sky's story right now (issue #78). Precedence runs
+ * drama-first: storm > snow > rain > wind > the four cloud-cover states.
+ * OWM's `condition` is weather.main ("Clear", "Clouds", "Rain", ...);
+ * `description` refines the Clouds group ("few clouds", "overcast clouds").
+ * The station's piezo (`raining === 1`) outranks OWM's opinion -- the
+ * instrument in the driveway beats the grid cell's word. Null when there is
+ * nothing to say (no report, or a report with no sky fields) -- the caller
+ * keeps the slot reserved either way (house rule #1). */
+export function conditionIcon(
+  current: CurrentWeather | null,
+): ConditionIconKey | null {
+  if (current === null) return null;
+  const cond = current.condition;
+  if (cond === "Thunderstorm") return "stormy";
+  if (cond === "Snow") return "snowing";
+  if (cond === "Rain" || cond === "Drizzle" || current.raining === 1)
+    return "raining";
+  if (
+    (current.wind_mph ?? 0) >= WINDY_SUSTAINED_MPH ||
+    (current.wind_gust_mph ?? 0) >= WINDY_GUST_MPH ||
+    cond === "Squall" ||
+    cond === "Tornado"
+  )
+    return "windy";
+  if (cond === "Clear") return "sunny";
+  if (cond === "Clouds") {
+    const desc = current.description ?? "";
+    if (desc === "few clouds") return "mostly-sunny";
+    if (desc === "scattered clouds") return "partly-cloudy";
+    return "cloudy"; // broken clouds, overcast clouds
+  }
+  // The rest of OWM's atmosphere group (Mist, Fog, Haze, Smoke, Dust, ...)
+  // reads as a grey sky for now -- dedicated icons are a follow-up.
+  if (cond !== null) return "cloudy";
+  return null;
+}
+
 /** Wind bearing -> the 8-point compass a field notebook would use.
  * OpenWeather reports the direction the wind comes FROM. */
 export function compass(deg: number | null): string {
