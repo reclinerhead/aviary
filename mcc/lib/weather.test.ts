@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARCHIVE_MAX_SPAN_S,
+  parseRange,
   BLEND_HORIZON_S,
   DEW_TREND_EPS_F,
   blendForecast,
@@ -139,6 +141,51 @@ describe("parseReport", () => {
     expect(parseReport(JSON.stringify({ ts: 5, text: 42 }))).toBeNull();
     expect(parseReport("{not json")).toBeNull();
     expect(parseReport("null")).toBeNull();
+  });
+});
+
+describe("parseRange", () => {
+  const now = 2_000_000_000;
+
+  it("takes a sane range as given", () => {
+    const week = 7 * 86400;
+    expect(parseRange(String(now - week), String(now)))
+      .toEqual({ from: now - week, to: now });
+  });
+
+  it("clamps an absurd span to the newest window, anchored at `to`", () => {
+    // "from the epoch to now" is a typo, not a request for ten years.
+    expect(parseRange("0", String(now)))
+      .toEqual({ from: now - ARCHIVE_MAX_SPAN_S, to: now });
+  });
+
+  it("leaves a range at exactly the max span alone", () => {
+    const from = now - ARCHIVE_MAX_SPAN_S;
+    expect(parseRange(String(from), String(now))).toEqual({ from, to: now });
+  });
+
+  it("leaves an inverted range inverted -- it selects nothing, honestly", () => {
+    expect(parseRange("900", "500")).toEqual({ from: 900, to: 500 });
+  });
+
+  it("rejects absent, blank, and non-numeric ends", () => {
+    // Number(null) and Number("") are both 0, so these must be caught before
+    // the arithmetic -- a missing `from` would otherwise read as the epoch.
+    expect(parseRange(null, String(now))).toBeNull();
+    expect(parseRange(String(now), null)).toBeNull();
+    expect(parseRange("", String(now))).toBeNull();
+    expect(parseRange("   ", String(now))).toBeNull();
+    expect(parseRange("yesterday", String(now))).toBeNull();
+    expect(parseRange(String(now), "NaN")).toBeNull();
+    expect(parseRange("Infinity", String(now))).toBeNull();
+  });
+
+  it("truncates fractional seconds", () => {
+    expect(parseRange("100.7", "200.9")).toEqual({ from: 100, to: 200 });
+  });
+
+  it("accepts a zero-length range", () => {
+    expect(parseRange("100", "100")).toEqual({ from: 100, to: 100 });
   });
 });
 

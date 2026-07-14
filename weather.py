@@ -15,8 +15,9 @@
 # Bus contract (topics in bus.py) -- all three RETAINED, because weather is
 # *state*, not a moment: a late joiner (dashboard tab, restarted narrator) gets
 # the latest report straight from the broker, so nobody needs an HTTP path or
-# a poll loop of their own. Nothing is archived; OpenWeather is the archive of
-# record and a dropped report is refetched on the next poll.
+# a poll loop of their own. The bus carries only the live state and the 48h
+# window; the permanent record is weather_archive.py's business (issue #105),
+# written on the same tick and read over HTTP by the MCC, never the bus.
 #
 #   publishes  weather/current    latest observed conditions, one JSON object
 #   publishes  weather/forecast   5-day/3-hour series shaped for charting
@@ -38,7 +39,16 @@
 # whole every append), persisted to a small JSON file so a restart doesn't
 # blank the dashboard's observed-trend trail. Deliberately NOT SQLite -- the
 # window is bounded and rewritten whole, so a file is the honest data
-# structure. (A seasonal archive, if we ever want one, is a follow-up issue.)
+# structure.
+#
+# The seasonal archive that comment used to defer is now real
+# (weather_archive.py, issue #105) and takes NOTHING away from the window:
+# every point that passes should_record() is appended to the window AND
+# recorded to the archive, which never prunes. The window remains the bus
+# payload -- bounded, retained, rehydrating a fresh tab with no fetch; the
+# archive is the record that outlives it. A failed archive write is a gap in
+# the record, logged and skipped, never a dead weather service (the
+# skipped-report ethos): the bus is this service's job.
 #
 # Config (env, following the MERLE_MQTT conventions):
 #   MERLE_ECOWITT          the GW2000B gateway, "host" or "host:port".
@@ -50,6 +60,9 @@
 #   MERLE_WEATHER_LOC      "zip", "zip,CC", or "lat,lon" (default: 49001,US --
 #                          the station's home turf, Kalamazoo MI).
 #   MERLE_WEATHER_HISTORY  history file path (default: weather_history.json)
+#   MERLE_WEATHER_DB       the seasonal archive's path (default: weather.db).
+#                          See weather_archive.py -- the MCC's
+#                          /weather/history route must point at the same file.
 #   MERLE_MQTT             the broker, required as everywhere else (bus.py).
 #   MERLE_OLLAMA           Ollama "host" or "host:port" for Willard's on-air
 #                          segment (issue #45). OPTIONAL -- unset means no
@@ -80,11 +93,13 @@
 
 import json
 import os
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
 
 import bus
+import weather_archive
 # The narrator owns the Ollama plumbing (endpoint config, the blocking
 # non-streaming client, the model default); Willard borrows it rather than
 # growing a second copy that could drift -- same reasoning as perception.py.
@@ -694,6 +709,14 @@ def main():
         print("[weather] willard's voice: off (MERLE_OLLAMA not set)")
 
     window = load_history(history_path)
+    # The archive (issue #105). connect() before the bus: a path that can't be
+    # opened is a misconfiguration, and this is the one irreplaceable file the
+    # stack owns -- better to die at launch than to publish weather for a week
+    # while silently recording none of it. Backfilling the window costs
+    # nothing (the PK dedupes) and hands a fresh archive up to 48h of real
+    # readings instead of starting it from empty.
+    archive = weather_archive.connect(weather_archive.db_path())
+    filed = weather_archive.backfill(archive, window)
     # status_topic gives Willard the narrator presence contract (issue #31):
     # retained online/offline with the Last Will covering crashes AND
     # systemctl stop, so the dashboard masthead flips within seconds instead
@@ -703,6 +726,8 @@ def main():
     print(f"[weather] on duty: station={station_base}, loc={loc}, "
           f"{len(window)} points of history, "
           f"polling every {STATION_INTERVAL_S} s")
+    print(f"[weather] archiving to {weather_archive.db_path()} "
+          f"({filed} points backfilled from the window)")
 
     current = None           # the freshest observed report, for the segment
     garnish = None           # OWM's sky/sun fields, merged into every current
@@ -740,6 +765,16 @@ def main():
                     save_history(history_path, window)
                     publisher.publish(bus.WEATHER_HISTORY_TOPIC,
                                       {"points": window}, retain=True)
+                    # The same tick, kept forever (issue #105). A failed write
+                    # is one missing point -- a gap, which the chart draws
+                    # honestly -- and never worth killing a service whose job
+                    # is the bus above. The window and the topic have already
+                    # happened either way.
+                    try:
+                        weather_archive.record(archive, point)
+                    except sqlite3.Error as e:
+                        print(f"[weather] archive write failed for "
+                              f"ts={point['ts']}: {e}")
                 print(f"[weather] {current['temp_f']}F, "
                       f"wind {current['wind_mph']} mph, "
                       f"rain today {current['rain_day_in']} in "
@@ -781,6 +816,10 @@ def main():
         # Manual desk runs: sign off cleanly (close() publishes the retained
         # offline). Under systemd this never runs -- SIGTERM fires the will.
         publisher.close()
+        # Tidiness, not durability: every record() commits, so the archive is
+        # already safe on disk however this process dies. This just checkpoints
+        # the WAL on the way out.
+        archive.close()
         print("\n[weather] off duty.")
 
 
