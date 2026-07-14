@@ -58,6 +58,22 @@ describe("parseLine", () => {
   it("rejects non-JSON garbage", () => {
     expect(parseLine("not json")).toBeNull();
   });
+  it("carries the event's frame_id when present (issue #90)", () => {
+    const line = parseLine(
+      JSON.stringify({ text: "hi", frame_id: "20260714_x_arrival_0001" }),
+    );
+    expect(line?.frame_id).toBe("20260714_x_arrival_0001");
+  });
+  it("leaves the frame_id key ABSENT when the wire had none", () => {
+    // The degradation convention: old journal files and template-tier lines
+    // parse to exactly the pre-#90 shape -- no empty-string invention.
+    const line = parseLine(JSON.stringify({ text: "hi" }));
+    expect(line && "frame_id" in line).toBe(false);
+    expect(parseLine(JSON.stringify({ text: "hi", frame_id: "" }))?.frame_id)
+      .toBeUndefined();
+    expect(parseLine(JSON.stringify({ text: "hi", frame_id: 7 }))?.frame_id)
+      .toBeUndefined();
+  });
 });
 
 describe("parseJournal", () => {
@@ -81,6 +97,15 @@ describe("parseJournal", () => {
   });
   it("accepts an empty window (a fresh narrator with nothing filed)", () => {
     expect(parseJournal(JSON.stringify({ lines: [] }))).toEqual([]);
+  });
+  it("keeps per-line frame_ids and tolerates lines without one (issue #90)", () => {
+    const lines = parseJournal(
+      JSON.stringify({
+        lines: [{ ...line(0), frame_id: "fid_0" }, line(1)],
+      }),
+    );
+    expect(lines?.[0].frame_id).toBe("fid_0");
+    expect(lines && "frame_id" in lines[1]).toBe(false);
   });
   it("rejects payloads that aren't a window", () => {
     expect(parseJournal(JSON.stringify({ lines: "nope" }))).toBeNull();
@@ -121,6 +146,12 @@ describe("toJournalEntries", () => {
     const twin = line("2026-07-06T10:00:00", "again");
     const entries = toJournalEntries([twin, twin]);
     expect(new Set(entries.map((e) => e.key)).size).toBe(2);
+  });
+  it("carries frame_id through to the entry (issue #90)", () => {
+    const entries = toJournalEntries([
+      { ...line("2026-07-06T10:00:00", "look at him"), frame_id: "fid_1" },
+    ]);
+    expect(entries[0].frame_id).toBe("fid_1");
   });
 });
 

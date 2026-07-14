@@ -11,6 +11,10 @@ export type NarrationLine = {
   voice: string;
   text: string;
   event_kind: string;
+  // The event's still shot (issue #90): present only when the narrated event
+  // carried one -- old journal files, template-tier lines, and
+  // colleague_mention follow-ups have no key at all, and must keep parsing.
+  frame_id?: string;
 };
 
 export const NARRATION_TOPIC = "narration/lines";
@@ -57,6 +61,11 @@ function lineFrom(o: unknown): NarrationLine | null {
     voice: typeof l.voice === "string" ? l.voice : "",
     text: l.text,
     event_kind: typeof l.event_kind === "string" ? l.event_kind : "",
+    // Key absent when absent (issue #90) -- the parsed shape mirrors the
+    // wire's degradation convention instead of inventing an empty field.
+    ...(typeof l.frame_id === "string" && l.frame_id !== ""
+      ? { frame_id: l.frame_id }
+      : {}),
   };
 }
 
