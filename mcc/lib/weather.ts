@@ -104,6 +104,62 @@ export const FUTURE_S = 48 * 3600;
 // six days in ~400px would be a smear, not a chart.
 export const STATION_FUTURE_S = 120 * 3600;
 
+// The station window's SPAN (issue #106). Panning slides this window along
+// the archive; it never resizes it -- span is fixed, only position moves.
+// (A zoom/span control is the acknowledged follow-up once the archive holds
+// enough months to make dragging 144h at a time tedious.)
+export const STATION_SPAN_S = PAST_S + STATION_FUTURE_S;
+
+/** Slide a window back inside the walls WITHOUT resizing it (issue #106):
+ * the span is the viewer's setting, never something a clamp gets to change.
+ * `newest` is the forecast's end -- panning right past it would show space
+ * with no data behind it -- and `oldest` is the earliest reading that exists.
+ *
+ * When the walls are closer together than the span, the RIGHT wall wins and
+ * the window overhangs the left one. That case is the normal state, not an
+ * edge case: a young archive holds less than 144h, and the default window
+ * (24h back, 120h ahead) must stay exactly reachable from day one. */
+export function clampWindow(
+  ts0: number,
+  ts1: number,
+  oldest: number,
+  newest: number,
+): { ts0: number; ts1: number } {
+  const span = ts1 - ts0;
+  if (newest - oldest < span) return { ts0: newest - span, ts1: newest };
+  if (ts1 > newest) return { ts0: newest - span, ts1: newest };
+  if (ts0 < oldest) return { ts0: oldest, ts1: oldest + span };
+  return { ts0, ts1 };
+}
+
+/** Merge two point series by ts, oldest first (issue #106): the retained bus
+ * window and whatever the archive has handed over. Deduped because the two
+ * genuinely overlap -- the archive holds the same rows the window does, and a
+ * duplicate ts would draw a zero-length segment and double-count in the axis
+ * scan. `a` wins a tie: the bus is the fresher voice for the same moment. */
+export function mergePoints(
+  a: WeatherPoint[],
+  b: WeatherPoint[],
+): WeatherPoint[] {
+  const byTs = new Map<number, WeatherPoint>();
+  for (const p of b) byTs.set(p.ts, p);
+  for (const p of a) byTs.set(p.ts, p);
+  return [...byTs.values()].sort((x, y) => x.ts - y.ts);
+}
+
+/** The station axis's corner labels as an offset from now (issue #106):
+ * -86400 -> "−24h", +432000 -> "+5d". Hours read naturally for a day or two
+ * and stop meaning anything past that, which is dayTicks' reasoning applied
+ * to the corners. A live window prints exactly the "−24h" / "+5d" the view
+ * has always shown; a panned one tells the truth instead. U+2212 minus, not
+ * a hyphen -- it lines up in the telemetry face. */
+export function windowEdgeLabel(offsetS: number): string {
+  const sign = offsetS < 0 ? "−" : "+";
+  const abs = Math.abs(offsetS);
+  if (abs < 48 * 3600) return `${sign}${Math.round(abs / 3600)}h`;
+  return `${sign}${Math.round(abs / 86400)}d`;
+}
+
 // --- Pure payload parsing (unit-tested in weather.test.ts) -------------------
 
 const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
@@ -328,27 +384,39 @@ export function blendForecast(
   });
 }
 
-/** Clip history to the trailing window and forecast to the leading one, both
- * sorted by ts. The forecast temps are blendForecast-calibrated against the
- * trail (issue #71), and the last observed point is PREPENDED to `coming` so
- * the two polylines meet at "now" instead of leaving a gap. */
+/** Clip history and forecast to an EXPLICIT window [ts0, ts1] (issue #106),
+ * both sorted by ts. `now` is still a parameter, but only as the seam that
+ * splits observed from forecast -- it is no longer the window's anchor, which
+ * is the whole point: a panned window sits wherever the viewer dragged it.
+ *
+ * The forecast temps are blendForecast-calibrated against the trail (issue
+ * #71), and the last observed point is PREPENDED to `coming` so the two
+ * polylines meet at the seam instead of leaving a gap. The stitch only
+ * happens when there is actually a forecast in view: a window panned entirely
+ * into the past has no seam to close, and stitching there would emit a
+ * one-point series that draws nothing and only muddies the contract. */
 export function trendSeries(
   history: WeatherPoint[],
   forecast: WeatherPoint[],
   now: number,
-  pastS = PAST_S,
-  futureS = FUTURE_S,
+  ts0: number,
+  ts1: number,
 ): Trend {
   const byTs = (a: WeatherPoint, b: WeatherPoint) => a.ts - b.ts;
   const observed = history
-    .filter((p) => p.ts >= now - pastS && p.ts <= now)
+    .filter((p) => p.ts >= ts0 && p.ts <= Math.min(now, ts1))
     .sort(byTs);
   const coming = blendForecast(
     observed,
-    forecast.filter((p) => p.ts > now && p.ts <= now + futureS).sort(byTs),
+    forecast
+      .filter((p) => p.ts > Math.max(now, ts0) && p.ts <= ts1)
+      .sort(byTs),
   );
   const last = observed[observed.length - 1];
-  return { observed, coming: last ? [last, ...coming] : coming };
+  return {
+    observed,
+    coming: last && coming.length ? [last, ...coming] : coming,
+  };
 }
 
 /** Temperature axis for the whole trend, padded so the line never kisses the
@@ -556,14 +624,12 @@ export type DayTick = { ts: number; frac: number; label: string };
  * are the honest unit, and they're the viewer's local days (same reasoning as
  * the epoch-seconds convention: the dashboard formats, nobody parses).
  * Stepping is +36h then re-floor to midnight, so DST's 23/25h days can't
- * skip or double a tick. Empty for a degenerate window. */
-export function dayTicks(
-  now: number,
-  pastS = PAST_S,
-  futureS = STATION_FUTURE_S,
-): DayTick[] {
-  const ts0 = now - pastS;
-  const ts1 = now + futureS;
+ * skip or double a tick. Empty for a degenerate window.
+ *
+ * Takes the window explicitly since issue #106 -- it used to derive one from
+ * `now`, which only worked while the window was anchored there. A panned
+ * window isn't. */
+export function dayTicks(ts0: number, ts1: number): DayTick[] {
   if (ts1 <= ts0) return [];
   const ticks: DayTick[] = [];
   const d = new Date(ts0 * 1000);
@@ -599,15 +665,35 @@ export type NightBand = { start: number; end: number };
 
 const DAY_S = 86_400;
 
+/** How far from today the repeated sun times stay honest (issue #106). The
+ * bands are built by repeating TODAY's sunrise/sunset at 24h offsets, and day
+ * length drifts ~2 minutes per day: a week out that's ~15 minutes, which at
+ * the station window's scale (144h across ~1400px) is about 2px -- genuinely
+ * invisible. A month out it's an hour, which is visibly wrong, and
+ * wrong-but-confident is the one thing this chart doesn't do.
+ *
+ * So the bands simply STOP at the horizon rather than drifting into fiction.
+ * Panned deep into the archive the chart has no night shading, which is an
+ * honest "we don't know the sun times back there" -- the browser is only ever
+ * told today's, never the station's lat/lon. Computing them per-day for real
+ * needs that location on the bus, which is a backend change and its own
+ * issue; this is the honest answer until then. */
+export const NIGHT_BAND_HORIZON_DAYS = 7;
+
 /** Night intervals (sunset -> next sunrise) intersecting [ts0, ts1], built by
- * repeating today's sun times at 24h offsets -- day length drifts ~2 minutes
- * per day, invisible at chart scale. Empty when the report has no sun times
- * or they are out of order (garbage in, no bands out). */
+ * repeating today's sun times at 24h offsets, out to the horizon above. Empty
+ * when the report has no sun times or they are out of order (garbage in, no
+ * bands out).
+ *
+ * `k` is the repetition index, which IS the band's distance from today in
+ * days -- so the horizon needs no clock of its own, and the panel's live
+ * window (never more than 2 days from now) can't reach it. */
 export function nightBands(
   sunrise: number | null,
   sunset: number | null,
   ts0: number,
   ts1: number,
+  horizonDays = NIGHT_BAND_HORIZON_DAYS,
 ): NightBand[] {
   if (sunrise === null || sunset === null) return [];
   if (sunset <= sunrise || sunset - sunrise >= DAY_S) return [];
@@ -616,6 +702,7 @@ export function nightBands(
   const k0 = Math.floor((ts0 - sunset) / DAY_S) - 1;
   const k1 = Math.ceil((ts1 - sunset) / DAY_S) + 1;
   for (let k = k0; k <= k1; k++) {
+    if (Math.abs(k) > horizonDays) continue;
     const start = Math.max(sunset + k * DAY_S, ts0);
     const end = Math.min(sunrise + (k + 1) * DAY_S, ts1);
     if (end > start) bands.push({ start, end });
