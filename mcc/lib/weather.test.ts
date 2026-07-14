@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ARCHIVE_MAX_SPAN_S,
+  FUTURE_S,
+  STATION_SPAN_S,
+  clampWindow,
+  mergePoints,
   parseRange,
+  windowEdgeLabel,
   BLEND_HORIZON_S,
   DEW_TREND_EPS_F,
   blendForecast,
@@ -268,35 +273,93 @@ describe("ageText", () => {
 
 describe("trendSeries", () => {
   const now = 100_000;
+  // The default live window, the shape every pre-#106 call site used: the
+  // seam sits inside it and it moves with `now`.
+  const liveFrom = now - PAST_S;
+  const liveTo = now + FUTURE_S;
   it("clips history to the trailing window and forecast to the leading one", () => {
     const { observed, coming } = trendSeries(
       [pt(now - 90_000), pt(now - 500), pt(now + 5)], // too old / in / future
       [pt(now - 10), pt(now + 500), pt(now + 900_000)], // past / in / too far
       now,
-      86_400,
-      172_800,
+      now - 86_400,
+      now + 172_800,
     );
     expect(observed.map((p) => p.ts)).toEqual([now - 500]);
     expect(coming.map((p) => p.ts)).toEqual([now - 500, now + 500]); // bridge + 1
   });
   it("bridges the last observed point into the forecast so the lines meet", () => {
-    const { coming } = trendSeries([pt(now - 100)], [pt(now + 100)], now);
+    const { coming } = trendSeries(
+      [pt(now - 100)], [pt(now + 100)], now, liveFrom, liveTo,
+    );
     expect(coming[0].ts).toBe(now - 100);
   });
   it("stands the forecast alone when nothing has been observed yet", () => {
-    const { observed, coming } = trendSeries([], [pt(now + 100)], now);
+    const { observed, coming } = trendSeries(
+      [], [pt(now + 100)], now, liveFrom, liveTo,
+    );
     expect(observed).toEqual([]);
     expect(coming.map((p) => p.ts)).toEqual([now + 100]);
   });
   it("sorts both series by ts", () => {
-    const { observed } = trendSeries([pt(now - 10), pt(now - 20)], [], now);
+    const { observed } = trendSeries(
+      [pt(now - 10), pt(now - 20)], [], now, liveFrom, liveTo,
+    );
     expect(observed.map((p) => p.ts)).toEqual([now - 20, now - 10]);
   });
+
+  // --- panned windows (issue #106) -----------------------------------------
+  it("gives a window panned entirely into the past no forecast at all", () => {
+    // Dragged back a week: everything in view is measured, and there is no
+    // seam to bridge -- so no one-point `coming` series either.
+    const { observed, coming } = trendSeries(
+      [pt(now - 8 * 86_400), pt(now - 7 * 86_400)],
+      [pt(now + 100)],
+      now,
+      now - 9 * 86_400,
+      now - 6 * 86_400,
+    );
+    expect(observed.map((p) => p.ts)).toEqual([
+      now - 8 * 86_400,
+      now - 7 * 86_400,
+    ]);
+    expect(coming).toEqual([]);
+  });
+  it("keeps observed points out of a window that starts after them", () => {
+    // ts0 is the left wall: a point older than it is not in view, even
+    // though it is older than `now`.
+    const { observed } = trendSeries(
+      [pt(now - 5000), pt(now - 100)], [], now, now - 1000, now + FUTURE_S,
+    );
+    expect(observed.map((p) => p.ts)).toEqual([now - 100]);
+  });
+  it("bridges from the last point IN the window, not the last one that exists", () => {
+    // The stitch has to start inside the frame -- otherwise the forecast line
+    // reaches back to a point the viewer has panned away from.
+    const { coming } = trendSeries(
+      [pt(now - 5000), pt(now - 100)],
+      [pt(now + 100)],
+      now,
+      now - 1000,
+      now + FUTURE_S,
+    );
+    expect(coming.map((p) => p.ts)).toEqual([now - 100, now + 100]);
+  });
+  it("stands the forecast alone when the window opens after now", () => {
+    const { observed, coming } = trendSeries(
+      [pt(now - 100)], [pt(now + 5000)], now, now + 1000, now + FUTURE_S,
+    );
+    expect(observed).toEqual([]);
+    expect(coming.map((p) => p.ts)).toEqual([now + 5000]);
+  });
+
   it("calibrates a biased forecast to the trail, raw observed bridge intact", () => {
     const { coming } = trendSeries(
       [pt(now - 100, { temp_f: 75 })],
       [pt(now + 100, { temp_f: 70 })],
       now,
+      liveFrom,
+      liveTo,
     );
     expect(coming[0].temp_f).toBe(75); // the bridge is the real observed point
     expect(coming[1].temp_f).toBeCloseTo(
@@ -452,8 +515,11 @@ describe("dayTicks", () => {
   // Structural assertions against the runtime's own local clock, so the
   // suite passes in any timezone (CI runs UTC, the dev box does not).
   const now = 1752408000; // 2025-07-13 12:00:00 UTC
+  // The window the view opens with, which dayTicks used to derive itself.
+  const dt = (from: number, to: number) => dayTicks(from, to);
+  const win = () => dt(now - PAST_S, now + STATION_FUTURE_S);
   it("marks every local midnight strictly inside the station window", () => {
-    const got = dayTicks(now);
+    const got = win();
     // 24h + 120h = 144h spans 5-7 local midnights depending on time of day
     expect(got.length).toBeGreaterThanOrEqual(5);
     expect(got.length).toBeLessThanOrEqual(7);
@@ -468,7 +534,7 @@ describe("dayTicks", () => {
     expect(got[got.length - 1].ts).toBeLessThan(now + STATION_FUTURE_S);
   });
   it("maps ts to frac linearly across the window", () => {
-    for (const t of dayTicks(now)) {
+    for (const t of win()) {
       expect(t.frac).toBeCloseTo(
         (t.ts - (now - PAST_S)) / (PAST_S + STATION_FUTURE_S),
         10,
@@ -476,7 +542,7 @@ describe("dayTicks", () => {
     }
   });
   it("labels each tick with the lowercased weekday of the day it begins", () => {
-    for (const t of dayTicks(now)) {
+    for (const t of win()) {
       expect(t.label).toBe(
         new Date(t.ts * 1000)
           .toLocaleDateString(undefined, { weekday: "short" })
@@ -486,7 +552,7 @@ describe("dayTicks", () => {
     }
   });
   it("consecutive ticks are one calendar day apart", () => {
-    const got = dayTicks(now);
+    const got = win();
     for (let i = 1; i < got.length; i++) {
       const gap = got[i].ts - got[i - 1].ts;
       // 23-25h covers DST spring/fall days
@@ -495,7 +561,137 @@ describe("dayTicks", () => {
     }
   });
   it("is empty for a degenerate window", () => {
-    expect(dayTicks(now, 0, 0)).toEqual([]);
+    expect(dt(now, now)).toEqual([]);
+    expect(dt(now, now - 1)).toEqual([]);
+  });
+
+  // --- arbitrary windows (issue #106) --------------------------------------
+  // The ticks used to be derived from `now`; panning reaches windows that
+  // anchor nowhere near it, and the DST invariant has to survive there too.
+  it("marks midnights in a window nowhere near now", () => {
+    const from = now - 90 * 86_400;
+    const got = dt(from, from + STATION_SPAN_S);
+    expect(got.length).toBeGreaterThanOrEqual(5);
+    for (const t of got) {
+      const d = new Date(t.ts * 1000);
+      expect([d.getHours(), d.getMinutes(), d.getSeconds()]).toEqual([0, 0, 0]);
+      expect(t.frac).toBeGreaterThan(0);
+      expect(t.frac).toBeLessThan(1);
+    }
+  });
+  it("neither skips nor doubles a tick across a DST boundary", () => {
+    // A window straddling each US transition, walked at the +36h-then-refloor
+    // step. A 23h or 25h day must still produce exactly one midnight.
+    for (const [y, m, d] of [
+      [2026, 2, 8], // spring forward (23h day)
+      [2026, 10, 1], // fall back (25h day)
+    ]) {
+      const from = Math.floor(new Date(y, m, d - 2, 12).getTime() / 1000);
+      const got = dt(from, from + STATION_SPAN_S);
+      const midnights = got.map((t) =>
+        new Date(t.ts * 1000).toDateString(),
+      );
+      expect(new Set(midnights).size).toBe(midnights.length); // no doubles
+      for (let i = 1; i < got.length; i++) {
+        const gap = got[i].ts - got[i - 1].ts;
+        expect(gap).toBeGreaterThanOrEqual(23 * 3600);
+        expect(gap).toBeLessThanOrEqual(25 * 3600); // no skips
+      }
+    }
+  });
+});
+
+describe("clampWindow", () => {
+  const oldest = 1_000_000;
+  const newest = 2_000_000;
+  const span = 100_000;
+  it("leaves a window between the walls alone", () => {
+    expect(clampWindow(1_500_000, 1_600_000, oldest, newest)).toEqual({
+      ts0: 1_500_000,
+      ts1: 1_600_000,
+    });
+  });
+  it("stops at the forecast's end rather than showing empty space", () => {
+    expect(clampWindow(1_950_000, 2_050_000, oldest, newest)).toEqual({
+      ts0: newest - span,
+      ts1: newest,
+    });
+  });
+  it("stops at the archive's first reading", () => {
+    expect(clampWindow(950_000, 1_050_000, oldest, newest)).toEqual({
+      ts0: oldest,
+      ts1: oldest + span,
+    });
+  });
+  it("preserves the span on every clamp -- a wall never resizes the window", () => {
+    for (const [a, b] of [
+      [1_500_000, 1_600_000],
+      [-5_000_000, -4_900_000],
+      [9_000_000, 9_100_000],
+      [oldest, oldest + span],
+      [newest - span, newest],
+    ]) {
+      const c = clampWindow(a, b, oldest, newest);
+      expect(c.ts1 - c.ts0).toBe(b - a);
+    }
+  });
+  it("pins right when the walls are closer together than the span", () => {
+    // The young-archive case, and the reason this rule exists: on day one the
+    // record is minutes old, and the default window (24h back) must still be
+    // exactly reachable rather than clamped forward into the future.
+    const c = clampWindow(newest - span, newest, newest - 1000, newest);
+    expect(c).toEqual({ ts0: newest - span, ts1: newest });
+    expect(c.ts1 - c.ts0).toBe(span);
+  });
+  it("an exactly-fitting window is untouched at either wall", () => {
+    expect(clampWindow(oldest, newest, oldest, newest)).toEqual({
+      ts0: oldest,
+      ts1: newest,
+    });
+  });
+});
+
+describe("mergePoints", () => {
+  it("merges two series into one, oldest first", () => {
+    expect(mergePoints([pt(300)], [pt(100), pt(200)]).map((p) => p.ts)).toEqual(
+      [100, 200, 300],
+    );
+  });
+  it("dedupes the overlap -- the archive holds the window's own rows", () => {
+    const merged = mergePoints([pt(200), pt(300)], [pt(100), pt(200)]);
+    expect(merged.map((p) => p.ts)).toEqual([100, 200, 300]);
+  });
+  it("lets the live window win a tie", () => {
+    const merged = mergePoints(
+      [pt(100, { temp_f: 71 })],
+      [pt(100, { temp_f: 32 })],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].temp_f).toBe(71);
+  });
+  it("handles either side being empty", () => {
+    expect(mergePoints([], [pt(100)]).map((p) => p.ts)).toEqual([100]);
+    expect(mergePoints([pt(100)], []).map((p) => p.ts)).toEqual([100]);
+    expect(mergePoints([], [])).toEqual([]);
+  });
+});
+
+describe("windowEdgeLabel", () => {
+  it("prints the live window's corners exactly as the view always has", () => {
+    expect(windowEdgeLabel(-PAST_S)).toBe("−24h");
+    expect(windowEdgeLabel(STATION_FUTURE_S)).toBe("+5d");
+  });
+  it("switches to days once hours stop meaning anything", () => {
+    expect(windowEdgeLabel(-47 * 3600)).toBe("−47h");
+    expect(windowEdgeLabel(-48 * 3600)).toBe("−2d");
+    expect(windowEdgeLabel(-9 * 86_400)).toBe("−9d");
+  });
+  it("uses a real minus sign, not a hyphen", () => {
+    expect(windowEdgeLabel(-3600).startsWith("−")).toBe(true);
+    expect(windowEdgeLabel(-3600).startsWith("-")).toBe(false);
+  });
+  it("stamps zero as a plus", () => {
+    expect(windowEdgeLabel(0)).toBe("+0h");
   });
 });
 
@@ -539,6 +735,42 @@ describe("nightBands", () => {
     expect(nightBands(sunset, sunrise, 0, D)).toEqual([]); // swapped
     expect(nightBands(sunrise, sunrise, 0, D)).toEqual([]);
   });
+  // --- the honesty horizon (issue #106) ------------------------------------
+  it("stops repeating the sun times past the horizon", () => {
+    // Panned a month back: today's sunrise/sunset repeated that far would be
+    // an hour off, and a confident lie is worse than no shading at all.
+    const far = -30 * D;
+    expect(nightBands(sunrise, sunset, far, far + 2 * D)).toEqual([]);
+  });
+  it("still bands the day at the horizon's edge", () => {
+    // k = -7 is the last honest repetition (~15 min of drift, ~2px).
+    const bands = nightBands(
+      sunrise,
+      sunset,
+      sunset - 7 * D - 60,
+      sunrise - 6 * D + 60,
+    );
+    expect(bands).toEqual([{ start: sunset - 7 * D, end: sunrise - 6 * D }]);
+  });
+  it("bands nothing one day past the horizon", () => {
+    expect(
+      nightBands(sunrise, sunset, sunset - 8 * D - 60, sunrise - 7 * D + 60),
+    ).toEqual([]);
+  });
+  it("takes the horizon as a parameter", () => {
+    const win: [number, number] = [sunset - 3 * D - 60, sunrise - 2 * D + 60];
+    expect(nightBands(sunrise, sunset, ...win, 2)).toEqual([]);
+    expect(nightBands(sunrise, sunset, ...win, 3)).toHaveLength(1);
+  });
+  it("never reaches the horizon from the panel's live window", () => {
+    // The panel is 24h/48h, so its bands are always within two days of today
+    // -- the horizon is a station-view concern and can't touch it.
+    const now = 12 * 3600;
+    expect(
+      nightBands(sunrise, sunset, now - PAST_S, now + FUTURE_S),
+    ).toHaveLength(3);
+  });
+
   it("is empty for a degenerate window", () => {
     expect(nightBands(sunrise, sunset, D, D)).toEqual([]);
   });
