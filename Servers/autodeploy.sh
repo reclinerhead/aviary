@@ -22,8 +22,13 @@
 #
 # Root/user split: the unit runs as ROOT -- the whole point is restarting
 # units without a sudo password -- but every git and pnpm step is demoted to
-# MERLE_DEPLOY_USER via runuser: root-owned files in the checkout or .next/
-# would silently break the next manual deploy.
+# MERLE_DEPLOY_USER: root-owned files in the checkout or .next/ would
+# silently break the next manual deploy. Demotion is setpriv, NOT runuser or
+# sudo: those open a PAM session per call, and at ~3 calls per quiet tick
+# that was ~7k "session opened/closed" journal lines a day -- the #35 spam
+# disease sneaking back in through PAM. setpriv drops uid/gid with no PAM at
+# all, and --reset-env gives the demoted step the owner's HOME (so `bash -l`
+# finds the right profile, and pnpm the right PATH).
 #
 # Config (env, set in the unit):
 #   MERLE_DEPLOY_UNITS       space-separated units to restart on any main
@@ -61,7 +66,9 @@ self_changed=0  # set by tick(); the loop hands over to the new copy
 
 log() { echo "[autodeploy] $*"; }
 
-as_owner() { runuser -u "$OWNER" -- "$@"; }
+as_owner() {
+    setpriv --reuid="$OWNER" --regid="$OWNER" --init-groups --reset-env "$@"
+}
 
 repo_git() { as_owner git -C "$REPO" "$@"; }
 
