@@ -278,6 +278,65 @@ export function parsePoints(payload: string): WeatherPoint[] | null {
   }
 }
 
+// --- Precipitation shade (issue #113) -----------------------------------------
+// Each precip bar's shade tracks ITS OWN value -- vivid for a sure thing, faint
+// for a maybe -- so a 90% Friday reads as a tall vivid slab and a 20% Tuesday as
+// a short ghost without hovering. Redundant with the bar's height on purpose:
+// the shade makes no claim the height doesn't already make, so it cannot be
+// misread and it needs no legend of its own.
+//
+// Mixed toward --panel rather than by opacity, and that is not a style choice:
+// the observed bars are 0.7 viewBox units wide but 5-minute points sit ~0.56
+// apart across 144h, so they ALREADY overlap. Stacked translucent bars compound
+// into intensities the station never measured (the warning that has been sitting
+// in Dashboard.tsx since #56). Solid fills overlap by overwriting.
+//
+// Direction: vivid = more. On pine-black, fading a colour blends it toward the
+// near-black panel, so faint reads DIMMER AND GREYER, not lighter -- which is
+// why "solid white for heavy snow, grey for a dusting" and "stronger blue for a
+// sure thing" are the same ramp described from opposite ends.
+
+/** Floors for the faint end, in mix-toward-token percent. Not one shared
+ * number, because white and blue don't disappear at the same rate: at these
+ * floors BOTH land at ~2.1:1 contrast against --panel (measured, not guessed --
+ * rain 40% -> 2.14:1, snow 30% -> 2.13:1). The floor is what keeps "unlikely"
+ * distinguishable from "no data", which is a distinction this chart never
+ * blurs. */
+export const RAIN_SHADE_FLOOR = 0.4;
+export const SNOW_SHADE_FLOOR = 0.3;
+/** The forecast's ceiling stays under the observed trail's full voice: a
+ * prediction, however confident, must never shout as loud as a measurement.
+ * (Snow has no observed sibling on its strip -- the piezo is snow-blind -- so
+ * nothing there is being out-shouted, and heavy snow gets the full white.) */
+export const FORECAST_SHADE_CEIL = 0.85;
+
+/** How strongly a precip bar wears its ink: `value` against `max`, floored so
+ * the faintest bar still reads, ceilinged by `ceil`. Returns a 0..1 mix weight
+ * for the token (1 = the token at full strength, 0 = the bare panel).
+ *
+ * A non-finite or non-positive `max` yields the floor rather than NaN or a
+ * divide-by-zero: an empty strip draws its bars faint, never invisible and
+ * never black. Values past `max` clamp -- the ceilings are `seriesCeil`'s job
+ * and a downpour past the scale is still just "the most". */
+export function precipShade(
+  value: number,
+  max: number,
+  floor: number,
+  ceil = 1,
+): number {
+  if (!Number.isFinite(max) || max <= 0 || !Number.isFinite(value)) return floor;
+  const t = Math.min(1, Math.max(0, value / max));
+  return floor + (ceil - floor) * t;
+}
+
+/** The CSS colour for a precip bar at that weight. oklab so the ramp steps
+ * perceptually rather than lurching through sRGB's middle; the browser does the
+ * mixing, so --rain and --panel stay the single source of both values. */
+export function precipFill(token: string, weight: number): string {
+  const pct = Math.round(Math.min(1, Math.max(0, weight)) * 100);
+  return `color-mix(in oklab, ${token} ${pct}%, var(--panel))`;
+}
+
 // --- The seasonal archive (issue #105) ----------------------------------------
 // The read half of weather_archive.py. Hand-mirrored types and a thin fetch,
 // the lib/history.ts convention: no client, no retry, throw on non-OK.
@@ -659,6 +718,87 @@ export function dayTicks(ts0: number, ts1: number): DayTick[] {
 export function snowSeason(ts: number): boolean {
   const m = new Date(ts * 1000).getMonth(); // 0 = january, local time
   return m >= 10 || m <= 2;
+}
+
+// --- Daily highs and lows (issue #113) ----------------------------------------
+
+export type TempMark = { ts: number; temp_f: number; kind: "high" | "low" };
+
+/** Two labelled turning points can't sit closer than this. A diurnal cycle is
+ * ~24h, so two "highs" six hours apart means one of them is a shower's wiggle,
+ * not an afternoon. Generous enough to survive a flat, weird day. */
+export const TEMP_MARK_MIN_GAP_S = 10 * 3600;
+
+/** The peaks and valleys of a forecast series -- the day's high and low, found
+ * as TURNING POINTS rather than per-calendar-day min/max.
+ *
+ * That distinction is the whole design. Bucketing by calendar day is right for
+ * SPEECH -- "how cold does Friday get" is a real question with a calendar answer,
+ * which is why weather.py's extended_digest does exactly that for Willard. It is
+ * wrong for labelling a CURVE, and it fails precisely when the chart is most
+ * worth reading: on an evening cold front the temperature falls all night, so
+ * Friday's coldest sample is 23:00 (still dropping -- a bucket edge, not a
+ * bottom) and Saturday's is 06:00. Two labels seven hours apart on one
+ * continuous slide into one valley. Turning points give that valley the single
+ * label it deserves, with no special-casing of midnight.
+ *
+ * Willard and this chart therefore answer different questions and will visibly
+ * disagree on exactly that night -- and both are right. That's deliberate.
+ *
+ * The labelled point is always a REAL forecast point, never an interpolation or
+ * an average of two: averaging the two lows would invent a temperature nobody
+ * forecast, which is the one thing this chart doesn't do (nearestPoint snaps,
+ * linePath splits on null rather than bridging).
+ *
+ * Endpoints are never marked. The first and last points of a series aren't
+ * turning points, they're where the data ran out -- and the first point of
+ * `coming` is trendSeries' observed-side bridge, which belongs to the trail.
+ * A run of equal temperatures marks its first sample, so a flat top labels
+ * once rather than at every sample across it. */
+export function tempMarks(
+  pts: WeatherPoint[],
+  minGapS = TEMP_MARK_MIN_GAP_S,
+): TempMark[] {
+  const s = pts
+    .filter((p) => p.temp_f !== null)
+    .sort((a, b) => a.ts - b.ts);
+  const marks: TempMark[] = [];
+  for (let i = 1; i < s.length - 1; i++) {
+    const t = s[i].temp_f!;
+    if (s[i - 1].temp_f === t) continue; // mid-plateau: its run already marked
+    // Walk past equal neighbours so a plateau is judged by the real slope on
+    // each side rather than by its own flat top.
+    let b = i + 1;
+    while (b < s.length && s[b].temp_f === t) b++;
+    if (b >= s.length) continue; // a plateau running off the end isn't a turn
+    const prev = s[i - 1].temp_f!;
+    const next = s[b].temp_f!;
+    if (t > prev && t > next) marks.push({ ts: s[i].ts, temp_f: t, kind: "high" });
+    else if (t < prev && t < next) marks.push({ ts: s[i].ts, temp_f: t, kind: "low" });
+  }
+  // Thin the wiggles. Extrema always ALTERNATE high/low/high, so two highs are
+  // never neighbours in this list -- a shallow low sits between them. Comparing
+  // only against the previous mark would therefore never catch the pair that
+  // matters; the same-kind mark is two back. When two same-kind marks turn out
+  // to be one feature, the wiggle between them goes with the loser.
+  const kept: TempMark[] = [];
+  for (const m of marks) {
+    const last = kept[kept.length - 1];
+    if (!last) {
+      kept.push(m);
+      continue;
+    }
+    const rival = last.kind === m.kind ? last : kept[kept.length - 2];
+    if (rival && rival.kind === m.kind && m.ts - rival.ts < minGapS) {
+      const better =
+        m.kind === "high" ? m.temp_f > rival.temp_f : m.temp_f < rival.temp_f;
+      if (better) kept[kept.indexOf(rival)] = m;
+      if (rival !== last) kept.splice(kept.indexOf(last), 1); // the wiggle
+      continue;
+    }
+    kept.push(m);
+  }
+  return kept;
 }
 
 export type NightBand = { start: number; end: number };

@@ -18,10 +18,29 @@
   --ink-dim: #93a794;
   --ink-faint: #5c6f5f;
 
+  /* The species accents are the ACTUAL box colors the vision stack draws, which
+     is what makes the dashboard and the stream read as one instrument. Never
+     pick these for decoration -- they mean "this species". */
   --squirrel: #ff7031;
   --chipmunk: #ff3838;
   --turkey: #cfd231;
   --led: #6be585;
+
+  /* Weather ink (issue #113). The palette's first accent that is NOT a species
+     -- it names something the station MEASURES rather than something the model
+     detects, which is the line that keeps the rule above intact. It also gives
+     --led its one job back: green means LIVE (presence lamps, on-air stamps,
+     the falling-now dot), and it used to moonlight as rain.
+
+     Chosen by the validator, not by eye: any blue light enough to match --led
+     (L 0.83) or --turkey (L 0.84) drops under the 0.10 chroma floor and reads
+     GRAY -- blue's gamut simply peaks darker than green and yellow, so
+     "match the palette's brightness" is a trap. #6bb6e5 (OKLCH L 0.746,
+     C 0.12) is the brightest blue that still reads unmistakably blue, and it
+     lands between --squirrel (0.711) and --led (0.829), inside the palette's
+     own range. Its CVD separation from every other ink is >= 34 ΔE against a
+     target of 12 -- blue is the safest hue this palette could have grown. */
+  --rain: #6bb6e5;
 }
 
 @theme inline {
@@ -37,6 +56,7 @@
   --color-chipmunk: var(--chipmunk);
   --color-turkey: var(--turkey);
   --color-led: var(--led);
+  --color-rain: var(--rain);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
 }

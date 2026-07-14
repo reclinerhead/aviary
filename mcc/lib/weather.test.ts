@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   ARCHIVE_MAX_SPAN_S,
+  FORECAST_SHADE_CEIL,
   FUTURE_S,
+  RAIN_SHADE_FLOOR,
   STATION_SPAN_S,
   clampWindow,
   mergePoints,
   parseRange,
+  precipFill,
+  precipShade,
+  tempMarks,
   windowEdgeLabel,
   BLEND_HORIZON_S,
   DEW_TREND_EPS_F,
@@ -146,6 +151,169 @@ describe("parseReport", () => {
     expect(parseReport(JSON.stringify({ ts: 5, text: 42 }))).toBeNull();
     expect(parseReport("{not json")).toBeNull();
     expect(parseReport("null")).toBeNull();
+  });
+});
+
+describe("precipShade", () => {
+  it("floors the faint end so 'unlikely' never reads as 'no data'", () => {
+    expect(precipShade(0, 1, RAIN_SHADE_FLOOR)).toBe(RAIN_SHADE_FLOOR);
+    expect(precipShade(0.1, 1, RAIN_SHADE_FLOOR)).toBeGreaterThan(
+      RAIN_SHADE_FLOOR,
+    );
+  });
+  it("tops out at the token's full strength", () => {
+    expect(precipShade(1, 1, RAIN_SHADE_FLOOR)).toBe(1);
+  });
+  it("respects a ceiling below full -- a forecast never shouts like a measurement", () => {
+    expect(precipShade(1, 1, 0.3, FORECAST_SHADE_CEIL)).toBeCloseTo(
+      FORECAST_SHADE_CEIL,
+      10,
+    );
+  });
+  it("ramps linearly between floor and ceiling", () => {
+    expect(precipShade(0.5, 1, 0.4, 1)).toBeCloseTo(0.7, 10);
+  });
+  it("normalises against the max it is GIVEN, not a global one", () => {
+    // The strip's three scales are rainMax / a fixed 100% / snowMax. Hand this
+    // the wrong ceiling and every shade is wrong while still looking plausible.
+    expect(precipShade(0.25, 0.25, 0.4)).toBe(1); // at rainMax -> full
+    expect(precipShade(0.25, 1, 0.4)).toBeCloseTo(0.55, 10); // as a chance -> quiet
+  });
+  it("clamps a value past the max rather than overshooting the token", () => {
+    expect(precipShade(9, 1, 0.4)).toBe(1);
+  });
+  it("clamps a negative value to the floor", () => {
+    expect(precipShade(-5, 1, 0.4)).toBe(0.4);
+  });
+  it("yields the floor for a degenerate max instead of NaN or a divide by zero", () => {
+    // An all-quiet strip draws faint bars, never invisible and never black.
+    expect(precipShade(0, 0, 0.4)).toBe(0.4);
+    expect(precipShade(1, Number.NaN, 0.4)).toBe(0.4);
+    expect(precipShade(Number.NaN, 1, 0.4)).toBe(0.4);
+  });
+});
+
+describe("precipFill", () => {
+  it("mixes the token toward the panel in oklab", () => {
+    expect(precipFill("var(--rain)", 1)).toBe(
+      "color-mix(in oklab, var(--rain) 100%, var(--panel))",
+    );
+    expect(precipFill("var(--ink)", 0.3)).toBe(
+      "color-mix(in oklab, var(--ink) 30%, var(--panel))",
+    );
+  });
+  it("clamps out-of-range weights", () => {
+    expect(precipFill("var(--rain)", 2)).toContain("100%");
+    expect(precipFill("var(--rain)", -1)).toContain("0%");
+  });
+});
+
+describe("tempMarks", () => {
+  const H = 3600;
+  /** A day of 3-hour forecast steps: cold at dawn, peak mid-afternoon. */
+  const day = (d: number, low: number, high: number): WeatherPoint[] => {
+    const shape = [low + 1, low, low + 4, high - 4, high, high - 2, low + 6, low + 3];
+    return shape.map((t, i) => pt(d * 86_400 + i * 3 * H, { temp_f: t }));
+  };
+
+  it("marks one high and one low for a clean diurnal day", () => {
+    const got = tempMarks(day(1, 50, 78));
+    expect(got.map((m) => m.kind)).toEqual(["low", "high"]);
+    expect(got.find((m) => m.kind === "high")!.temp_f).toBe(78);
+    expect(got.find((m) => m.kind === "low")!.temp_f).toBe(50);
+  });
+
+  it("gives a valley that spans midnight exactly ONE low", () => {
+    // THE case this design exists for. An evening cold front: the temperature
+    // falls straight through midnight and bottoms at dawn. Bucketing by
+    // calendar day would mark 23:00 (a bucket edge, still dropping) AND the
+    // dawn bottom -- two labels, one valley.
+    const falling = [70, 66, 62, 58, 54]; // 12:00 -> 24:00, still dropping
+    const rising = [48, 52, 60, 68, 72]; // 03:00 -> 15:00 -- 48 is the bottom
+    const pts = [
+      ...falling.map((t, i) => pt(i * 3 * H, { temp_f: t })),
+      ...rising.map((t, i) => pt((5 + i) * 3 * H, { temp_f: t })),
+    ];
+    const lows = tempMarks(pts).filter((m) => m.kind === "low");
+    expect(lows).toHaveLength(1);
+    expect(lows[0].temp_f).toBe(48); // the real bottom, not the midnight edge
+  });
+
+  it("never marks the endpoints -- the data running out is not a turning point", () => {
+    // Monotonic rise then stop: the last point is the highest, but it is the
+    // end of the series, not a peak.
+    const pts = [50, 55, 60, 65].map((t, i) => pt(i * 3 * H, { temp_f: t }));
+    expect(tempMarks(pts)).toEqual([]);
+  });
+
+  it("ignores the bridge point trendSeries prepends", () => {
+    // `coming[0]` is the last OBSERVED point (the seam stitch). It is an
+    // endpoint of this series and must not be labelled as a forecast peak.
+    const pts = [
+      pt(0, { temp_f: 99 }), // the bridge -- highest, and first
+      pt(3 * H, { temp_f: 60 }),
+      pt(6 * H, { temp_f: 70 }),
+      pt(9 * H, { temp_f: 65 }),
+    ];
+    const got = tempMarks(pts);
+    expect(got.map((m) => m.ts)).toEqual([3 * H, 6 * H]);
+    expect(got.every((m) => m.temp_f !== 99)).toBe(true);
+  });
+
+  it("thins a shower's wiggle into the real peak", () => {
+    // A 2F afternoon dip is technically a local minimum and visually nothing.
+    const pts = [60, 74, 72, 78, 62].map((t, i) => pt(i * 3 * H, { temp_f: t }));
+    const got = tempMarks(pts);
+    expect(got.filter((m) => m.kind === "high")).toHaveLength(1);
+    expect(got.find((m) => m.kind === "high")!.temp_f).toBe(78); // the real one
+  });
+
+  it("keeps genuinely separate days apart", () => {
+    const got = tempMarks([...day(1, 50, 78), ...day(2, 52, 80)]);
+    expect(got.filter((m) => m.kind === "high").map((m) => m.temp_f)).toEqual([
+      78, 80,
+    ]);
+  });
+
+  it("marks a plateau once, at its first sample", () => {
+    const pts = [60, 70, 70, 70, 61].map((t, i) => pt(i * 3 * H, { temp_f: t }));
+    const got = tempMarks(pts);
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({ kind: "high", ts: 3 * H, temp_f: 70 });
+  });
+
+  it("skips a plateau that runs off the end of the series", () => {
+    const pts = [60, 70, 70].map((t, i) => pt(i * 3 * H, { temp_f: t }));
+    expect(tempMarks(pts)).toEqual([]);
+  });
+
+  it("skips points with no temperature rather than crashing", () => {
+    const pts = [
+      pt(0, { temp_f: 60 }),
+      pt(3 * H, { temp_f: null }),
+      pt(6 * H, { temp_f: 78 }),
+      pt(9 * H, { temp_f: 61 }),
+    ];
+    expect(tempMarks(pts)).toEqual([
+      { ts: 6 * H, temp_f: 78, kind: "high" },
+    ]);
+  });
+
+  it("is empty for a flat, empty, or one-point series", () => {
+    expect(tempMarks([])).toEqual([]);
+    expect(tempMarks([pt(0, { temp_f: 60 })])).toEqual([]);
+    expect(
+      tempMarks([60, 60, 60, 60].map((t, i) => pt(i * 3 * H, { temp_f: t }))),
+    ).toEqual([]);
+  });
+
+  it("sorts an out-of-order series before reading its shape", () => {
+    const pts = [
+      pt(6 * H, { temp_f: 78 }),
+      pt(0, { temp_f: 60 }),
+      pt(9 * H, { temp_f: 61 }),
+    ];
+    expect(tempMarks(pts)).toEqual([{ ts: 6 * H, temp_f: 78, kind: "high" }]);
   });
 });
 
