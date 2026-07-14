@@ -4,7 +4,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Merle daemon's local SQLite database (mutable state -- never committed)
+# SQLite stores -- mutable state, never committed: merle.db (the daemon's, on
+# bluejay) and weather.db (the seasonal weather archive on pearl, issue #105).
+# The archive is the one file here that CANNOT be regenerated -- gitignored
+# because it's state, not because it's disposable. See Servers/Pearl.md.
 *.db
 *.db-wal
 *.db-shm

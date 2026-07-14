@@ -1,8 +1,15 @@
 // Client types + pure shaping for the Weather Post panel (issue #25). The
 // weather service on pearl publishes RETAINED bus messages, so the browser
 // gets the latest report + forecast + 48h observed window the instant it
-// subscribes -- there is no HTTP path for weather, only the bus (lib/bus.ts).
+// subscribes -- the LIVE panel needs no HTTP at all, only the bus (lib/bus.ts).
 // Timestamps are unix epoch SECONDS (OpenWeather's native clock).
+//
+// The one HTTP path is the seasonal archive (issue #105): anything older than
+// the retained 48h window can't ride a bus payload that gets republished whole
+// on every append, so the deep past is fetched on demand from
+// /weather/history -- same-origin off pearl's local disk, never the /daemon
+// proxy. It answers in the same `{points: [...]}` shape the bus topic carries,
+// so parsePoints() reads both and the chart can't tell them apart.
 
 export const WEATHER_CURRENT_TOPIC = "weather/current";
 export const WEATHER_FORECAST_TOPIC = "weather/forecast";
@@ -213,6 +220,56 @@ export function parsePoints(payload: string): WeatherPoint[] | null {
   } catch {
     return null;
   }
+}
+
+// --- The seasonal archive (issue #105) ----------------------------------------
+// The read half of weather_archive.py. Hand-mirrored types and a thin fetch,
+// the lib/history.ts convention: no client, no retry, throw on non-OK.
+
+/** The widest range the archive answers, mirroring weather_archive.MAX_SPAN_S
+ * -- the /history clamp precedent ("a typo can't bucket ten years"). Both
+ * ends clamp it: the route so a bad `from` can't scan the table, and here so
+ * an absurd ask never leaves the browser. */
+export const ARCHIVE_MAX_SPAN_S = 90 * 86400;
+
+/** Validate + clamp a requested archive range, mirroring
+ * weather_archive.clamp_range(). null when either end is absent, blank, or
+ * not a number -- the route answers that with an empty series, never an
+ * error. The clamp anchors at `to`: ask for ten years and you get the newest
+ * 90 days of it. An inverted range is left inverted on purpose -- it selects
+ * nothing, which is the honest answer to a range containing no time. */
+export function parseRange(
+  rawFrom: string | null,
+  rawTo: string | null,
+  maxSpanS = ARCHIVE_MAX_SPAN_S,
+): { from: number; to: number } | null {
+  const epoch = (raw: string | null): number | null => {
+    if (raw === null || raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  };
+  const to = epoch(rawTo);
+  let from = epoch(rawFrom);
+  if (from === null || to === null) return null;
+  if (to - from > maxSpanS) from = to - maxSpanS;
+  return { from, to };
+}
+
+/** The archived observations in [from, to], both ends inclusive, oldest
+ * first. `cache: "no-store"` -- unlike a frame's bytes, a time range's
+ * contents grow, so nothing here is immutable. An empty archive, an unset
+ * MERLE_WEATHER_DB, and a range with no data all answer `{points: []}`
+ * quietly: on day one an empty archive is the normal state, not an error.
+ * A malformed body yields [] for the same reason (parsePoints returns null);
+ * only a non-OK status is worth throwing over. */
+export async function fetchArchive(
+  from: number,
+  to: number,
+): Promise<WeatherPoint[]> {
+  const res = await fetch(`/weather/history?from=${from}&to=${to}`,
+    { cache: "no-store" });
+  if (!res.ok) throw new Error(`/weather/history -> ${res.status}`);
+  return parsePoints(await res.text()) ?? [];
 }
 
 // --- Pure chart shaping -------------------------------------------------------
