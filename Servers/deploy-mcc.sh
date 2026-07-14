@@ -9,6 +9,11 @@
 # the first broken step, so a failed build never restarts the service.
 #
 # Run it on pearl, from anywhere:  ~/project-squirrel/Servers/deploy-mcc.sh
+#
+# Since issue #95 this is the MANUAL path -- merle-autodeploy (autodeploy.sh)
+# watches origin/main and runs this same pull -> install -> build -> restart
+# order on its own. Keep the two in step: the order rule lives here, and the
+# watcher mirrors it.
 
 set -euo pipefail
 
