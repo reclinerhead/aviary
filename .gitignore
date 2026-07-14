@@ -12,8 +12,11 @@ __pycache__/
 # Weather service's rolling 48h window (mutable state on pearl -- see weather.py)
 weather_history.json
 
-# Event still-shot archive (frame_archiver.py's default MERLE_FRAMES_DIR on pearl)
-frames/
+# Event still-shot archive (frame_archiver.py's default MERLE_FRAMES_DIR on
+# pearl). ANCHORED to the repo root: a bare "frames/" also matches
+# mcc/app/frames/ and silently kept the /frames route out of git (the #90
+# deploy mystery).
+/frames/
 
 # Datasets, captures, and model weights -- large binaries stay out of git.
 # (Datasets live in Roboflow + local disk; weights are reproducible from training.)
