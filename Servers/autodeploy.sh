@@ -94,9 +94,13 @@ tick() {
     remote=$(repo_git rev-parse origin/main) || return 0
     [ "$head" = "$remote" ] && return 0   # the quiet path: no news, no log
 
-    # Never act on a checkout someone's mid-something in. Skipping is safe:
-    # the tick retries forever, so cleaning the tree resumes deploys.
-    if [ -n "$(repo_git status --porcelain)" ]; then
+    # Never act on a checkout someone's mid-something in -- but only TRACKED
+    # changes count. Untracked files can't be harmed by a --ff-only pull (git
+    # refuses a path collision on its own), and the services' runtime state
+    # (journal windows, weather history) lives beside the code as untracked
+    # or ignored files -- counting those blocked pearl's deploys forever.
+    # Skipping is safe: the tick retries, so cleaning the tree resumes.
+    if [ -n "$(repo_git status --porcelain --untracked-files=no)" ]; then
         log "origin/main moved to ${remote:0:9} but the checkout is dirty -- not touching it"
         return 0
     fi
