@@ -12,6 +12,11 @@ __pycache__/
 # Weather service's rolling 48h window (mutable state on pearl -- see weather.py)
 weather_history.json
 
+# Narrator journal windows (mutable state beside each narrator -- issue #58's
+# weather_history.json sibling, unignored by oversight until #95's watcher
+# refused to deploy over it)
+narration_journal.json
+
 # Event still-shot archive (frame_archiver.py's default MERLE_FRAMES_DIR on
 # pearl). ANCHORED to the repo root: a bare "frames/" also matches
 # mcc/app/frames/ and silently kept the /frames route out of git (the #90
