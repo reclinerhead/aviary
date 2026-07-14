@@ -13,6 +13,20 @@
 #
 # Topics:
 #   driveway/events          daemon -> world     one JSON object per event
+#   driveway/frames/<id>/    daemon -> world     the event's still shot (issue
+#     {full,thumb}                               #90): raw JPEG bytes, NOT JSON
+#                                                -- full is the annotated
+#                                                stream-downscaled frame, thumb
+#                                                a ~320px copy. Fire-and-forget
+#                                                and non-retained, same ethos
+#                                                as events: a dropped frame is
+#                                                a moment nobody archived (the
+#                                                event row still exists), never
+#                                                a lost record. frame_archiver
+#                                                on pearl subscribes and writes
+#                                                them to disk, where the MCC
+#                                                can reach them with the
+#                                                daemon asleep
 #   narration/lines          narrator -> world   one JSON object per spoken line
 #   narration/journal/<id>   narrator -> world   the field journal: each
 #                                                narrator's last 50 spoken lines,
@@ -60,6 +74,8 @@ import re
 import paho.mqtt.client as mqtt
 
 EVENTS_TOPIC = "driveway/events"
+FRAMES_WILDCARD = "driveway/frames/#"
+FRAME_VARIANTS = ("full", "thumb")
 NARRATION_TOPIC = "narration/lines"
 NARRATION_JOURNAL_WILDCARD = "narration/journal/+"
 NARRATOR_STATUS_WILDCARD = "narrators/+/status"
@@ -84,6 +100,23 @@ def narrator_status_id(topic):
 
 def narration_journal_topic(mqtt_id):
     return f"narration/journal/{mqtt_id}"
+
+
+def frame_topic(frame_id, variant):
+    """The still-shot topic for one event frame (issue #90). variant is "full"
+    (the annotated stream-downscaled JPEG) or "thumb" (~320px)."""
+    if variant not in FRAME_VARIANTS:
+        raise ValueError(f"unknown frame variant: {variant}")
+    return f"driveway/frames/{frame_id}/{variant}"
+
+
+def frame_topic_parts(topic):
+    """"driveway/frames/<id>/full" -> ("<id>", "full"); None for any other
+    topic (including unknown variants and ids with slashes -- the archiver
+    derives filenames from this, so anything shaped wrong dies here, not on
+    the filesystem)."""
+    m = re.fullmatch(r"driveway/frames/([^/]+)/(full|thumb)", topic)
+    return (m.group(1), m.group(2)) if m else None
 
 
 def broker_address():
@@ -144,6 +177,12 @@ class EventPublisher:
         # stay retain=False -- replaying a stale event to every new subscriber
         # would be worse than dropping it.
         self._client.publish(topic, json.dumps(payload), qos=0, retain=retain)
+
+    def publish_bytes(self, topic, payload):
+        # Raw bytes on the wire (the frame topics, issue #90) -- same
+        # fire-and-forget contract as publish(), just without the JSON
+        # encoding a JPEG must not go through.
+        self._client.publish(topic, payload, qos=0, retain=False)
 
     def close(self):
         if self._status_topic:
