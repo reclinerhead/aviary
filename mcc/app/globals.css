@@ -162,3 +162,33 @@ body {
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
+
+/* The journal lightbox (issue #96) -- yet-another-react-lightbox reskinned
+   as the station's own darkroom. The backdrop is near-opaque pine-black (a
+   whisper of translucency lets the topo contours ghost through, the station-
+   view treatment), the chrome inherits the ink scale, and the slide byline
+   wears the .stamp lettering in mono -- values duplicated here because the
+   caption node lives outside any .stamp scope. */
+.yarl__root {
+  --yarl__color_backdrop: color-mix(in srgb, var(--bg) 94%, transparent);
+  --yarl__color_button: var(--ink-dim);
+  --yarl__color_button_active: var(--ink);
+  --yarl__color_button_disabled: var(--ink-faint);
+  /* stock drop-shadow off: our backdrop is dark enough on its own */
+  --yarl__button_filter: none;
+  --yarl__slide_captions_container_background: transparent;
+  --yarl__slide_title_color: var(--ink-dim);
+  --yarl__slide_title_font_size: 12px;
+  --yarl__slide_title_font_weight: 400;
+}
+.yarl__slide_title {
+  font-family: var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+/* The print itself sits in a hairline frame, like every panel and thumb. */
+.yarl__slide_image {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel);
+}
