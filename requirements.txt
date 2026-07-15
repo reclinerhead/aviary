@@ -16,6 +16,12 @@ numpy
 paho-mqtt      # the MQTT bus (daemon publisher, narrator, replay script)
 pyyaml         # narrator personas + character bible
 
+# Tag reading for the music indexer (music_index.py). Optional by design: the
+# audio-span parsing and hashing are pure stdlib, so a box without mutagen
+# still produces a complete, correctly-identified catalog -- just with null
+# tags. Not needed in CI, which only exercises the pure half.
+mutagen
+
 # Test-only:
 pytest
 httpx
