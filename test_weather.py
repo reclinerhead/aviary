@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-import weather
+from weatherpost import weather
 
 # --- fixtures ----------------------------------------------------------------
 

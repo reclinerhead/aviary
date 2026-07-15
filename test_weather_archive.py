@@ -7,8 +7,8 @@ import sqlite3
 
 import pytest
 
-import weather
-import weather_archive
+from weatherpost import weather
+from weatherpost import weather_archive
 
 
 def pt(ts, **over):

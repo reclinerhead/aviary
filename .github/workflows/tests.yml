@@ -51,9 +51,10 @@ jobs:
           python-version: "3.13"
       # The full pure-logic suite: storage, perception bookkeeping, the daemon
       # against the synthetic frame source, narrator pacing/templates, the
-      # replay timing math, and the music catalog's identity/cache rules. CI
-      # needs fastapi/opencv/paho/yaml but NOT ultralytics/torch -- headless
-      # opencv avoids the libGL requirement of the full build. Model- and
+      # replay timing math, the music catalog's identity/cache rules, and the
+      # import boundary merle's two-package venv depends on. CI needs
+      # fastapi/opencv/paho/yaml but NOT ultralytics/torch -- headless opencv
+      # avoids the libGL requirement of the full build. Model- and
       # camera-dependent code stays out of CI, verified locally. (Deps listed
       # inline rather than requirements.txt precisely because of the
       # opencv-python -> headless swap.)
@@ -61,7 +62,7 @@ jobs:
       # THIS LIST IS THE WHOLE CONTRACT: there is no pytest.ini/testpaths
       # fallback, so a test_*.py that isn't named here silently never runs and
       # CI goes green having tested nothing. Add new files by hand.
-      # (test_bus.py and test_frame_archiver.py are knowingly absent -- they
-      # predate this note and have never run here; issue #115 flags it.)
+      # (test_bus.py and test_frame_archiver.py joined the list in #123 -- they
+      # had existed for months and never once run here.)
       - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml
-      - run: pytest test_storage.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_weather.py test_weather_archive.py test_replay.py test_make_2class.py test_music_catalog.py test_music_index.py -q
+      - run: pytest test_storage.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_weather.py test_weather_archive.py test_replay.py test_make_2class.py test_music_catalog.py test_music_index.py test_bus.py test_frame_archiver.py test_import_boundary.py -q
