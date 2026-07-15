@@ -389,7 +389,14 @@ export async function fetchArchive(
 
 // --- Pure chart shaping -------------------------------------------------------
 
-export type Trend = { observed: WeatherPoint[]; coming: WeatherPoint[] };
+/** `bridged` says whether `coming[0]` is the observed-side stitch rather than a
+ * forecast step. Only the drawn line wants that point; anything READING the
+ * forecast has to skip it, and it can't tell by looking (see tempMarks). */
+export type Trend = {
+  observed: WeatherPoint[];
+  coming: WeatherPoint[];
+  bridged: boolean;
+};
 
 // How long the station's calibration outranks the model (issue #71): the
 // forecast is fully pulled to the station at the seam and is its raw self
@@ -472,9 +479,11 @@ export function trendSeries(
       .sort(byTs),
   );
   const last = observed[observed.length - 1];
+  const bridged = Boolean(last) && coming.length > 0;
   return {
     observed,
-    coming: last && coming.length ? [last, ...coming] : coming,
+    coming: bridged ? [last, ...coming] : coming,
+    bridged,
   };
 }
 
@@ -751,15 +760,34 @@ export const TEMP_MARK_MIN_GAP_S = 10 * 3600;
  * linePath splits on null rather than bridging).
  *
  * Endpoints are never marked. The first and last points of a series aren't
- * turning points, they're where the data ran out -- and the first point of
- * `coming` is trendSeries' observed-side bridge, which belongs to the trail.
- * A run of equal temperatures marks its first sample, so a flat top labels
- * once rather than at every sample across it. */
+ * turning points, they're where the data ran out.
+ *
+ * `bridged` drops trendSeries' observed-side stitch before any of that, because
+ * it is a 5-minute trail sample wearing a forecast series' clothes -- and it is
+ * not enough to merely leave it unlabelled. As a NEIGHBOUR it still decides
+ * whether the first forecast step is a turning point, and it is the one sample
+ * in the trail guaranteed to sit next to that step: on any morning climbing
+ * toward its high, the last reading before the seam lands above the first
+ * 3-hour step, which reads as a valley the weather never had (issue #103). It
+ * gets labelled at the now line, where the trail is steepest and cuts straight
+ * through the label. That is exactly the 5-minute noise this function is
+ * forecast-only to avoid, smuggled back in one point at a time.
+ *
+ * Dropping it costs a real dawn valley its label -- the first forecast step has
+ * no forecast predecessor to turn against, so it is an endpoint like any other,
+ * and the honest answer is silence rather than a guess against a sample from a
+ * different series.
+ *
+ * A run of equal temperatures marks its first sample, so a flat top labels once
+ * rather than at every sample across it. */
 export function tempMarks(
   pts: WeatherPoint[],
+  bridged = false,
   minGapS = TEMP_MARK_MIN_GAP_S,
 ): TempMark[] {
-  const s = pts
+  // Slice before the null filter: the bridge is coming[0] whatever it measured,
+  // so filtering first could drop it and slice a real forecast step instead.
+  const s = (bridged ? pts.slice(1) : pts)
     .filter((p) => p.temp_f !== null)
     .sort((a, b) => a.ts - b.ts);
   const marks: TempMark[] = [];
