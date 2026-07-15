@@ -255,9 +255,51 @@ describe("tempMarks", () => {
       pt(6 * H, { temp_f: 70 }),
       pt(9 * H, { temp_f: 65 }),
     ];
-    const got = tempMarks(pts);
-    expect(got.map((m) => m.ts)).toEqual([3 * H, 6 * H]);
+    const got = tempMarks(pts, true);
     expect(got.every((m) => m.temp_f !== 99)).toBe(true);
+    // 3H is gone too: 99 was the only thing making it a low, and 99 is a trail
+    // sample, not a forecast step. 6H is a turning point on its own merits.
+    expect(got.map((m) => m.ts)).toEqual([6 * H]);
+  });
+
+  it("refuses the phantom valley the seam manufactures on a rising morning", () => {
+    // Issue #103, from the chart. The trail climbs toward the day's high, so
+    // the last 5-minute reading before the seam (86F) sits ABOVE the first
+    // 3-hour step (82F) -- and the forecast keeps climbing to 89F. Judged
+    // against that sample, 82F reads as a valley; judged against the forecast
+    // it is just the start of one long climb. The weather never dipped.
+    const pts = [
+      pt(0, { temp_f: 86 }), // the bridge: a trail sample, mid-spike
+      pt(3 * H, { temp_f: 82 }), // first forecast step -- NOT a low
+      pt(6 * H, { temp_f: 85 }),
+      pt(9 * H, { temp_f: 89 }), // the real peak
+      pt(12 * H, { temp_f: 84 }),
+    ];
+    expect(tempMarks(pts, true).map((m) => m.temp_f)).toEqual([89]);
+    // Unbridged, 82 IS a real turning point -- the flag is doing the work, not
+    // a coincidence of these numbers.
+    expect(tempMarks(pts, false).map((m) => m.temp_f)).toEqual([82, 89]);
+  });
+
+  it("keeps the first point when there is no bridge to drop", () => {
+    // Nothing observed yet, so coming stands alone: coming[0] is a genuine
+    // forecast step and slicing it would eat real data.
+    const pts = [60, 50, 70, 65].map((t, i) => pt(i * 3 * H, { temp_f: t }));
+    expect(tempMarks(pts, false).map((m) => m.temp_f)).toEqual([50, 70]);
+  });
+
+  it("drops the bridge by position, not by whether it has a temperature", () => {
+    // The bridge is coming[0] whatever it measured. If a null-temp bridge were
+    // filtered out first, the slice would eat the first forecast step instead
+    // and the phantom valley would come back wearing the next point's hat.
+    const pts = [
+      pt(0, { temp_f: null }), // the bridge, temp-less
+      pt(3 * H, { temp_f: 82 }),
+      pt(6 * H, { temp_f: 85 }),
+      pt(9 * H, { temp_f: 89 }),
+      pt(12 * H, { temp_f: 84 }),
+    ];
+    expect(tempMarks(pts, true).map((m) => m.temp_f)).toEqual([89]);
   });
 
   it("thins a shower's wiggle into the real peak", () => {
