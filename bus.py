@@ -59,6 +59,11 @@
 #                            is the Last Will), but in the weather namespace:
 #                            Willard is a reporter, not a narrator, and must
 #                            not light up the Field Journal's presence wildcard
+#   music/status             music presence      "online"/"offline", RETAINED --
+#                            the playback daemon on pearl (issue #129). Same
+#                            contract and same reasoning as weather/status:
+#                            its own namespace, because a jukebox is not a
+#                            narrator and must not appear in the Field Journal
 #
 # The weather topics are retained on purpose: weather is *state*, not a moment.
 # A late joiner (dashboard tab, restarted narrator) gets the latest report from
@@ -84,6 +89,7 @@ WEATHER_FORECAST_TOPIC = "weather/forecast"
 WEATHER_HISTORY_TOPIC = "weather/history"
 WEATHER_REPORT_TOPIC = "weather/report"
 WEATHER_STATUS_TOPIC = "weather/status"
+MUSIC_STATUS_TOPIC = "music/status"
 
 
 def narrator_status_topic(mqtt_id):
