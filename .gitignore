@@ -61,3 +61,7 @@ yarn-error.log*
 # Local machine config and secrets
 .claude/
 .env*
+
+# The Phase 1a analysis run's output (issue #136): a machine-local artifact
+# of a one-time pass -- it gets scp'd to pearl and imported, not committed.
+music_analysis.jsonl

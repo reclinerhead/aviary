@@ -22,6 +22,19 @@ pyyaml         # narrator personas + character bible
 # tags. Not needed in CI, which only exercises the pure half.
 mutagen
 
+# Audio analysis for the Phase 1a backfill (jukebox/music_analyze.py). Like
+# ultralytics/torch above, this is machine-specific and installed out-of-band:
+# it's needed ONLY on bluejay, only for a one-time pass, and it drags in numba +
+# llvmlite + scikit-learn (~100 MB) that pearl and CI have no use for. The
+# analyzer imports it lazily inside estimate_bpm() so its pure half stays
+# importable -- and testable -- without it.
+#
+#   pip install librosa      # bluejay only, and only for the backfill
+#
+# It also needs ffmpeg on PATH, which is not a pip package: the library is 62%
+# ALAC (libsndfile can't decode it) and ebur128 is ffmpeg's loudness filter.
+#   winget install Gyan.FFmpeg
+
 # Test-only:
 pytest
 httpx
