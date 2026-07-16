@@ -38,6 +38,9 @@
 #                            mcc/, run install -> build -> restart for
 #                            mcc-dashboard (the deploy-mcc.sh order; a failed
 #                            build never restarts -- old code keeps serving)
+#   MERLE_DEPLOY_MUSIC       "1" on pearl only: the same gate for music/ ->
+#                            music-app (issue #131). Same order, same
+#                            failed-build-keeps-serving contract.
 #   MERLE_DEPLOY_INTERVAL_S  poll cadence, default 60
 #   MERLE_DEPLOY_USER        checkout owner, default todd
 #   MERLE_REPO               checkout path, default /home/todd/project-squirrel
@@ -58,6 +61,7 @@ REPO="${MERLE_REPO:-/home/todd/project-squirrel}"
 SELF="$REPO/Servers/autodeploy.sh"
 UNITS="${MERLE_DEPLOY_UNITS:-}"
 DEPLOY_MCC="${MERLE_DEPLOY_MCC:-0}"
+DEPLOY_MUSIC="${MERLE_DEPLOY_MUSIC:-0}"
 INTERVAL="${MERLE_DEPLOY_INTERVAL_S:-60}"
 OWNER="${MERLE_DEPLOY_USER:-todd}"
 
@@ -71,6 +75,27 @@ as_owner() {
 }
 
 repo_git() { as_owner git -C "$REPO" "$@"; }
+
+# One Next app's gated deploy: install -> build -> restart, the deploy-mcc.sh
+# order. Build as the owner through a login shell -- pnpm lives on the owner's
+# PATH, and a root-owned .next/ would break the next manual deploy. A failed
+# build never restarts: old code keeps serving, and the log says fix forward.
+deploy_next_app() {
+    local dir="$1" unit="$2"
+    log "$dir/ changed -- install + build, then restart (the deploy-mcc.sh order)"
+    local build_out
+    if build_out=$(as_owner bash -lc \
+            "cd '$REPO/$dir' && pnpm install --frozen-lockfile && pnpm build" 2>&1); then
+        if systemctl restart "$unit"; then
+            log "restarted $unit"
+        else
+            log "restart FAILED for $unit -- check: systemctl status $unit"
+        fi
+    else
+        log "$dir build FAILED -- old build keeps serving; fix forward and merge again"
+        printf '%s\n' "$build_out" | tail -n 30
+    fi
+}
 
 tick() {
     self_changed=0
@@ -123,23 +148,13 @@ tick() {
         fi
     done
 
-    # The gated expensive path (pearl only): a docs-only merge never costs a
-    # Next build. Build as the owner through a login shell -- pnpm lives on
-    # the owner's PATH, and a root-owned .next/ would break manual deploys.
+    # The gated expensive paths (pearl only): a docs-only merge never costs a
+    # Next build, and each app rebuilds only when its own directory changed.
     if [ "$DEPLOY_MCC" = "1" ] && grep -q "^mcc/" <<<"$changed"; then
-        log "mcc/ changed -- install + build, then restart (the deploy-mcc.sh order)"
-        local build_out
-        if build_out=$(as_owner bash -lc \
-                "cd '$REPO/mcc' && pnpm install --frozen-lockfile && pnpm build" 2>&1); then
-            if systemctl restart mcc-dashboard; then
-                log "restarted mcc-dashboard"
-            else
-                log "restart FAILED for mcc-dashboard -- check: systemctl status mcc-dashboard"
-            fi
-        else
-            log "MCC build FAILED -- old build keeps serving; fix forward and merge again"
-            printf '%s\n' "$build_out" | tail -n 30
-        fi
+        deploy_next_app mcc mcc-dashboard
+    fi
+    if [ "$DEPLOY_MUSIC" = "1" ] && grep -q "^music/" <<<"$changed"; then
+        deploy_next_app music music-app
     fi
 
     # The self-update guard: this script deploys the repo it lives in. The
