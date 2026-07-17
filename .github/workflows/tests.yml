@@ -64,9 +64,10 @@ jobs:
       # CI goes green having tested nothing. Add new files by hand.
       # (test_bus.py and test_frame_archiver.py joined the list in #123 -- they
       # had existed for months and never once run here.)
-      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml
+      # pillow: test_music_art.py exercises the real resize path (issue #153).
+      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml pillow
       # test_music_analyze.py needs no librosa/ffmpeg: the analyzer imports the
       # beat tracker lazily inside estimate_bpm() precisely so its pure half --
       # the parsing and arithmetic that are actually worth testing -- stays
       # importable on a box (like this one) that has neither.
-      - run: pytest test_storage.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_weather.py test_weather_archive.py test_replay.py test_make_2class.py test_music_catalog.py test_music_index.py test_music_daemon.py test_music_cache.py test_music_analyze.py test_music_playlist.py test_bus.py test_frame_archiver.py test_import_boundary.py -q
+      - run: pytest test_storage.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_weather.py test_weather_archive.py test_replay.py test_make_2class.py test_music_catalog.py test_music_index.py test_music_daemon.py test_music_cache.py test_music_art.py test_music_analyze.py test_music_playlist.py test_bus.py test_frame_archiver.py test_import_boundary.py -q
