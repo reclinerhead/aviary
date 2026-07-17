@@ -59,6 +59,15 @@ def test_narrator_status_id_rejects_other_topics():
     assert bus.narrator_status_id("narrators/a/b/status") is None
 
 
+def test_service_status_topic_matches_the_wildcard_shape():
+    # Issue #147: the house-wide presence namespace. The narrator wildcard
+    # must NOT match it -- the namespaces were split so the Field Journal's
+    # roster only ever sees narrators.
+    assert bus.service_status_topic("merle-daemon") == "services/merle-daemon/status"
+    assert bus.SERVICE_STATUS_WILDCARD == "services/+/status"
+    assert bus.narrator_status_id(bus.service_status_topic("merle-daemon")) is None
+
+
 def test_frame_topic_round_trips_through_the_parser():
     # Issue #90: the daemon builds the topic, the archiver parses it back.
     # The pair must agree, or every frame publishes into the void.

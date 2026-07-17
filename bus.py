@@ -64,6 +64,20 @@
 #                            contract and same reasoning as weather/status:
 #                            its own namespace, because a jukebox is not a
 #                            narrator and must not appear in the Field Journal
+#   services/<name>/status   service presence    "online"/"offline", RETAINED --
+#                            the house-wide namespace (epic #110 Phase 4,
+#                            issue #147) for anything that is neither a
+#                            narrator, a weather reporter, nor the jukebox.
+#                            Same contract as all the status topics above.
+#                            The pre-existing namespaces STAY WHERE THEY ARE
+#                            on purpose -- each was split so a wildcard
+#                            subscriber (the Field Journal's narrator roster)
+#                            picks up exactly its own kind; this one is
+#                            additive, never a migration target. First
+#                            tenant: services/merle-daemon/status (the
+#                            perception daemon -- its down state is NORMAL,
+#                            it only runs during bluejay sessions, so the
+#                            launchpad's Merle lamp is honest, not alarming)
 #
 # The weather topics are retained on purpose: weather is *state*, not a moment.
 # A late joiner (dashboard tab, restarted narrator) gets the latest report from
@@ -90,6 +104,11 @@ WEATHER_HISTORY_TOPIC = "weather/history"
 WEATHER_REPORT_TOPIC = "weather/report"
 WEATHER_STATUS_TOPIC = "weather/status"
 MUSIC_STATUS_TOPIC = "music/status"
+SERVICE_STATUS_WILDCARD = "services/+/status"
+
+
+def service_status_topic(name):
+    return f"services/{name}/status"
 
 
 def narrator_status_topic(mqtt_id):
