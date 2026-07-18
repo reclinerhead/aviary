@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   NARRATION_JOURNAL_WILDCARD,
+  audioEventKey,
   busUrl,
   journalTopicId,
   mergeJournals,
+  parseAudioEvent,
   parseJournal,
   parseLine,
   pickVoice,
@@ -256,5 +258,103 @@ describe("pickVoice", () => {
   it("returns null when nothing matches or the hint is empty", () => {
     expect(pickVoice(voices, "Attenborough")).toBeNull();
     expect(pickVoice(voices, "")).toBeNull();
+  });
+});
+
+describe("parseAudioEvent", () => {
+  const detection = {
+    ts: 1752861234,
+    source: "amcrest",
+    kind: "detection",
+    species_sci: "Cardinalis cardinalis",
+    species_common: "Northern Cardinal",
+    confidence: 0.87,
+    window_s: 3,
+    clip: "amcrest/1752861234-Northern_Cardinal.wav",
+    wind_suspect: false,
+    rms: 0.013,
+  };
+  it("accepts a full detection payload", () => {
+    expect(parseAudioEvent(JSON.stringify(detection))).toEqual({
+      ts: 1752861234,
+      source: "amcrest",
+      kind: "detection",
+      species_sci: "Cardinalis cardinalis",
+      species_common: "Northern Cardinal",
+      confidence: 0.87,
+      clip: "amcrest/1752861234-Northern_Cardinal.wav",
+      wind_suspect: false,
+      rms: 0.013,
+    });
+  });
+  it("accepts a sound event (#174) with its coarse class", () => {
+    const e = parseAudioEvent(
+      JSON.stringify({
+        ts: 1752861234,
+        source: "rover",
+        kind: "sound",
+        class: "Dog",
+        confidence: 0.42,
+        window_s: 3,
+        clip: "rover/1752861234-Dog.wav",
+        wind_suspect: true,
+        rms: 0.2,
+      }),
+    );
+    expect(e).toMatchObject({ kind: "sound", class: "Dog", wind_suspect: true });
+  });
+  it("keeps a failed clip write and a pre-#175 payload honest (null clip/rms)", () => {
+    const e = parseAudioEvent(
+      JSON.stringify({ ...detection, clip: null, rms: undefined }),
+    );
+    expect(e?.clip).toBeNull();
+    expect(e?.rms).toBeNull();
+  });
+  it("parses an unknown kind to null -- the ignore-unknown-kinds guard, client-side", () => {
+    expect(
+      parseAudioEvent(JSON.stringify({ ...detection, kind: "seismic" })),
+    ).toBeNull();
+  });
+  it("rejects a detection missing its species fields", () => {
+    expect(
+      parseAudioEvent(JSON.stringify({ ...detection, species_sci: "" })),
+    ).toBeNull();
+  });
+  it("rejects malformed JSON and non-object payloads", () => {
+    expect(parseAudioEvent("{nope")).toBeNull();
+    expect(parseAudioEvent("42")).toBeNull();
+    expect(parseAudioEvent("null")).toBeNull();
+  });
+});
+
+describe("audioEventKey", () => {
+  const base = parseAudioEvent(
+    JSON.stringify({
+      ts: 1000,
+      source: "amcrest",
+      kind: "detection",
+      species_sci: "A sci",
+      species_common: "A",
+      confidence: 0.9,
+    }),
+  )!;
+  it("differs for two species sharing one window", () => {
+    const other = { ...base, kind: "detection" as const, species_sci: "B sci" };
+    expect(audioEventKey(base)).not.toBe(audioEventKey(other));
+  });
+  it("differs for a detection and a sound sharing one window", () => {
+    const sound = parseAudioEvent(
+      JSON.stringify({
+        ts: 1000,
+        source: "amcrest",
+        kind: "sound",
+        class: "Dog",
+        confidence: 0.4,
+      }),
+    )!;
+    expect(audioEventKey(base)).not.toBe(audioEventKey(sound));
+  });
+  it("is stable across hydration and the live topic (same content, same key)", () => {
+    expect(audioEventKey(base)).toBe(audioEventKey({ ...base }));
   });
 });
