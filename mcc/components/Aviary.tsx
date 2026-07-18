@@ -867,6 +867,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [midnight, setMidnight] = useState<number | null>(null);
+  // The description is clamped at rest (#196). Only long leads earn the
+  // toggle -- a two-sentence stub with a "read more" under it would be a
+  // control that does nothing visible.
+  const [bioOpen, setBioOpen] = useState(false);
   const player = useClipPlayer();
 
   useEffect(() => {
@@ -904,7 +908,14 @@ export function SpeciesProfile({ sci }: { sci: string }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((a: Analysis | null) => setAnalysis(a))
       .catch(() => {});
+    setBioOpen(false); // a different bird opens closed
   }, [sci]);
+
+  // The clamp shows six lines; anything near that is worth a toggle. Measured
+  // in characters rather than by probing the DOM for overflow -- the reflow
+  // that would need runs after paint, and a control appearing a frame late is
+  // the layout-shift rule broken in miniature.
+  const longBio = (entry?.description?.length ?? 0) > 420;
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
@@ -917,7 +928,42 @@ export function SpeciesProfile({ sci }: { sci: string }) {
         </section>
       ) : (
         <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <section className="panel rounded-sm border border-line bg-panel p-4">
+          <section className="panel relative overflow-hidden rounded-sm border border-line bg-panel p-4">
+            {/* The bird wears its own portrait (#196), the music player's
+                album-hero idiom on this palette. #157's finding carries
+                over and is not re-litigated here: a heavy blur read as a
+                colour smear, so this is a lightly softened band of the
+                actual photo -- the bird stays recognizable. scale-105 keeps
+                blur-softened edges off-frame. Faded harder than the album
+                hero's 75%: bird photos are high-frequency (feathers, twigs,
+                foliage) where cover art is flat, and this hero carries real
+                body prose rather than a title and a stamp row.
+                Un-enriched species get no backdrop at all -- exactly the
+                flat panel they render today, and no layout difference. */}
+            {entry?.image_file && (
+              <div className="pointer-events-none absolute inset-0" aria-hidden>
+                <img
+                  src={portraitUrl(sci)}
+                  alt=""
+                  className="h-full w-full scale-105 object-cover opacity-40 blur-md saturate-[1.15]"
+                  style={{
+                    objectPosition: cropPosition(
+                      entry.image_w,
+                      entry.image_h,
+                      3 / 1,
+                    ),
+                  }}
+                />
+                {/* Two scrims share the legibility job (the AlbumView
+                    trick): the house bottom-up fade, plus a right-anchored
+                    one under the text column specifically -- darkest
+                    exactly where the prose runs, lightest over the photo
+                    where the art is the point. */}
+                <div className="absolute inset-0 bg-gradient-to-t from-panel via-panel/70 to-panel/30" />
+                <div className="absolute inset-0 bg-gradient-to-l from-panel/95 via-panel/60 to-transparent" />
+              </div>
+            )}
+            <div className="relative">
             <h2
               className="text-2xl text-ink"
               style={{ fontFamily: "var(--font-display)" }}
@@ -985,16 +1031,41 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                 )}
               </div>
               {entry?.description ? (
-                <div className="space-y-2.5 text-sm leading-relaxed text-inkdim">
-                  {entry.description.split(/\n+/).map((para, i) => (
-                    <p key={i}>{para}</p>
-                  ))}
-                </div>
+                <>
+                  {/* Clamped by default (#196, the ArtistView bio pattern):
+                      Wikipedia's lead runs four or five paragraphs, which
+                      buried the chart and the field notes below the fold and
+                      is more encyclopedia than anyone asked for. It is also
+                      what makes the backdrop legible -- a short block of
+                      prose over softened art reads where five paragraphs
+                      would not. The float keeps the photo beside it either
+                      way, so expanding grows the hero and shifts nothing
+                      above it. */}
+                  <div
+                    className={`space-y-2.5 text-sm leading-relaxed text-inkdim ${
+                      bioOpen ? "" : "line-clamp-6"
+                    }`}
+                  >
+                    {entry.description.split(/\n+/).map((para, i) => (
+                      <p key={i}>{para}</p>
+                    ))}
+                  </div>
+                  {longBio && (
+                    <button
+                      type="button"
+                      onClick={() => setBioOpen((o) => !o)}
+                      className="mt-1.5 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright"
+                    >
+                      {bioOpen ? "read less" : "read more"}
+                    </button>
+                  )}
+                </>
               ) : (
                 <p className="stamp text-[9px] text-inkfaint">
                   field notes arrive with the enrichment pass
                 </p>
               )}
+            </div>
             </div>
           </section>
 
