@@ -165,43 +165,81 @@ def test_split_label_without_underscore_doubles():
 # coarse sound events. Precedence is the invariant's teeth: speech beats
 # everything, at a LOWER floor than everything.
 
-def test_speech_beats_bird_and_notable():
-    verdict, hits = gate.route([("Speech", 0.5), ("Bird", 0.9), ("Dog", 0.9)])
+# REAL YAMNet top-3 scores from production clips that BirdNET confirmed --
+# measured on pearl 2026-07-18, the afternoon the gate ate two thirds of the
+# yard. These are the regression fixtures: the FIRST version of this gate
+# passed a close-mic'd test clip and failed every one of these. Any future
+# change that makes one of them stop reaching BirdNET is the same bug again.
+CONFIRMED_YARD_BIRDS = [
+    ("Ring-necked Pheasant", 0.97,
+     [("Vehicle", 0.272), ("Animal", 0.189), ("Domestic animals, pets", 0.104)]),
+    ("Cedar Waxwing", 0.88,
+     [("Outside, rural or natural", 0.242), ("Snake", 0.136), ("Animal", 0.123)]),
+    ("Common Nighthawk", 0.86,
+     [("Wind", 0.414), ("Rustling leaves", 0.397),
+      ("Outside, rural or natural", 0.208)]),
+    ("Bald Eagle", 0.85,
+     [("Outside, rural or natural", 0.312), ("Animal", 0.163), ("Vehicle", 0.130)]),
+    ("House Finch", 0.88,
+     [("Animal", 0.128), ("Music", 0.121), ("Wild animals", 0.093)]),
+    ("Red-bellied Woodpecker", 0.71,
+     [("Inside, small room", 0.179), ("Rustle", 0.136), ("Mouse", 0.113)]),
+    ("Blue Jay", 0.92,
+     [("Animal", 0.295), ("Wild animals", 0.230), ("Vehicle", 0.205)]),
+    ("Tufted Titmouse", 0.89,
+     [("Animal", 0.237), ("Wild animals", 0.203), ("Bird", 0.124)]),
+]
+
+
+@pytest.mark.parametrize("species,birdnet_conf,yamnet", CONFIRMED_YARD_BIRDS,
+                         ids=[c[0] for c in CONFIRMED_YARD_BIRDS])
+def test_confirmed_yard_birds_always_reach_birdnet(species, birdnet_conf,
+                                                   yamnet):
+    """The regression that shipped: every one of these routed "quiet" and
+    never reached the bird model. Nothing but speech may stop a window."""
+    verdict, _ = gate.route(yamnet)
+    assert verdict != "speech", f"{species} would be speech-killed"
+    # "listen" or "notable" both continue to BirdNET; only speech stops.
+
+
+def test_speech_is_the_only_verdict_that_stops_a_window():
+    # The contract, stated once: whatever else route() says, only speech
+    # withholds a window from BirdNET.
+    for preds in ([("Dog", 0.9)], [("Silence", 1.0)], [("Bird", 0.02)],
+                  [("Vehicle", 0.8)], []):
+        assert gate.route(preds)[0] != "speech"
+
+
+def test_speech_beats_notable():
+    verdict, _ = gate.route([("Speech", 0.5), ("Dog", 0.9)])
     assert verdict == "speech"
 
 
-def test_speech_kills_at_its_lower_floor():
-    # 0.15 is under the routing floor but over SPEECH_FLOOR: still dead.
+def test_speech_kills_at_its_low_floor():
     assert gate.SPEECH_FLOOR < gate.DEFAULT_GATE_FLOOR
-    verdict, _ = gate.route([("Speech", 0.15)])
-    assert verdict == "speech"
-    verdict, _ = gate.route([("Speech", gate.SPEECH_FLOOR - 0.01)])
-    assert verdict == "quiet"
+    assert gate.route([("Speech", 0.15)])[0] == "speech"
+    assert gate.route([("Speech", gate.SPEECH_FLOOR - 0.01)])[0] == "listen"
 
 
-def test_bird_routes_to_birdnet():
-    verdict, hits = gate.route([("Bird", 0.52), ("Wild animals", 0.49)])
-    assert verdict == "bird"
-
-
-def test_notable_only_becomes_a_sound_event():
+def test_notable_becomes_a_sound_event_and_still_listens():
     verdict, hits = gate.route([("Dog", 0.8), ("Bark", 0.6)])
     assert verdict == "notable"
     assert hits == [("Dog", 0.8), ("Bark", 0.6)]   # best-first
 
 
-def test_below_floor_and_unknown_classes_are_quiet():
-    verdict, _ = gate.route([("Bird", 0.29)])           # under 0.3
-    assert verdict == "quiet"
-    verdict, _ = gate.route([("Silence", 1.0), ("Music", 0.9)])  # unmapped
-    assert verdict == "quiet"
+def test_unmapped_and_faint_windows_still_listen():
+    assert gate.route([("Silence", 1.0), ("Music", 0.9)])[0] == "listen"
+    assert gate.route([("Dog", 0.29)])[0] == "listen"   # under the floor
 
 
-def test_route_floor_is_adjustable_except_for_speech():
-    verdict, _ = gate.route([("Bird", 0.35)], floor=0.5)
-    assert verdict == "quiet"
-    verdict, _ = gate.route([("Speech", 0.15)], floor=0.5)
-    assert verdict == "speech"   # the invariant doesn't take arguments
+def test_floor_only_governs_sound_events():
+    assert gate.route([("Dog", 0.35)], floor=0.5)[0] == "listen"
+    assert gate.route([("Speech", 0.15)], floor=0.5)[0] == "speech"
+
+
+def test_bird_classes_carry_the_parent_classes_that_actually_fire():
+    # The hierarchy lesson: on faint yard audio "Animal" outscores "Bird".
+    assert {"Animal", "Wild animals"} <= gate.BIRD_CLASSES
 
 
 def test_no_class_sits_in_two_routes():

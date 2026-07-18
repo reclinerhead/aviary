@@ -50,16 +50,39 @@ _HUMAN_RE = re.compile(r"^human\b", re.IGNORECASE)
 # a coyote in the driveway is exactly the kind of thing the bus exists for.
 _NOISE_LABELS = frozenset({"engine", "environmental", "noise", "siren"})
 
-# --- the YAMNet front gate (issue #174) --------------------------------------
+# --- the YAMNet front gate (issue #174, corrected) ---------------------------
 # AudioSet display names, verified against the real 521-class map on pearl
 # (2026-07-18) -- a typo'd name here silently never matches, the topic-
 # constants lesson, so earl.py warns at startup about any entry the loaded
 # model doesn't know. A curated, reviewable table (the genre-vocabulary
-# ethos), not scattered ifs. No name may appear in two routes;
-# test_listener_gate.py enforces it.
+# ethos), not scattered ifs.
+#
+# THE GATE DOES NOT VETO BIRDNET, and that is the whole lesson of this
+# module's first day in production. Shipped as a true gate (only bird-routed
+# windows reached BirdNET), it ate 17 of 25 CONFIRMED yard detections in one
+# afternoon -- a 0.97 pheasant, a 0.88 waxwing, a 0.86 nighthawk, all
+# silently dropped before the bird model ever saw them. Two errors, one
+# root:
+#
+#   1. It was desk-validated against a close-mic'd CLIP (YAMNet "Bird"=0.52,
+#      comfortably over the 0.3 floor). Real distant yard birds score a
+#      MEDIAN of 0.189, and several (pheasant, sandpiper) put no bird class
+#      in the top-7 AT ALL -- no floor value rescues those.
+#   2. AudioSet is a HIERARCHY. On faint yard audio the parent classes fire
+#      hardest ("Animal"=0.505 while "Bird"=0.463), and this table was built
+#      from names that sounded right instead of from measured behavior.
+#
+# The deeper point: gating BirdNET was only ever justified by CPU savings,
+# and pearl idles at load 0.00 running two ears -- the premise was already
+# dead when the gate shipped. Vocabulary and a speech-first invariant were
+# the real value, and NEITHER needs a veto. So the routing survives and its
+# authority does not: speech kills the window, notable ALSO emits a sound
+# event, and every non-speech window reaches BirdNET exactly as in Phase 1.
+# Cost: ~1.3s per 3s window instead of 1.2s. Still real time, still single
+# digits of one core.
 
-DEFAULT_GATE_FLOOR = 0.3   # routing floor for bird/notable (MERLE_EARL_GATE_FLOOR)
-SPEECH_FLOOR = 0.1         # speech kills at a LOWER bar -- err toward the invariant
+SPEECH_FLOOR = 0.1         # speech kills at a low bar -- err toward the invariant
+DEFAULT_GATE_FLOOR = 0.3   # floor for NOTABLE sound events (MERLE_EARL_GATE_FLOOR)
 
 SPEECH_CLASSES = frozenset({
     "Speech", "Child speech, kid speaking", "Conversation",
@@ -67,51 +90,59 @@ SPEECH_CLASSES = frozenset({
     "Singing", "Whistling", "Humming", "Baby cry, infant cry",
 })
 
+# Kept for reporting only (the "bird-ish" note on a window, and the startup
+# name check) -- NOT a filter, never again a gate. Includes the parent
+# classes that actually fire on real yard birds, learned the hard way.
 BIRD_CLASSES = frozenset({
+    "Animal", "Wild animals",
     "Bird", "Bird vocalization, bird call, bird song", "Chirp, tweet",
     "Squawk", "Pigeon, dove", "Crow", "Owl", "Fowl", "Turkey", "Gobble",
     "Duck", "Goose", "Bird flight, flapping wings",
 })
 
+# Non-bird sounds worth an event of their own. "Wild animals"/"Animal" moved
+# OUT of here into BIRD_CLASSES: they fire on birds constantly, so leaving
+# them here turned yard birds into "sound" events.
 NOTABLE_CLASSES = frozenset({
     "Dog", "Bark", "Howl", "Cat", "Meow",
     "Glass", "Shatter", "Siren", "Smoke detector, smoke alarm",
     "Thunder", "Gunshot, gunfire", "Explosion",
     "Vehicle horn, car horn, honking", "Car alarm", "Chainsaw",
     "Engine", "Helicopter", "Cricket", "Frog",
-    "Wild animals", "Rodents, rats, mice",
+    "Rodents, rats, mice",
 })
 
 
 def route(predictions, floor=DEFAULT_GATE_FLOOR):
-    """The front gate's verdict for one window. `predictions` is YAMNet's
-    [(class_name, score), ...]; returns (verdict, hits):
+    """One window's verdict. `predictions` is YAMNet's [(class, score), ...];
+    returns (verdict, hits).
 
-      "speech"   any speech class >= SPEECH_FLOOR. The window is DEAD --
-                 no BirdNET, no event, no clip (epic invariant 1, now
-                 enforced by a model with real speech classes, FIRST).
-                 Deliberately checked at a lower floor than everything
-                 else, and before everything else.
-      "bird"     a bird class >= floor: refine with BirdNET (the existing
-                 decide()/visit path, byte-identical from here on -- and
-                 BirdNET's own human check remains as the second layer).
-      "notable"  a curated non-bird class >= floor: a kind:"sound" event,
-                 clip and all. hits is [(class, score)] best-first.
-      "quiet"    nothing cleared a floor: the steady state, drop.
+      "speech"  any speech class >= SPEECH_FLOOR. The window is DEAD -- no
+                BirdNET, no event, no clip (epic invariant 1, enforced by a
+                model with real speech classes, FIRST). The only verdict
+                that stops anything.
+      "notable" a curated non-bird class >= floor: emit a kind:"sound"
+                event, AND still run BirdNET (a dog barking does not mean
+                no bird is singing). hits is [(class, score)] best-first.
+      "listen"  everything else -- run BirdNET, publish nothing extra. This
+                replaced the old "bird"/"quiet" split, which existed only to
+                decide what NOT to send to BirdNET; nothing needs that
+                decision now.
+
+    Note there is deliberately no bird-score threshold anywhere: BirdNET is
+    the bird detector, its own confidence threshold and region mask are the
+    filters, and YAMNet's opinion about whether a faint chirp is "Bird
+    enough" was exactly the thing that ate two thirds of the yard.
     """
     speech = [(c, s) for c, s in predictions
               if s >= SPEECH_FLOOR and c in SPEECH_CLASSES]
     if speech:
         return "speech", sorted(speech, key=lambda p: -p[1])
-    bird = [(c, s) for c, s in predictions
-            if s >= floor and c in BIRD_CLASSES]
-    if bird:
-        return "bird", sorted(bird, key=lambda p: -p[1])
     notable = [(c, s) for c, s in predictions
                if s >= floor and c in NOTABLE_CLASSES]
     if notable:
         return "notable", sorted(notable, key=lambda p: -p[1])
-    return "quiet", []
+    return "listen", []
 
 
 def unknown_gate_classes(model_class_names):
