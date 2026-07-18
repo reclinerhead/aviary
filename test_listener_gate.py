@@ -160,6 +160,89 @@ def test_split_label_without_underscore_doubles():
     assert gate.split_label("Engine") == ("Engine", "Engine")
 
 
+# --- the YAMNet front gate (issue #174) --------------------------------------
+# route() decides which windows die, which get BirdNET, and which become
+# coarse sound events. Precedence is the invariant's teeth: speech beats
+# everything, at a LOWER floor than everything.
+
+def test_speech_beats_bird_and_notable():
+    verdict, hits = gate.route([("Speech", 0.5), ("Bird", 0.9), ("Dog", 0.9)])
+    assert verdict == "speech"
+
+
+def test_speech_kills_at_its_lower_floor():
+    # 0.15 is under the routing floor but over SPEECH_FLOOR: still dead.
+    assert gate.SPEECH_FLOOR < gate.DEFAULT_GATE_FLOOR
+    verdict, _ = gate.route([("Speech", 0.15)])
+    assert verdict == "speech"
+    verdict, _ = gate.route([("Speech", gate.SPEECH_FLOOR - 0.01)])
+    assert verdict == "quiet"
+
+
+def test_bird_routes_to_birdnet():
+    verdict, hits = gate.route([("Bird", 0.52), ("Wild animals", 0.49)])
+    assert verdict == "bird"
+
+
+def test_notable_only_becomes_a_sound_event():
+    verdict, hits = gate.route([("Dog", 0.8), ("Bark", 0.6)])
+    assert verdict == "notable"
+    assert hits == [("Dog", 0.8), ("Bark", 0.6)]   # best-first
+
+
+def test_below_floor_and_unknown_classes_are_quiet():
+    verdict, _ = gate.route([("Bird", 0.29)])           # under 0.3
+    assert verdict == "quiet"
+    verdict, _ = gate.route([("Silence", 1.0), ("Music", 0.9)])  # unmapped
+    assert verdict == "quiet"
+
+
+def test_route_floor_is_adjustable_except_for_speech():
+    verdict, _ = gate.route([("Bird", 0.35)], floor=0.5)
+    assert verdict == "quiet"
+    verdict, _ = gate.route([("Speech", 0.15)], floor=0.5)
+    assert verdict == "speech"   # the invariant doesn't take arguments
+
+
+def test_no_class_sits_in_two_routes():
+    assert not (gate.SPEECH_CLASSES & gate.BIRD_CLASSES)
+    assert not (gate.SPEECH_CLASSES & gate.NOTABLE_CLASSES)
+    assert not (gate.BIRD_CLASSES & gate.NOTABLE_CLASSES)
+
+
+def test_unknown_gate_classes_flags_typos():
+    model_names = list(gate.SPEECH_CLASSES | gate.BIRD_CLASSES
+                       | gate.NOTABLE_CLASSES)
+    assert gate.unknown_gate_classes(model_names) == []
+    assert gate.unknown_gate_classes(model_names[1:]) == [model_names[0]]
+
+
+def test_shape_sound_event_shape():
+    payload = gate.shape_sound_event(source="rover", ts=1784400000.9,
+                                     klass="Dog", confidence=0.812,
+                                     clip_relpath="rover/1784400000-Dog.wav",
+                                     windy=True, rms=0.0421)
+    assert payload == {
+        "ts": 1784400000, "source": "rover", "kind": "sound",
+        "class": "Dog", "confidence": 0.812, "window_s": 3,
+        "clip": "rover/1784400000-Dog.wav", "wind_suspect": True,
+        "rms": 0.0421,
+    }
+    assert "species_sci" not in payload and "species_common" not in payload
+
+
+def test_sightings_ignores_sound_events():
+    # The #172 guard is the two-tier schema's compatibility mechanism --
+    # pin it from this side too.
+    import json
+
+    from listener import sightings
+    payload = gate.shape_sound_event(source="rover", ts=1, klass="Dog",
+                                     confidence=0.8, clip_relpath=None,
+                                     windy=False)
+    assert sightings.parse_event(json.dumps(payload)) is None
+
+
 # --- visits (issue #175) -----------------------------------------------------
 # Day one measured one singing cardinal = 25 events/rows/clips. The visit
 # tracker collapses that to one; these pin the lifecycle that does it.

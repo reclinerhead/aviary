@@ -13,10 +13,15 @@
 #   python -m listener.earl        (from the earl venv -- see Servers/Pearl.md)
 #
 # Bus contract (topics in bus.py):
-#   publishes  audio/events    one JSON object per accepted detection
-#                              (gate.shape_event -- epoch-seconds ts, the
-#                              weather-namespace convention), non-retained:
-#                              detections are moments, not state
+#   publishes  audio/events    one JSON object per accepted event, two kinds
+#                              (issue #174's two-tier schema): kind
+#                              "detection" (species, the BirdNET tier) and
+#                              kind "sound" (a coarse AudioSet class --
+#                              "Dog", "Siren", "Thunder" -- the YAMNet
+#                              tier). Epoch-seconds ts, non-retained:
+#                              both are moments, not state. The sightings
+#                              consumer archives detections and ignores
+#                              the rest by design
 #   publishes  audio/status    "online"/"offline", RETAINED, "offline" is the
 #                              Last Will -- the weather/status contract,
 #                              verbatim. Deliberately a raw string like every
@@ -82,7 +87,12 @@
 #                         never logged -- rtsp_argv redacts)
 #   MERLE_EARL_ROVER_CMD  full rover capture command (default: the ssh+arecord
 #                         one-liner; pearl->merle ssh keys are a deploy step)
-#   MERLE_EARL_THRESHOLD  confidence floor (default gate.DEFAULT_THRESHOLD)
+#   MERLE_EARL_THRESHOLD  BirdNET confidence floor (default
+#                         gate.DEFAULT_THRESHOLD)
+#   MERLE_EARL_GATE_FLOOR YAMNet routing floor for bird/notable (default
+#                         gate.DEFAULT_GATE_FLOOR; speech kills at the
+#                         lower gate.SPEECH_FLOOR regardless -- the
+#                         invariant is not configurable)
 #   MERLE_EARL_CLIPS      clip dir (default "clips" under WorkingDirectory;
 #                         the unit points it at /srv/media-cache/earl)
 # =============================================================================
@@ -110,6 +120,9 @@ SILENT_AFTER_WINDOWS = 20             # ~1 min of rms-nothing -> "silent"
 SILENT_RMS = 0.001
 WEATHER_STALE_S = 30 * 60             # the narrator's staleness rule
 GEO_MIN_CONFIDENCE = 0.03             # birdnet's own default, kept explicit
+YAMNET_HANDLE = "https://tfhub.dev/google/yamnet/1"   # hub caches locally
+GATE_TOP_K = 7                        # classes handed to gate.route per window
+GATE_STATS_WINDOWS = 100              # gate counter log cadence (~5 min)
 
 
 def week_of(month, day):
@@ -208,13 +221,53 @@ def allowed_species_set(lat, lon, week):
     return {gate.split_label(label)[0] for label in df["species_name"]}
 
 
-def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
-                  queue, wind_mph):
+def load_yamnet(np, log):
+    """The front gate, and the 2b seam (issue #174): returns
+    classify(audio48k) -> [(class_name, score)] best-first, or None when the
+    gate can't load -- Earl then runs UNGATED (Phase 1 behavior) and says so
+    in every stats line, never silently. The Coral phase (2b) swaps this
+    function's implementation for a TPU delegate; nothing upstream changes.
+
+    CPU cost, measured on pearl: ~56 ms warm per 3 s window -- ~2% of the
+    budget. Input is our native 48 kHz mono; YAMNet wants 16 kHz, and a
+    mean-of-3 decimation is a good-enough low-pass for a gate (BirdNET
+    still sees the full-rate audio on the bird path)."""
+    try:
+        import csv
+
+        import tensorflow as tf
+        import tensorflow_hub as hub
+
+        model = hub.load(YAMNET_HANDLE)
+        with tf.io.gfile.GFile(model.class_map_path().numpy().decode()) as f:
+            names = [row["display_name"] for row in csv.DictReader(f)]
+        unknown = gate.unknown_gate_classes(names)
+        if unknown:
+            log(f"GATE MAP WARNING: routing entries the model doesn't know "
+                f"(they will never match): {unknown}")
+
+        def classify(audio48k):
+            wave = (audio48k[: len(audio48k) // 3 * 3]
+                    .reshape(-1, 3).mean(axis=1).astype(np.float32))
+            scores = model(wave)[0].numpy().mean(axis=0)
+            top = scores.argsort()[-GATE_TOP_K:][::-1]
+            return [(names[i], float(scores[i])) for i in top]
+
+        return classify
+    except Exception as e:
+        log(f"YAMNET GATE UNAVAILABLE ({e}) -- running ungated: every "
+            "window goes to BirdNET, speech relies on BirdNET's human "
+            "check alone (the Phase 1 posture)")
+        return None
+
+
+def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
+                  clips_dir, queue, wind_mph):
     """Worker main (spawn target). Owns: the capture subprocess (restarted
-    with backoff forever), the BirdNET session, the geo mask, the clip ring.
-    Reports to the parent over `queue` as ("state", name, state) and
-    ("event", name, payload). Reads current wind from `wind_mph` (a shared
-    Value; negative means unknown)."""
+    with backoff forever), the YAMNet gate, the BirdNET session, the geo
+    mask, the clip ring. Reports to the parent over `queue` as
+    ("state", name, state) and ("event", name, payload). Reads current wind
+    from `wind_mph` (a shared Value; negative means unknown)."""
     import numpy as np
 
     import birdnet
@@ -223,6 +276,7 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
     log(f"worker up: {redacted}")
 
     model = birdnet.load("acoustic", "2.4", "tf")
+    classify = load_yamnet(np, log)
 
     week = birdnet_week()
     try:
@@ -233,7 +287,12 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
         log(f"REGION MASK UNAVAILABLE ({e}) -- running unmasked, D4 is off")
 
     backoff = 0
-    visits = gate.VisitTracker()   # outlives capture restarts on purpose
+    visits = gate.VisitTracker()         # bird visits (#175)
+    sound_visits = gate.VisitTracker()   # notable-sound visits (#174) --
+    # separate tracker: AudioSet class names and species names are different
+    # vocabularies and must not share a debounce namespace
+    counters = {"windows": 0, "speech": 0, "bird": 0, "notable": 0,
+                "quiet": 0, "ungated": 0, "gate_ms": 0.0}
     with model.predict_session(top_k=3, show_stats=None) as session:
         while True:
             if birdnet_week() != week:
@@ -295,15 +354,72 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
                     queue.put(("state", name, state))
 
                 ts = time.time()
-                for closed in visits.expire(ts):
-                    _, common = gate.split_label(closed["label"])
-                    log(f"visit closed: {common}, {closed['windows']} "
-                        f"windows, {closed['duration_s']:.0f}s, "
-                        f"best {closed['best_conf']:.2f}")
+                for tracker in (visits, sound_visits):
+                    for closed in tracker.expire(ts):
+                        _, common = gate.split_label(closed["label"])
+                        log(f"visit closed: {common}, {closed['windows']} "
+                            f"windows, {closed['duration_s']:.0f}s, "
+                            f"best {closed['best_conf']:.2f}")
 
+                wind = wind_mph.value if wind_mph.value >= 0 else None
+                windy = wind is not None and wind > gate.WIND_GATE_MPH
+                context = [w for w in (prev_window, buf) if w is not None]
+
+                # The front gate (issue #174): YAMNet first, BirdNET only on
+                # bird-routed windows. Speech dies HERE -- before the bird
+                # model ever sees the window.
+                counters["windows"] += 1
+                if classify is not None:
+                    t0 = time.perf_counter()
+                    verdict, hits = gate.route(classify(audio),
+                                               floor=gate_floor)
+                    counters["gate_ms"] += (time.perf_counter() - t0) * 1000
+                    counters[verdict] += 1
+                else:
+                    verdict, hits = "bird", []
+                    counters["ungated"] += 1
+
+                if counters["windows"] % GATE_STATS_WINDOWS == 0:
+                    ms = counters["gate_ms"] / max(
+                        counters["windows"] - counters["ungated"], 1)
+                    log(f"gate stats: {counters['windows']} windows -- "
+                        f"{counters['quiet']} quiet, {counters['bird']} bird, "
+                        f"{counters['speech']} speech-killed, "
+                        f"{counters['notable']} notable, "
+                        f"{counters['ungated']} ungated; "
+                        f"gate {ms:.0f} ms avg")
+
+                if verdict in ("speech", "quiet"):
+                    prev_window = buf
+                    continue
+
+                if verdict == "notable":
+                    for klass, score in hits:
+                        action, relpath = sound_visits.observe(
+                            klass, ts, score,
+                            gate.clip_relpath(name, ts, klass))
+                        if action == "extend":
+                            continue
+                        pending.append((relpath, list(context)))
+                        if action == "open":
+                            payload = gate.shape_sound_event(
+                                source=name, ts=ts, klass=klass,
+                                confidence=score, clip_relpath=relpath,
+                                windy=windy, rms=rms)
+                            queue.put(("event", name, payload))
+                            log(f"sound: {klass} {score:.2f}"
+                                f"{' (wind-suspect)' if windy else ''}")
+                        else:
+                            log(f"sound: {klass} {score:.2f} -- visit best, "
+                                f"clip upgraded")
+                    prev_window = buf
+                    continue
+
+                # verdict == "bird": refine with BirdNET -- the Phase 1 path,
+                # byte-identical from here (including its own human check,
+                # the invariant's second layer).
                 df = session.run_arrays((audio, gate.SAMPLE_RATE)).to_dataframe()
                 predictions = list(zip(df["species_name"], df["confidence"]))
-                wind = wind_mph.value if wind_mph.value >= 0 else None
                 accepted, windy = gate.decide(
                     predictions, threshold=threshold, wind_mph=wind,
                     allowed_species=allowed)
@@ -311,7 +427,6 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
                     prev_window = buf
                     continue
 
-                context = [w for w in (prev_window, buf) if w is not None]
                 for label, conf in accepted:
                     action, relpath = visits.observe(
                         label, ts, conf, gate.clip_relpath(name, ts, label))
@@ -354,7 +469,7 @@ class Earl:
     """The orchestrator. All MQTT lives here (paho's network thread never
     shares a process with birdnet's forks); all audio lives in the workers."""
 
-    def __init__(self, commands, latlon, threshold, clips_dir):
+    def __init__(self, commands, latlon, threshold, gate_floor, clips_dir):
         self._ctx = multiprocessing.get_context("spawn")
         self._queue = self._ctx.Queue()
         self._wind = self._ctx.Value("d", -1.0)   # <0 = unknown
@@ -362,6 +477,7 @@ class Earl:
         self._commands = commands
         self._latlon = latlon
         self._threshold = threshold
+        self._gate_floor = gate_floor
         self._clips_dir = clips_dir
         self._states = {name: "starting" for name in commands}
         self._last_window = {name: None for name in commands}
@@ -417,7 +533,8 @@ class Earl:
         worker = self._ctx.Process(
             target=source_worker, name=f"earl-{name}",
             args=(name, argv, redacted, self._latlon, self._threshold,
-                  self._clips_dir, self._queue, self._wind),
+                  self._gate_floor, self._clips_dir, self._queue,
+                  self._wind),
             daemon=False)
         worker.start()
         self._workers[name] = worker
@@ -493,10 +610,12 @@ def main():
     latlon = gate.parse_latlon(os.environ.get("MERLE_LATLON"))
     threshold = float(os.environ.get("MERLE_EARL_THRESHOLD",
                                      gate.DEFAULT_THRESHOLD))
+    gate_floor = float(os.environ.get("MERLE_EARL_GATE_FLOOR",
+                                      gate.DEFAULT_GATE_FLOOR))
     clips_dir = os.environ.get("MERLE_EARL_CLIPS", "").strip() or "clips"
     commands = source_commands()
     bus.broker_address()   # fail now, not after the model loads
-    Earl(commands, latlon, threshold, clips_dir).run()
+    Earl(commands, latlon, threshold, gate_floor, clips_dir).run()
 
 
 if __name__ == "__main__":
