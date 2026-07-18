@@ -109,6 +109,105 @@ export function toJournalEntries(lines: NarrationLine[]): JournalEntry[] {
   return entries.reverse();
 }
 
+// --- The audio namespace (epic #182: the Aviary reads Earl's bus) ----------
+
+export const AUDIO_EVENTS_TOPIC = "audio/events";
+// Raw "online"/"offline" string with Last Will -- the weather/status contract
+// verbatim; the Aviary masthead renders it as Earl's presence lamp.
+export const AUDIO_STATUS_TOPIC = "audio/status";
+
+/** A bird detection from Earl (gate.shape_event): one per VISIT since #175 --
+ * the listener publishes only the visit-opening window, so a live event is
+ * always "a new visit began" and counting consumers may increment per event. */
+export type BirdEvent = {
+  ts: number; // epoch seconds -- the audio namespace is epoch end to end
+  source: string;
+  kind: "detection";
+  species_sci: string;
+  species_common: string;
+  confidence: number;
+  // Relative path under MERLE_EARL_CLIPS, or null when the clip write failed
+  // (the event is still real -- a missing clip is a gap, never a dead row).
+  clip: string | null;
+  wind_suspect: boolean;
+  // Raw signal level (#175); absent on pre-#175 events, so null is honest.
+  rms: number | null;
+};
+
+/** A notable non-bird sound (gate.sound_event, #174): dog, siren, thunder.
+ * Coarse AudioSet class, no species fields. Bus-only by design --
+ * sightings.py deliberately does not persist these, so they appear in the
+ * live ticker and vanish on reload (accepted asymmetry, epic #182). */
+export type SoundEvent = {
+  ts: number;
+  source: string;
+  kind: "sound";
+  class: string;
+  confidence: number;
+  clip: string | null;
+  wind_suspect: boolean;
+  rms: number | null;
+};
+
+export type AudioEvent = BirdEvent | SoundEvent;
+
+/** One audio event from an already-parsed JSON value; null for anything that
+ * isn't one. Shared by the live topic and the /aviary/recent hydration body
+ * (byte-shaped like the bus payload -- the /weather/history idiom) so the
+ * two can't drift. Unknown kinds parse to null: the two-tier schema grows by
+ * addition, and this ignore-unknown-kinds guard is the compatibility
+ * mechanism (the sightings.py #172 rule, client-side). */
+export function audioEventFrom(o: unknown): AudioEvent | null {
+  const e = o as Record<string, unknown> | null;
+  if (typeof e?.ts !== "number" || !Number.isFinite(e.ts)) return null;
+  if (typeof e.source !== "string" || e.source === "") return null;
+  if (typeof e.confidence !== "number") return null;
+  const shared = {
+    ts: Math.trunc(e.ts),
+    source: e.source,
+    confidence: e.confidence,
+    clip: typeof e.clip === "string" && e.clip !== "" ? e.clip : null,
+    wind_suspect: Boolean(e.wind_suspect),
+    rms: typeof e.rms === "number" && Number.isFinite(e.rms) ? e.rms : null,
+  };
+  if (e.kind === "detection") {
+    if (typeof e.species_sci !== "string" || e.species_sci === "") return null;
+    if (typeof e.species_common !== "string" || e.species_common === "")
+      return null;
+    return {
+      ...shared,
+      kind: "detection",
+      species_sci: e.species_sci,
+      species_common: e.species_common,
+    };
+  }
+  if (e.kind === "sound") {
+    if (typeof e.class !== "string" || e.class === "") return null;
+    return { ...shared, kind: "sound", class: e.class };
+  }
+  return null;
+}
+
+/** Parse an audio/events payload; null for anything malformed (the bus is a
+ * shared room -- never let a stray message crash the ticker). */
+export function parseAudioEvent(payload: string): AudioEvent | null {
+  try {
+    return audioEventFrom(JSON.parse(payload));
+  } catch {
+    return null;
+  }
+}
+
+/** Stable content-derived key for one audio event (the journal-entry rule:
+ * hydration and the live topic deliver the same moment, and the key is what
+ * lets React treat the overlap as a no-op instead of a duplicate row). Two
+ * species in one window differ in the species half; a detection and a sound
+ * sharing a window differ in kind. */
+export function audioEventKey(e: AudioEvent): string {
+  const who = e.kind === "detection" ? e.species_sci : e.class;
+  return `${e.ts}|${e.source}|${e.kind}|${who}`;
+}
+
 /** "narrators/marlin/status" -> "marlin"; null for any other topic. */
 export function statusTopicId(topic: string): string | null {
   const m = /^narrators\/([^/]+)\/status$/.exec(topic);
