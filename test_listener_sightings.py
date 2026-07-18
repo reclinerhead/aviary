@@ -12,6 +12,7 @@
 # =============================================================================
 
 import json
+import os
 
 import pytest
 
@@ -20,12 +21,13 @@ from listener import earl, sightings
 
 def event(ts=1784390000, source="amcrest",
           sci="Poecile atricapillus", common="Black-capped Chickadee",
-          confidence=0.88, clip="amcrest/1784390000-x.wav", wind=False):
+          confidence=0.88, clip="amcrest/1784390000-x.wav", wind=False,
+          **extra):
     return json.dumps({
         "ts": ts, "source": source, "kind": "detection",
         "species_sci": sci, "species_common": common,
         "confidence": confidence, "window_s": 3,
-        "clip": clip, "wind_suspect": wind,
+        "clip": clip, "wind_suspect": wind, **extra,
     })
 
 
@@ -92,14 +94,55 @@ def test_clipless_event_still_records(conn):
 # --- the wire ----------------------------------------------------------------
 
 def test_parse_event_roundtrip():
-    row = sightings.parse_event(event(wind=True))
+    row = sightings.parse_event(event(wind=True, rms=0.0153))
     assert row == {
         "ts": 1784390000, "source": "amcrest",
         "species_sci": "Poecile atricapillus",
         "species_common": "Black-capped Chickadee",
         "confidence": 0.88, "clip": "amcrest/1784390000-x.wav",
-        "wind_suspect": 1,
+        "wind_suspect": 1, "rms": 0.0153,
     }
+
+
+def test_parse_event_without_rms_is_null_not_rejected():
+    # Pre-#175 producers emit no rms; those events must keep landing.
+    row = sightings.parse_event(event())
+    assert row["rms"] is None
+
+
+def test_rms_roundtrips_to_the_store(conn):
+    sightings.record(conn, sightings.parse_event(event(ts=100, rms=0.0153)))
+    sightings.record(conn, sightings.parse_event(
+        event(ts=200, sci="Haemorhous mexicanus", common="House Finch")))
+    rows = conn.execute("SELECT rms FROM sightings ORDER BY ts").fetchall()
+    assert rows[0]["rms"] == 0.0153
+    assert rows[1]["rms"] is None
+
+
+def test_rms_column_added_to_a_pre175_store(tmp_path):
+    # A day-one earl.db lacks the column; connect() must upgrade it in
+    # place, idempotently -- a restart, not a migration script.
+    path = str(tmp_path / "old-earl.db")
+    raw = sightings.sqlite3.connect(path)
+    raw.execute("""CREATE TABLE sightings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+        source TEXT NOT NULL, species_sci TEXT NOT NULL,
+        species_common TEXT NOT NULL, confidence REAL NOT NULL,
+        clip TEXT, wind_suspect INTEGER NOT NULL DEFAULT 0)""")
+    raw.execute("INSERT INTO sightings (ts, source, species_sci,"
+                " species_common, confidence) VALUES (1,'a','x','y',0.9)")
+    raw.commit()
+    raw.close()
+
+    for _ in range(2):   # and running the upgrade twice is a no-op
+        conn = sightings.connect(path)
+        columns = {r["name"] for r in
+                   conn.execute("PRAGMA table_info(sightings)")}
+        assert "rms" in columns
+        row = conn.execute("SELECT rms, confidence FROM sightings").fetchone()
+        assert row["rms"] is None       # old rows honestly NULL
+        assert row["confidence"] == 0.9  # and untouched
+        conn.close()
 
 
 @pytest.mark.parametrize("payload", [
@@ -113,6 +156,66 @@ def test_parse_event_roundtrip():
 ])
 def test_parse_event_rejects_malformed(payload):
     assert sightings.parse_event(payload) is None
+
+
+# --- clip retention (issue #175) ---------------------------------------------
+
+DAY = 86400
+
+
+def test_prune_selection_age_math():
+    now = 100 * DAY
+    files = [("a/old.wav", now - 91 * DAY), ("a/young.wav", now - 89 * DAY)]
+    assert sightings.prune_selection(files, now, 90, set()) == ["a/old.wav"]
+
+
+def test_lifer_first_clips_survive_forever():
+    # The sacred exemption: a lifer's first recording outlives any horizon;
+    # the identical path un-lifered would not.
+    now = 1000 * DAY
+    files = [("amcrest/1-Lifer.wav", 0), ("amcrest/2-Common.wav", 0)]
+    exempt = {"amcrest/1-Lifer.wav"}
+    assert sightings.prune_selection(files, now, 90, exempt) == \
+        ["amcrest/2-Common.wav"]
+
+
+def test_exempt_clips_reads_the_life_list(conn):
+    sightings.record(conn, sightings.parse_event(
+        event(clip="amcrest/1-first.wav")))
+    sightings.record(conn, sightings.parse_event(
+        event(ts=2, clip="amcrest/2-later.wav")))   # same species: not first
+    assert sightings.exempt_clips(conn) == {"amcrest/1-first.wav"}
+
+
+def test_prune_clips_end_to_end(tmp_path):
+    # Real files, real store: the old commoner dies, the equally old lifer
+    # and the young file live.
+    clips = tmp_path / "clips"
+    (clips / "amcrest").mkdir(parents=True)
+    for name in ("1-Lifer.wav", "2-Common.wav", "3-Young.wav"):
+        (clips / "amcrest" / name).write_bytes(b"RIFF")
+    old = 1000.0
+    os.utime(clips / "amcrest" / "1-Lifer.wav", (old, old))
+    os.utime(clips / "amcrest" / "2-Common.wav", (old, old))
+
+    store = str(tmp_path / "earl.db")
+    conn = sightings.connect(store)
+    sightings.record(conn, sightings.parse_event(
+        event(clip="amcrest/1-Lifer.wav")))
+    conn.close()
+
+    now = old + 200 * DAY
+    pruned = sightings.prune_clips(str(clips), store, 90, now_ts=now)
+    assert pruned == 1
+    assert (clips / "amcrest" / "1-Lifer.wav").exists()
+    assert not (clips / "amcrest" / "2-Common.wav").exists()
+    assert (clips / "amcrest" / "3-Young.wav").exists()
+
+
+def test_prune_clips_missing_dir_is_zero_not_error(tmp_path):
+    store = str(tmp_path / "earl.db")
+    sightings.connect(store).close()
+    assert sightings.prune_clips(str(tmp_path / "nope"), store, 90) == 0
 
 
 # --- earl.py's pure helpers --------------------------------------------------

@@ -233,6 +233,7 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
         log(f"REGION MASK UNAVAILABLE ({e}) -- running unmasked, D4 is off")
 
     backoff = 0
+    visits = gate.VisitTracker()   # outlives capture restarts on purpose
     with model.predict_session(top_k=3, show_stats=None) as session:
         while True:
             if birdnet_week() != week:
@@ -261,7 +262,9 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
             state = "starting"
             quiet_windows = 0
             prev_window = None
-            pending = None  # (relpath, [windows...]) waiting for its post-roll
+            # Clip writes waiting on their post-roll window (issue #175:
+            # a list, since one window can open/upgrade several visits).
+            pending = []
             while True:
                 buf = read_exact(capture.stdout, gate.WINDOW_BYTES)
                 if buf is None:
@@ -272,14 +275,13 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
                     backoff = 0
                     queue.put(("state", name, state))
 
-                if pending is not None:
-                    relpath, windows = pending
-                    windows.append(buf)
+                for relpath, chunks in pending:
+                    chunks.append(buf)
                     try:
-                        write_clip(clips_dir, relpath, windows)
+                        write_clip(clips_dir, relpath, chunks)
                     except OSError as e:
                         log(f"clip write failed ({relpath}): {e}")
-                    pending = None
+                pending = []
 
                 audio = (np.frombuffer(buf, np.int16)
                          .astype(np.float32) / 32768.0)
@@ -292,6 +294,13 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
                     state = "online"
                     queue.put(("state", name, state))
 
+                ts = time.time()
+                for closed in visits.expire(ts):
+                    _, common = gate.split_label(closed["label"])
+                    log(f"visit closed: {common}, {closed['windows']} "
+                        f"windows, {closed['duration_s']:.0f}s, "
+                        f"best {closed['best_conf']:.2f}")
+
                 df = session.run_arrays((audio, gate.SAMPLE_RATE)).to_dataframe()
                 predictions = list(zip(df["species_name"], df["confidence"]))
                 wind = wind_mph.value if wind_mph.value >= 0 else None
@@ -302,18 +311,34 @@ def source_worker(name, argv, redacted, latlon, threshold, clips_dir,
                     prev_window = buf
                     continue
 
-                ts = time.time()
-                relpath = gate.clip_relpath(name, ts, accepted[0][0])
-                pending = (relpath,
-                           [w for w in (prev_window, buf) if w is not None])
+                context = [w for w in (prev_window, buf) if w is not None]
                 for label, conf in accepted:
-                    payload = gate.shape_event(
-                        source=name, ts=ts, label=label, confidence=conf,
-                        clip_relpath=relpath, windy=windy)
-                    queue.put(("event", name, payload))
-                    log(f"{payload['species_common']} {conf:.2f}"
-                        f"{' (wind-suspect)' if windy else ''}")
+                    action, relpath = visits.observe(
+                        label, ts, conf, gate.clip_relpath(name, ts, label))
+                    if action == "extend":
+                        continue
+                    pending.append((relpath, list(context)))
+                    common = gate.split_label(label)[1]
+                    if action == "open":
+                        payload = gate.shape_event(
+                            source=name, ts=ts, label=label, confidence=conf,
+                            clip_relpath=relpath, windy=windy, rms=rms)
+                        queue.put(("event", name, payload))
+                        log(f"{common} {conf:.2f}"
+                            f"{' (wind-suspect)' if windy else ''}")
+                    else:   # "best": rewrite the visit's clip in place
+                        log(f"{common} {conf:.2f} -- visit best, "
+                            f"clip upgraded")
                 prev_window = buf
+
+            # EOF: finish clips with the context in hand (a 6s clip beats a
+            # dangling event pointer). Visits deliberately survive the drop.
+            for relpath, chunks in pending:
+                try:
+                    write_clip(clips_dir, relpath, chunks)
+                except OSError as e:
+                    log(f"clip write failed ({relpath}): {e}")
+            pending = []
 
             capture.wait()
             queue.put(("state", name, "offline"))
@@ -342,8 +367,14 @@ class Earl:
         self._last_window = {name: None for name in commands}
         self._workers = {}
 
+        # pid-suffixed client id (issue #175): a broker disconnects the older
+        # of two clients sharing an id, so a hand-run Earl beside the unit
+        # would kick the unit off the bus in a loop (a desk twin did exactly
+        # this to the sightings consumer). QoS-0 clean sessions make the id
+        # cosmetic; uniqueness is free insurance. Presence stays on the
+        # explicit status topic, which is not client-id-derived.
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
-                                   client_id=CLIENT_ID)
+                                   client_id=f"{CLIENT_ID}-{os.getpid()}")
         self._client.will_set(bus.AUDIO_STATUS_TOPIC, "offline", retain=True)
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_weather

@@ -138,6 +138,7 @@ def test_shape_event_shape():
         "species_common": "Black-capped Chickadee",
         "confidence": 0.884, "window_s": 3,
         "clip": "amcrest/1784390000-x.wav", "wind_suspect": False,
+        "rms": None,   # additive in #175; None when the caller has none
     }
 
 
@@ -157,6 +158,83 @@ def test_clip_relpath_is_filesystem_safe():
 
 def test_split_label_without_underscore_doubles():
     assert gate.split_label("Engine") == ("Engine", "Engine")
+
+
+# --- visits (issue #175) -----------------------------------------------------
+# Day one measured one singing cardinal = 25 events/rows/clips. The visit
+# tracker collapses that to one; these pin the lifecycle that does it.
+
+def test_first_detection_opens_a_visit():
+    v = gate.VisitTracker()
+    action, clip = v.observe(CHICKADEE, 1000, 0.70, "a/1000-c.wav")
+    assert (action, clip) == ("open", "a/1000-c.wav")
+
+
+def test_same_species_within_gap_is_suppressed():
+    v = gate.VisitTracker()
+    v.observe(CHICKADEE, 1000, 0.70, "a/1000-c.wav")
+    action, clip = v.observe(CHICKADEE, 1003, 0.65, "a/1003-c.wav")
+    # Suppressed, and the clip stays the VISIT's -- the path the published
+    # event already carries, never the candidate's.
+    assert (action, clip) == ("extend", "a/1000-c.wav")
+
+
+def test_better_window_upgrades_the_visits_clip():
+    v = gate.VisitTracker()
+    v.observe(CHICKADEE, 1000, 0.70, "a/1000-c.wav")
+    action, clip = v.observe(CHICKADEE, 1003, 0.90, "a/1003-c.wav")
+    assert (action, clip) == ("best", "a/1000-c.wav")
+    # Equal is not better -- no pointless rewrite.
+    action, _ = v.observe(CHICKADEE, 1006, 0.90, "a/1006-c.wav")
+    assert action == "extend"
+
+
+def test_past_gap_reopens_with_a_new_clip():
+    v = gate.VisitTracker(gap_s=60)
+    v.observe(CHICKADEE, 1000, 0.70, "a/1000-c.wav")
+    action, clip = v.observe(CHICKADEE, 1061, 0.70, "a/1061-c.wav")
+    assert (action, clip) == ("open", "a/1061-c.wav")
+
+
+def test_species_interleave_independently():
+    # Day one had exactly this: a cardinal and a woodpecker both mid-visit.
+    v = gate.VisitTracker()
+    assert v.observe(CHICKADEE, 1000, 0.7, "c1")[0] == "open"
+    assert v.observe(FINCH, 1003, 0.8, "f1")[0] == "open"
+    assert v.observe(CHICKADEE, 1006, 0.6, "c2")[0] == "extend"
+    assert v.observe(FINCH, 1009, 0.9, "f2")[0] == "best"
+
+
+def test_expire_closes_and_reports_stats():
+    v = gate.VisitTracker(gap_s=60)
+    v.observe(CHICKADEE, 1000, 0.70, "c1")
+    v.observe(CHICKADEE, 1030, 0.90, "c2")
+    v.observe(FINCH, 1080, 0.80, "f1")
+    closed = v.expire(1095)   # chickadee's gap passed; finch's has not
+    assert len(closed) == 1
+    assert closed[0] == {"label": CHICKADEE, "windows": 2,
+                         "duration_s": 30, "best_conf": 0.90}
+    # Closed means gone: the species reopens fresh.
+    assert v.observe(CHICKADEE, 1096, 0.5, "c3")[0] == "open"
+    # And the finch is untouched.
+    assert v.observe(FINCH, 1100, 0.5, "f2")[0] == "extend"
+
+
+def test_expire_before_gap_closes_nothing():
+    v = gate.VisitTracker(gap_s=60)
+    v.observe(CHICKADEE, 1000, 0.7, "c1")
+    assert v.expire(1060) == []
+
+
+def test_shape_event_carries_rms():
+    event = gate.shape_event(source="rover", ts=1, label=FINCH,
+                             confidence=0.92, clip_relpath=None, windy=False,
+                             rms=0.031459)
+    assert event["rms"] == 0.03146
+    # And stays honest when the caller has none (compat with old shapes).
+    event = gate.shape_event(source="rover", ts=1, label=FINCH,
+                             confidence=0.92, clip_relpath=None, windy=False)
+    assert event["rms"] is None
 
 
 # --- config parsing ----------------------------------------------------------

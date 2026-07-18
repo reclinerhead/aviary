@@ -37,6 +37,7 @@ WINDOW_BYTES = SAMPLE_RATE * WINDOW_S * BYTES_PER_SAMPLE
 DEFAULT_THRESHOLD = 0.65
 WIND_GATE_MPH = 15.0    # above this, the wind rules kick in
 WINDY_THRESHOLD = 0.75  # the raised bar while they do
+VISIT_GAP_S = 60        # same-species detections closer than this are one visit
 
 # BirdNET's non-bird "species" labels for people. Matched against the label's
 # scientific half, prefix-wise, because the taxonomy spells them "Human vocal",
@@ -108,12 +109,16 @@ def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
     return accepted, windy
 
 
-def shape_event(*, source, ts, label, confidence, clip_relpath, windy):
+def shape_event(*, source, ts, label, confidence, clip_relpath, windy,
+                rms=None):
     """One audio/events payload. `ts` is unix epoch seconds (the weather-
     namespace convention: consumers compare against time.time() for staleness
     and the dashboard formats locale-side -- nobody wants to parse ISO).
     `clip_relpath` may be None (clip write failed: the event is still real --
     the skipped-report ethos, a missing clip is a gap, never a dead daemon).
+    `rms` (issue #175) is the window's raw signal level, 0..1 -- the number
+    Phase 5's loudness ranking needs and confidence is not (confidence is
+    model certainty). Additive and optional so old payloads stay parseable.
     """
     sci, common = split_label(label)
     return {
@@ -126,7 +131,78 @@ def shape_event(*, source, ts, label, confidence, clip_relpath, windy):
         "window_s": WINDOW_S,
         "clip": clip_relpath,
         "wind_suspect": bool(windy),
+        "rms": round(float(rms), 5) if rms is not None else None,
     }
+
+
+class VisitTracker:
+    """Species-level visit debounce (issue #175) -- the SpeciesPresence idea
+    in Earl's idiom. One singing cardinal is one VISIT, not 25 events: day
+    one measured 3.2x event redundancy and a disk burn 10x the estimate,
+    and this is the fix for both.
+
+    A visit opens on a detection of species S with no S-detection in the
+    preceding gap, and stays open while S-detections keep arriving within
+    it. Pure: timestamps come in as arguments, the caller owns clocks and
+    I/O. One tracker per source worker; species interleave independently.
+
+    Per accepted detection, observe() answers what the caller should do:
+      "open"    new visit -- publish the event, write this window's clip
+      "best"    suppressed, but this window beats the visit's best --
+                REWRITE the visit's clip in place (same path the published
+                event already carries; the life list's first_clip ends up
+                holding the bird's best moment, not its first mumble)
+      "extend"  suppressed, nothing to write
+    Call expire(ts) once per window BEFORE observing so a stale visit
+    closes (and logs) before the same species can reopen; observe() itself
+    also treats a past-gap survivor as a new visit, so the two can't
+    disagree about the boundary.
+
+    Deliberately NOT flushed when a capture drops: visits ride out a brief
+    source blip (the reconnected stream continues the visit if it's still
+    inside the gap), and a worker that dies takes nothing durable with it
+    -- the store already has the open event.
+    """
+
+    def __init__(self, gap_s=VISIT_GAP_S):
+        self._gap = gap_s
+        self._open = {}   # species_sci -> visit dict
+
+    def observe(self, label, ts, confidence, candidate_clip):
+        """One accepted detection. Returns (action, clip_relpath) where the
+        clip path is the VISIT's (stable for its whole life)."""
+        sci, _ = split_label(label)
+        visit = self._open.get(sci)
+        if visit is None or ts - visit["last_ts"] > self._gap:
+            self._open[sci] = {
+                "label": label, "opened_ts": ts, "last_ts": ts,
+                "windows": 1, "best_conf": confidence,
+                "clip": candidate_clip,
+            }
+            return "open", candidate_clip
+        visit["last_ts"] = ts
+        visit["windows"] += 1
+        if confidence > visit["best_conf"]:
+            visit["best_conf"] = confidence
+            return "best", visit["clip"]
+        return "extend", visit["clip"]
+
+    def expire(self, now_ts):
+        """Close every visit whose gap has passed; returns their stats
+        (label, windows, duration_s, best_conf) for the caller's log line --
+        the journal is where a visit's true best confidence lives, since the
+        published event carried the opening window's (append-only store, no
+        UPDATE path; accepted trade-off in issue #175)."""
+        closed = []
+        for sci, visit in list(self._open.items()):
+            if now_ts - visit["last_ts"] > self._gap:
+                closed.append({
+                    "label": visit["label"], "windows": visit["windows"],
+                    "duration_s": visit["last_ts"] - visit["opened_ts"],
+                    "best_conf": visit["best_conf"],
+                })
+                del self._open[sci]
+        return closed
 
 
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]+")

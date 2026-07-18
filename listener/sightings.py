@@ -37,11 +37,26 @@
 #     archive's honor): a deleted first-heard date is a moment no one sells
 #     back. Servers/Pearl.md says so where it can be acted on.
 #
+# Clip retention (issue #175) also lives HERE, not in earl.py -- deliberate:
+# the store is the thing that knows which clips are irreplaceable, so the
+# store does the pruning. Hourly, the frame_archiver pattern (pure selection,
+# injected clock), with one sacred exemption: every clip named in
+# life_list.first_clip survives FOREVER -- a lifer's first recording is part
+# of the permanent record. Day one measured ~0.70 GB/day pre-debounce (the
+# LV full in ~62 days); with the visit debounce and a 90-day horizon the
+# steady state is ~20 GB, comfortable beside the media-cache's other tenants.
+# Pruned rows keep their clip path -- append-only store, and a missing file
+# is an honest gap (the Field Journal's pruned-thumbnail precedent).
+#
 # Config (env):
-#   MERLE_MQTT       the broker, REQUIRED (bus.py raises without it)
-#   MERLE_EARL_DB    the store's path (default "earl.db" under the unit's
-#                    WorkingDirectory -- the MERLE_WEATHER_DB convention; any
-#                    future MCC route gets an absolute path to the SAME file)
+#   MERLE_MQTT                 the broker, REQUIRED (bus.py raises without it)
+#   MERLE_EARL_DB              the store's path (default "earl.db" under the
+#                              unit's WorkingDirectory -- the MERLE_WEATHER_DB
+#                              convention; any future MCC route gets an
+#                              absolute path to the SAME file)
+#   MERLE_EARL_CLIPS           Earl's clip dir (same value as the earl unit's;
+#                              default "clips"). Missing dir = nothing pruned.
+#   MERLE_EARL_CLIPS_KEEP_DAYS retention horizon (default 90)
 # =============================================================================
 
 import json
@@ -55,6 +70,8 @@ import bus
 
 CLIENT_ID = "earl-sightings"
 DEFAULT_DB_PATH = "earl.db"
+DEFAULT_KEEP_DAYS = 90.0
+PRUNE_INTERVAL_S = 3600
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sightings (
@@ -65,7 +82,8 @@ CREATE TABLE IF NOT EXISTS sightings (
     species_common TEXT NOT NULL,
     confidence     REAL NOT NULL,
     clip           TEXT,
-    wind_suspect   INTEGER NOT NULL DEFAULT 0
+    wind_suspect   INTEGER NOT NULL DEFAULT 0,
+    rms            REAL
 );
 CREATE INDEX IF NOT EXISTS sightings_ts ON sightings(ts);
 CREATE INDEX IF NOT EXISTS sightings_species ON sightings(species_sci, ts);
@@ -94,6 +112,13 @@ def connect(path):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    # Issue #175 upgrade, the repeatable-pass rule (never a one-time
+    # migration): a pre-#175 file lacks the rms column; add it in place.
+    # Fresh files get it from SCHEMA; both paths are idempotent, so a fresh
+    # pearl and a day-one earl.db take the same code with no script to run.
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(sightings)")}
+    if "rms" not in columns:
+        conn.execute("ALTER TABLE sightings ADD COLUMN rms REAL")
     conn.commit()
     return conn
 
@@ -107,6 +132,7 @@ def parse_event(payload):
         event = json.loads(payload)
         if event.get("kind") != "detection":
             return None
+        rms = event.get("rms")
         return {
             "ts": int(event["ts"]),
             "source": str(event["source"]),
@@ -115,6 +141,8 @@ def parse_event(payload):
             "confidence": float(event["confidence"]),
             "clip": event.get("clip"),
             "wind_suspect": 1 if event.get("wind_suspect") else 0,
+            # Absent on pre-#175 events; NULL is the honest value then.
+            "rms": float(rms) if rms is not None else None,
         }
     except (ValueError, TypeError, KeyError):
         return None
@@ -127,9 +155,10 @@ def record(conn, row):
     move a first_ts."""
     conn.execute(
         "INSERT INTO sightings (ts, source, species_sci, species_common,"
-        " confidence, clip, wind_suspect) VALUES (?,?,?,?,?,?,?)",
+        " confidence, clip, wind_suspect, rms) VALUES (?,?,?,?,?,?,?,?)",
         (row["ts"], row["source"], row["species_sci"], row["species_common"],
-         row["confidence"], row["clip"], row["wind_suspect"]))
+         row["confidence"], row["clip"], row["wind_suspect"],
+         row.get("rms")))
     cur = conn.execute(
         "INSERT OR IGNORE INTO life_list (species_sci, species_common,"
         " first_ts, first_source, first_clip) VALUES (?,?,?,?,?)",
@@ -139,10 +168,65 @@ def record(conn, row):
     return cur.rowcount == 1
 
 
+# --- clip retention (issue #175) ---------------------------------------------
+
+def prune_selection(files, now_ts, keep_days, exempt):
+    """Which clips to delete: older than the horizon AND not a lifer's first
+    recording. `files` is [(relpath, mtime_ts)]; pure with an injected clock
+    -- the frame_archiver.prune_selection precedent, plus the exemption."""
+    horizon = now_ts - keep_days * 86400
+    return [relpath for relpath, mtime in files
+            if mtime < horizon and relpath not in exempt]
+
+
+def list_clips(clips_dir):
+    """Every file under the clips dir as (posix relpath, mtime). A missing
+    dir is an empty list -- a box that never wrote a clip has nothing to
+    prune, not an error."""
+    out = []
+    for root, _, names in os.walk(clips_dir):
+        for f in names:
+            full = os.path.join(root, f)
+            rel = os.path.relpath(full, clips_dir).replace(os.sep, "/")
+            out.append((rel, os.path.getmtime(full)))
+    return out
+
+
+def exempt_clips(conn):
+    """The sacred set: life_list.first_clip paths survive forever."""
+    return {r["first_clip"] for r in
+            conn.execute("SELECT first_clip FROM life_list")
+            if r["first_clip"]}
+
+
+def prune_clips(clips_dir, store_path, keep_days, now_ts=None):
+    """One retention pass. Own short-lived read connection -- the paho
+    callback thread owns the writer, and two threads on one sqlite handle
+    is a fight not worth having. Returns how many files went."""
+    conn = connect(store_path)
+    try:
+        exempt = exempt_clips(conn)
+    finally:
+        conn.close()
+    doomed = prune_selection(list_clips(clips_dir),
+                             now_ts if now_ts is not None else time.time(),
+                             keep_days, exempt)
+    for relpath in doomed:
+        try:
+            os.remove(os.path.join(clips_dir, relpath))
+        except OSError:
+            pass   # already gone or busy; next hour's pass will retry
+    return len(doomed)
+
+
 def main():
     path = db_path()
     conn = connect(path)   # an unopenable path fails here, at launch
-    print(f"[sightings] recording to {path}", flush=True)
+    clips_dir = os.environ.get("MERLE_EARL_CLIPS", "").strip() or "clips"
+    keep_days = float(os.environ.get("MERLE_EARL_CLIPS_KEEP_DAYS",
+                                     DEFAULT_KEEP_DAYS))
+    print(f"[sightings] recording to {path}; pruning {clips_dir} past "
+          f"{keep_days:.0f} days (lifer first-clips exempt)", flush=True)
 
     def on_connect(client, userdata, flags, reason_code, properties):
         client.subscribe(bus.AUDIO_EVENTS_TOPIC)
@@ -165,15 +249,37 @@ def main():
             print(f"[sightings] LIFER: {row['species_common']} "
                   f"({row['species_sci']}) via {row['source']}", flush=True)
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID)
+    # pid-suffixed: two instances sharing a client id kick each other off the
+    # broker in a loop (a desk twin fought the production unit; the earl.py
+    # note has the full story). QoS 0 + clean session = the id is cosmetic.
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                         client_id=f"{CLIENT_ID}-{os.getpid()}")
     client.on_connect = on_connect
     client.on_message = on_message
     host, port = bus.broker_address()
     client.connect_async(host, port)
+    # loop_start (not loop_forever, the pre-#175 shape): paho keeps the bus
+    # on its own thread while the main thread owns the hourly retention tick.
+    # First pass runs at startup so a long-down consumer heals immediately.
+    client.loop_start()
+    next_prune = time.time()
     try:
-        client.loop_forever(retry_first_connection=True)
+        while True:
+            time.sleep(1)
+            if time.time() < next_prune:
+                continue
+            next_prune = time.time() + PRUNE_INTERVAL_S
+            try:
+                pruned = prune_clips(clips_dir, path, keep_days)
+                if pruned:
+                    print(f"[sightings] pruned {pruned} clips past the "
+                          f"{keep_days:.0f}-day horizon", flush=True)
+            except Exception as e:
+                print(f"[sightings] prune failed ({e}) -- retrying next "
+                      "hour", flush=True)
     except KeyboardInterrupt:
         print("[sightings] signing off", flush=True)
+        client.loop_stop()
         client.disconnect()
 
 
