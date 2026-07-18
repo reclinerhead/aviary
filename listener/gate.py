@@ -50,6 +50,97 @@ _HUMAN_RE = re.compile(r"^human\b", re.IGNORECASE)
 # a coyote in the driveway is exactly the kind of thing the bus exists for.
 _NOISE_LABELS = frozenset({"engine", "environmental", "noise", "siren"})
 
+# --- the YAMNet front gate (issue #174) --------------------------------------
+# AudioSet display names, verified against the real 521-class map on pearl
+# (2026-07-18) -- a typo'd name here silently never matches, the topic-
+# constants lesson, so earl.py warns at startup about any entry the loaded
+# model doesn't know. A curated, reviewable table (the genre-vocabulary
+# ethos), not scattered ifs. No name may appear in two routes;
+# test_listener_gate.py enforces it.
+
+DEFAULT_GATE_FLOOR = 0.3   # routing floor for bird/notable (MERLE_EARL_GATE_FLOOR)
+SPEECH_FLOOR = 0.1         # speech kills at a LOWER bar -- err toward the invariant
+
+SPEECH_CLASSES = frozenset({
+    "Speech", "Child speech, kid speaking", "Conversation",
+    "Narration, monologue", "Whispering", "Shout", "Laughter",
+    "Singing", "Whistling", "Humming", "Baby cry, infant cry",
+})
+
+BIRD_CLASSES = frozenset({
+    "Bird", "Bird vocalization, bird call, bird song", "Chirp, tweet",
+    "Squawk", "Pigeon, dove", "Crow", "Owl", "Fowl", "Turkey", "Gobble",
+    "Duck", "Goose", "Bird flight, flapping wings",
+})
+
+NOTABLE_CLASSES = frozenset({
+    "Dog", "Bark", "Howl", "Cat", "Meow",
+    "Glass", "Shatter", "Siren", "Smoke detector, smoke alarm",
+    "Thunder", "Gunshot, gunfire", "Explosion",
+    "Vehicle horn, car horn, honking", "Car alarm", "Chainsaw",
+    "Engine", "Helicopter", "Cricket", "Frog",
+    "Wild animals", "Rodents, rats, mice",
+})
+
+
+def route(predictions, floor=DEFAULT_GATE_FLOOR):
+    """The front gate's verdict for one window. `predictions` is YAMNet's
+    [(class_name, score), ...]; returns (verdict, hits):
+
+      "speech"   any speech class >= SPEECH_FLOOR. The window is DEAD --
+                 no BirdNET, no event, no clip (epic invariant 1, now
+                 enforced by a model with real speech classes, FIRST).
+                 Deliberately checked at a lower floor than everything
+                 else, and before everything else.
+      "bird"     a bird class >= floor: refine with BirdNET (the existing
+                 decide()/visit path, byte-identical from here on -- and
+                 BirdNET's own human check remains as the second layer).
+      "notable"  a curated non-bird class >= floor: a kind:"sound" event,
+                 clip and all. hits is [(class, score)] best-first.
+      "quiet"    nothing cleared a floor: the steady state, drop.
+    """
+    speech = [(c, s) for c, s in predictions
+              if s >= SPEECH_FLOOR and c in SPEECH_CLASSES]
+    if speech:
+        return "speech", sorted(speech, key=lambda p: -p[1])
+    bird = [(c, s) for c, s in predictions
+            if s >= floor and c in BIRD_CLASSES]
+    if bird:
+        return "bird", sorted(bird, key=lambda p: -p[1])
+    notable = [(c, s) for c, s in predictions
+               if s >= floor and c in NOTABLE_CLASSES]
+    if notable:
+        return "notable", sorted(notable, key=lambda p: -p[1])
+    return "quiet", []
+
+
+def unknown_gate_classes(model_class_names):
+    """Map entries the loaded model doesn't know -- earl.py logs these LOUDLY
+    at startup (a misspelled class silently never routes; never trust a
+    string the model didn't confirm)."""
+    known = set(model_class_names)
+    return sorted((SPEECH_CLASSES | BIRD_CLASSES | NOTABLE_CLASSES) - known)
+
+
+def shape_sound_event(*, source, ts, klass, confidence, clip_relpath, windy,
+                      rms=None):
+    """One kind:"sound" payload (issue #174): the two-tier schema's coarse
+    tier -- an AudioSet class, no species fields. sightings.py ignores
+    non-"detection" kinds by design (the #172 guard is the compatibility
+    mechanism), so these flow to future consumers without touching the
+    bird record."""
+    return {
+        "ts": int(ts),
+        "source": source,
+        "kind": "sound",
+        "class": str(klass),
+        "confidence": round(float(confidence), 3),
+        "window_s": WINDOW_S,
+        "clip": clip_relpath,
+        "wind_suspect": bool(windy),
+        "rms": round(float(rms), 5) if rms is not None else None,
+    }
+
 
 def split_label(label):
     """BirdNET's "Scientific_Common" -> (scientific, common). A label without
