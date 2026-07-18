@@ -64,6 +64,32 @@
 #                            contract and same reasoning as weather/status:
 #                            its own namespace, because a jukebox is not a
 #                            narrator and must not appear in the Field Journal
+#   audio/events             Earl -> world       one JSON object per accepted
+#                                                audio detection (issue #172):
+#                                                species, confidence, source,
+#                                                clip path, epoch-seconds ts
+#                                                (the weather-namespace time
+#                                                convention). Non-retained --
+#                                                detections are moments. The
+#                                                sightings consumer archives
+#                                                them; the bus stays live
+#                                                transport only
+#   audio/status             Earl presence       "online"/"offline", RETAINED
+#                                                ("offline" is the Last Will)
+#                                                -- the weather/status
+#                                                contract verbatim, own
+#                                                namespace for the same
+#                                                reason: Earl is not a
+#                                                narrator
+#   audio/sources            Earl -> world       per-source health, RETAINED
+#                                                JSON ({state, last_window_ts}
+#                                                per source) republished on
+#                                                every change -- source health
+#                                                is *state* (the weather
+#                                                reasoning), and one daemon
+#                                                with several microphones
+#                                                needs finer liveness than
+#                                                one status string
 #   services/<name>/status   service presence    "online"/"offline", RETAINED --
 #                            the house-wide namespace (epic #110 Phase 4,
 #                            issue #147) for anything that is neither a
@@ -104,6 +130,9 @@ WEATHER_HISTORY_TOPIC = "weather/history"
 WEATHER_REPORT_TOPIC = "weather/report"
 WEATHER_STATUS_TOPIC = "weather/status"
 MUSIC_STATUS_TOPIC = "music/status"
+AUDIO_EVENTS_TOPIC = "audio/events"
+AUDIO_STATUS_TOPIC = "audio/status"
+AUDIO_SOURCES_TOPIC = "audio/sources"
 SERVICE_STATUS_WILDCARD = "services/+/status"
 
 
