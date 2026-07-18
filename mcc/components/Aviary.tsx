@@ -793,9 +793,78 @@ export function Aviary() {
 
 // --- The /aviary/[species] page ---------------------------------------------
 
+/** The field-naturalist blocks (#186). Prose written by the analysis pass on
+ * pearl and merely read here -- nothing generates at render time, ever. The
+ * footprint is reserved in every state, so the blocks landing (or being
+ * absent on day one) can't shift the page. */
+function FieldNotes({ analysis }: { analysis: Analysis | null }) {
+  const has = analysis?.rhythm || analysis?.weather;
+  return (
+    <section className="panel mt-4 rounded-sm border border-line bg-panel">
+      <div className="flex items-baseline justify-between gap-3 px-4 pb-2 pt-3">
+        <h2
+          className="text-lg text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          Field Notes
+        </h2>
+        {analysis?.generated_ts && (
+          <span className="stamp text-[10px] text-inkfaint">
+            as of{" "}
+            {new Date(analysis.generated_ts * 1000).toLocaleDateString([], {
+              month: "short",
+              day: "numeric",
+            })}
+            {analysis.model ? ` · ${analysis.model}` : ""}
+          </span>
+        )}
+      </div>
+      <div className="grid min-h-[120px] gap-5 px-4 pb-4 md:grid-cols-2">
+        {has ? (
+          <>
+            <Note title="the rhythm" text={analysis?.rhythm ?? null} />
+            <Note title="weather & timing" text={analysis?.weather ?? null} />
+          </>
+        ) : (
+          <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2 md:col-span-2">
+            <span className="stamp px-6 text-center text-xs text-inkfaint">
+              no field notes yet — they arrive with the analysis pass
+            </span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Note({ title, text }: { title: string; text: string | null }) {
+  return (
+    <div className="min-w-0">
+      <h3 className="stamp mb-1.5 text-[10px] text-inkfaint">{title}</h3>
+      {text ? (
+        <div className="space-y-2.5 text-sm leading-relaxed text-inkdim">
+          {text.split(/\n+/).map((para, i) => (
+            <p key={i}>{para}</p>
+          ))}
+        </div>
+      ) : (
+        <p className="stamp text-[9px] text-inkfaint">not written yet</p>
+      )}
+    </div>
+  );
+}
+
+type Analysis = {
+  rhythm: string | null;
+  weather: string | null;
+  model: string | null;
+  generated_ts: number | null;
+};
+
 export function SpeciesProfile({ sci }: { sci: string }) {
   const [entry, setEntry] = useState<RosterEntry | null>(null);
   const [visits, setVisits] = useState<Visit[] | null>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [midnight, setMidnight] = useState<number | null>(null);
   const player = useClipPlayer();
@@ -830,6 +899,11 @@ export function SpeciesProfile({ sci }: { sci: string }) {
         setVisits(collapseVisits(rows));
       })
       .catch(() => setVisits([]));
+    // The field notes (#186): read-only, already written by the pass.
+    fetch(`/aviary/analysis/${encodeURIComponent(sci)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((a: Analysis | null) => setAnalysis(a))
+      .catch(() => {});
   }, [sci]);
 
   return (
@@ -973,10 +1047,16 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           </section>
         </div>
       )}
-      {/* The visits-over-time chart (#185): full-width under both columns,
-          the floor #192's layout cleared for it. Only for a bird actually
-          in the record -- an unknown species has no rhythm to draw. */}
-      {entry && <VisitsChart sci={sci} />}
+      {/* Full-width under both columns, the floor #192's layout cleared:
+          the chart (#185), then the prose written about it (#186). Only for
+          a bird actually in the record -- an unknown species has no rhythm
+          to draw and nothing to say. */}
+      {entry && (
+        <>
+          <VisitsChart sci={sci} />
+          <FieldNotes analysis={analysis} />
+        </>
+      )}
     </div>
   );
 }
