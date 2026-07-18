@@ -228,10 +228,12 @@ def load_yamnet(np, log):
     in every stats line, never silently. The Coral phase (2b) swaps this
     function's implementation for a TPU delegate; nothing upstream changes.
 
-    CPU cost, measured on pearl: ~56 ms warm per 3 s window -- ~2% of the
-    budget. Input is our native 48 kHz mono; YAMNet wants 16 kHz, and a
-    mean-of-3 decimation is a good-enough low-pass for a gate (BirdNET
-    still sees the full-rate audio on the bird path)."""
+    CPU cost, measured on pearl: ~56-80 ms warm per 3 s window -- a few
+    percent of the budget, and additive now rather than a saving, since
+    every non-speech window still reaches BirdNET. Input is our native
+    48 kHz mono; YAMNet wants 16 kHz, and a mean-of-3 decimation is a
+    good-enough low-pass for classification (BirdNET always sees the
+    full-rate audio)."""
     try:
         import csv
 
@@ -291,8 +293,8 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
     sound_visits = gate.VisitTracker()   # notable-sound visits (#174) --
     # separate tracker: AudioSet class names and species names are different
     # vocabularies and must not share a debounce namespace
-    counters = {"windows": 0, "speech": 0, "bird": 0, "notable": 0,
-                "quiet": 0, "ungated": 0, "gate_ms": 0.0}
+    counters = {"windows": 0, "speech": 0, "notable": 0, "listen": 0,
+                "ungated": 0, "gate_ms": 0.0}
     with model.predict_session(top_k=3, show_stats=None) as session:
         while True:
             if birdnet_week() != week:
@@ -365,9 +367,10 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                 windy = wind is not None and wind > gate.WIND_GATE_MPH
                 context = [w for w in (prev_window, buf) if w is not None]
 
-                # The front gate (issue #174): YAMNet first, BirdNET only on
-                # bird-routed windows. Speech dies HERE -- before the bird
-                # model ever sees the window.
+                # YAMNet first (issue #174): it kills speech and names
+                # notable sounds. It does NOT decide whether BirdNET runs --
+                # see gate.route's docstring for the afternoon that taught
+                # us why. Speech is the only verdict that stops anything.
                 counters["windows"] += 1
                 if classify is not None:
                     t0 = time.perf_counter()
@@ -376,23 +379,26 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                     counters["gate_ms"] += (time.perf_counter() - t0) * 1000
                     counters[verdict] += 1
                 else:
-                    verdict, hits = "bird", []
+                    verdict, hits = "listen", []
                     counters["ungated"] += 1
 
                 if counters["windows"] % GATE_STATS_WINDOWS == 0:
                     ms = counters["gate_ms"] / max(
                         counters["windows"] - counters["ungated"], 1)
                     log(f"gate stats: {counters['windows']} windows -- "
-                        f"{counters['quiet']} quiet, {counters['bird']} bird, "
+                        f"{counters['listen']} listen, "
                         f"{counters['speech']} speech-killed, "
                         f"{counters['notable']} notable, "
                         f"{counters['ungated']} ungated; "
                         f"gate {ms:.0f} ms avg")
 
-                if verdict in ("speech", "quiet"):
+                if verdict == "speech":
                     prev_window = buf
                     continue
 
+                # A notable sound gets its own event -- and then the window
+                # STILL goes to BirdNET below: a dog barking doesn't mean no
+                # bird is singing.
                 if verdict == "notable":
                     for klass, score in hits:
                         action, relpath = sound_visits.observe(
@@ -412,12 +418,10 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                         else:
                             log(f"sound: {klass} {score:.2f} -- visit best, "
                                 f"clip upgraded")
-                    prev_window = buf
-                    continue
 
-                # verdict == "bird": refine with BirdNET -- the Phase 1 path,
-                # byte-identical from here (including its own human check,
-                # the invariant's second layer).
+                # Every non-speech window reaches BirdNET -- the Phase 1
+                # path, byte-identical from here (including its own human
+                # check, the invariant's second layer).
                 df = session.run_arrays((audio, gate.SAMPLE_RATE)).to_dataframe()
                 predictions = list(zip(df["species_name"], df["confidence"]))
                 accepted, windy = gate.decide(
