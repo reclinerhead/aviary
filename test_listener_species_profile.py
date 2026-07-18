@@ -10,6 +10,7 @@
 # =============================================================================
 
 import os
+import sqlite3
 
 import pytest
 
@@ -36,7 +37,8 @@ def summary_page(**over):
         "title": "Northern cardinal",
         "extract": "The northern cardinal is a bird in the genus Cardinalis.",
         "thumbnail": {"source": "https://upload.wikimedia.org/x/900px-C.jpg",
-                      "width": 900, "height": 600},
+                      "width": 900, "height": 600},  # landscape by default
+
         "pageimage": "Cardinalis_cardinalis_male.jpg",
         **over,
     }
@@ -95,7 +97,7 @@ def test_parse_summary_missing_page_and_disambiguation_are_nothing():
     for d in (missing, disambig, None, {}):
         got = species_profile.parse_summary(d)
         assert got == {"description": None, "image_url": None,
-                       "image_name": None}
+                       "image_name": None, "image_w": None, "image_h": None}
 
 
 def test_parse_summary_survives_missing_pieces():
@@ -131,12 +133,118 @@ def test_attribution_line():
 
 # --- worklist ----------------------------------------------------------------
 
+def test_connect_backfills_the_dimension_columns_in_place(tmp_path):
+    # A #184-era file: the table exists without image_w/image_h. Opening it
+    # with today's code adds them (the repeatable-pass rule -- an upgrade is
+    # a restart, not a migration script) and keeps the existing row.
+    path = str(tmp_path / "earl.db")
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE species_profile (
+            species_sci TEXT PRIMARY KEY, description TEXT, image_file TEXT,
+            image_source TEXT, image_attribution TEXT,
+            fetched_ts INTEGER NOT NULL);
+    """)
+    old.execute("INSERT INTO species_profile VALUES (?,?,?,?,?,?)",
+                ("A sci", "prose", "A_sci.jpg", "wikipedia", "cc", 1))
+    old.commit()
+    old.close()
+
+    c = species_profile.connect(path)
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(species_profile)")}
+    assert {"image_w", "image_h"} <= cols
+    row = c.execute("SELECT * FROM species_profile").fetchone()
+    assert row["description"] == "prose"          # nothing lost
+    assert row["image_w"] is None                 # honestly unknown, for now
+    species_profile.connect(path).close()         # and idempotent
+    c.close()
+
+
+def test_parse_summary_carries_the_thumbnail_dimensions():
+    got = species_profile.parse_summary(summary_page())
+    assert (got["image_w"], got["image_h"]) == (900, 600)
+    # A portrait-orientation bird -- the case that motivated #185.
+    tall = summary_page(thumbnail={"source": "https://x/900px-C.jpg",
+                                   "width": 675, "height": 900})
+    got = species_profile.parse_summary(tall)
+    assert (got["image_w"], got["image_h"]) == (675, 900)
+
+
+def test_enrich_stores_the_dimensions(conn, tmp_path):
+    fake_json, fake_bytes, _ = fetchers()
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert (row["image_w"], row["image_h"]) == (900, 600)
+
+
+def test_enrich_claims_no_shape_without_a_file(conn, tmp_path):
+    # Prose but no portrait: dimensions describe a file we never wrote, so
+    # they stay NULL rather than describing nothing.
+    no_image = summary_page()
+    del no_image["query"]["pages"][0]["thumbnail"]
+    del no_image["query"]["pages"][0]["pageimage"]
+    fake_json, fake_bytes, _ = fetchers(summary=no_image)
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["image_w"] is None and row["image_h"] is None
+
+
+def test_worklist_backfills_dimensionless_rows(conn):
+    # The #185 backfill arm: a #184-era wikipedia row with an image but no
+    # dimensions comes back onto the worklist, so ONE ordinary re-run heals
+    # the whole life list.
+    life(conn, "A sci", "Robin")
+    life(conn, "B sci", "Cardinal")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("A sci", "t", "A_sci.jpg", "wikipedia", "cc", None, None, 1))
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("B sci", "t", "B_sci.jpg", "wikipedia", "cc", 900, 600, 1))
+    assert species_profile.worklist(conn) == [("A sci", "Robin")]
+
+
+def test_worklist_never_backfills_an_owner_row(conn):
+    # An owner photo has no Wikipedia dimensions to fetch and must never be
+    # spent a request on -- the provenance rule, enforced in the SQL.
+    life(conn, "A sci", "Robin")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("A sci", "todd's", "A_sci.jpg", "owner", "photo: Todd", None, None, 1))
+    assert species_profile.worklist(conn) == []
+
+
+def test_worklist_leaves_prose_only_rows_alone(conn):
+    # No image_file means there is no portrait to measure; re-fetching would
+    # be a fresh look at a page that had nothing, not a backfill.
+    life(conn, "A sci", "Robin")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("A sci", "prose", None, None, None, None, None, 1))
+    assert species_profile.worklist(conn) == []
+
+
 def test_worklist_is_the_unprofiled_life_list(conn):
     life(conn, "A sci", "Robin")
     life(conn, "B sci", "Cardinal")
     life(conn, "C sci", "Jay")
-    conn.execute("INSERT INTO species_profile VALUES (?,?,?,?,?,?)",
-                 ("B sci", "text", None, None, None, 1))
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("B sci", "text", None, None, None, None, None, 1))
     assert species_profile.worklist(conn) == [
         ("C sci", "Jay"), ("A sci", "Robin")]   # common-name order
 
@@ -204,9 +312,12 @@ def test_enrich_prose_without_portrait_is_honest_nulls(conn, tmp_path):
 
 
 def test_owner_row_survives_refresh_untouched(conn, tmp_path):
-    conn.execute("INSERT INTO species_profile VALUES (?,?,?,?,?,?)",
-                 ("A sci", "todd's own words", "A_sci.jpg", "owner",
-                  "photo: Todd", 7))
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("A sci", "todd's own words", "A_sci.jpg", "owner", "photo: Todd",
+         None, None, 7))
     fake_json, fake_bytes, calls = fetchers()
     status = species_profile.enrich_species(
         conn, str(tmp_path), "A sci",

@@ -153,6 +153,44 @@ export function portraitUrl(sci: string): string {
   return `/aviary/portrait/${encodeURIComponent(sci)}`;
 }
 
+// --- Portrait framing (issue #185) ------------------------------------------
+
+/** `object-position` for a portrait inside a FIXED box (grid tiles at 4:3,
+ * ticker thumbs at 1:1), where `object-cover` must crop something.
+ *
+ * **Crop from the top when the image is taller than its box.** Wikipedia's
+ * bird photos are shot with the bird upright and its head high in the frame,
+ * so a centered crop of a portrait-orientation source cuts off the head --
+ * the single most identifying part of the bird (measured on the real life
+ * list: Blue Jay and Cedar Waxwing both decapitated at 4:3). Landscape and
+ * square sources keep the centered crop, which is right for them: there the
+ * bird is centered and the cropping happens at the sides.
+ *
+ * Unknown dimensions (a #184-era row awaiting backfill) take the centered
+ * default -- the old behaviour, never a guess about a shape we don't know. */
+export function cropPosition(
+  w: number | null | undefined,
+  h: number | null | undefined,
+  boxAspect: number,
+): string {
+  if (!w || !h || w <= 0 || h <= 0) return "center";
+  return h / w > 1 / boxAspect ? "top" : "center";
+}
+
+/** The aspect ratio the profile's floated figure reserves, as a CSS
+ * `aspect-ratio` value. With real dimensions the figure takes the image's
+ * OWN shape, so the profile crops nothing at all -- the whole bird, always
+ * in frame -- and reserving it before load keeps house rule #1 (the box is
+ * the right shape from first paint, so the photo landing shifts nothing).
+ * Unknown dimensions fall back to the 4:3 the page has always used. */
+export function portraitAspect(
+  w: number | null | undefined,
+  h: number | null | undefined,
+): string {
+  if (!w || !h || w <= 0 || h <= 0) return "4 / 3";
+  return `${w} / ${h}`;
+}
+
 // --- Route parameter parsing (the parseRange discipline) --------------------
 
 /** The recent-events limit, clamped at both ends of the wire: a missing or
@@ -194,6 +232,11 @@ export type RosterEntry = {
   image_file?: string | null;
   image_source?: string | null;
   image_attribution?: string | null;
+  // The portrait's real shape (#185). NULL on #184-era rows until the
+  // pass's backfill arm runs -- hence every consumer degrades to the
+  // fixed-box fallback rather than assuming a ratio.
+  image_w?: number | null;
+  image_h?: number | null;
 };
 
 /** life_list rows + raw sighting (species, ts) pairs -> the roster the grid
@@ -271,6 +314,152 @@ export function todayVisitors(
       species_common: e.species_common,
       count: e.today,
     }));
+}
+
+// --- The visits-over-time chart (issue #185) ---------------------------------
+
+/** The chart's opening span: ~30 days of daily bars. Fixed forever after --
+ * only the window's POSITION moves (the station chart's rule: the span is
+ * the viewer's setting, never something a clamp gets to change). */
+export const VISITS_SPAN_S = 30 * 86400;
+/** How much record to ask for when a drag reaches past what we hold. Far
+ * more generous than the station's 7 days because the payload is one
+ * integer per visit, not a row per 5 minutes -- a season at a time keeps a
+ * quiet winter from reading as the end of the record. */
+export const VISITS_CHUNK_S = 120 * 86400;
+/** A press that travels less than this is a tap, not a drag (#106's rule):
+ * the crosshair placement a touchscreen can't express as hover. */
+export const TAP_SLOP_PX = 4;
+/** Y-axis floor: a species with a single visit a day shouldn't draw a
+ * full-height bar and read as a swarm (the wind-axis-floor reasoning). */
+export const VISITS_CEIL_FLOOR = 4;
+
+export type DayBar = {
+  /** Local midnight opening the day (epoch seconds). */
+  ts: number;
+  count: number;
+};
+
+/** Visit-opening timestamps -> counts per the VIEWER's local day.
+ *
+ * Bucketing is client-side deliberately, and this is a correction to what
+ * #185 sketched: the server cannot know the viewer's timezone, which is the
+ * exact lesson Phase 1 already encoded in `parseSince` (the client says
+ * where its day begins). The server still owns the subtle half -- the 60s
+ * visit grouping that must match `gate.VisitTracker` -- and ships one
+ * integer per visit, so this is bucketing, not analysis.
+ *
+ * Days inside the window with no visits are **zero bars, honestly**: a bird
+ * that didn't come is data, not a gap. Days before `since` (first-heard) are
+ * omitted entirely -- that's absence of record, not absence of bird -- which
+ * is what keeps a lifer's chart from claiming a year of silence it never
+ * observed. `setDate`/re-floor stepping, so DST's 23/25h days can't skip or
+ * double a bucket. */
+export function dayBuckets(
+  visitTs: number[],
+  ts0: number,
+  ts1: number,
+  since: number | null = null,
+): DayBar[] {
+  if (ts1 <= ts0) return [];
+  const counts = new Map<number, number>();
+  for (const ts of visitTs) {
+    const d = new Date(ts * 1000);
+    d.setHours(0, 0, 0, 0);
+    const key = Math.floor(d.getTime() / 1000);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  // The first local midnight at or before the window's left edge.
+  const cursor = new Date(ts0 * 1000);
+  cursor.setHours(0, 0, 0, 0);
+  // Days before the record began aren't rendered at all.
+  const floor = since === null ? null : dayStart(since);
+  const bars: DayBar[] = [];
+  while (cursor.getTime() / 1000 < ts1) {
+    const ts = Math.floor(cursor.getTime() / 1000);
+    if (ts >= ts0 && (floor === null || ts >= floor))
+      bars.push({ ts, count: counts.get(ts) ?? 0 });
+    cursor.setDate(cursor.getDate() + 1);
+    cursor.setHours(0, 0, 0, 0); // re-floor: DST days are 23h or 25h
+  }
+  return bars;
+}
+
+/** Local midnight opening the day containing `ts`. */
+export function dayStart(ts: number): number {
+  const d = new Date(ts * 1000);
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/** Slide the window back inside the walls WITHOUT resizing it -- the
+ * station's `clampWindow` semantics (#106), minus the forecast half: the
+ * right wall is simply `newest` (today), because a bird chart has no future
+ * to show. When the walls are closer together than the span the RIGHT wall
+ * wins, which is the young-record's normal state, not an edge case: the
+ * default window must stay exactly reachable on day one. */
+export function clampVisitWindow(
+  ts0: number,
+  ts1: number,
+  oldest: number,
+  newest: number,
+): { ts0: number; ts1: number } {
+  const span = ts1 - ts0;
+  if (newest - oldest < span) return { ts0: newest - span, ts1: newest };
+  if (ts1 > newest) return { ts0: newest - span, ts1: newest };
+  if (ts0 < oldest) return { ts0: oldest, ts1: oldest + span };
+  return { ts0, ts1 };
+}
+
+export type VisitTick = { ts: number; frac: number; label: string };
+
+/** Axis gridlines for the visits window: one per local week boundary
+ * (Sundays) labeled by date, so a 30-day window reads as a calendar without
+ * 30 labels colliding. `dayTicks`' DST-safe stepping, a week at a time. */
+export function visitTicks(ts0: number, ts1: number): VisitTick[] {
+  if (ts1 <= ts0) return [];
+  const ticks: VisitTick[] = [];
+  const d = new Date(ts0 * 1000);
+  d.setHours(0, 0, 0, 0);
+  // Advance to the first Sunday at or after the left edge.
+  while (d.getDay() !== 0) d.setDate(d.getDate() + 1);
+  while (d.getTime() / 1000 < ts1) {
+    const ts = Math.floor(d.getTime() / 1000);
+    if (ts > ts0)
+      ticks.push({
+        ts,
+        frac: (ts - ts0) / (ts1 - ts0),
+        label: d
+          .toLocaleDateString(undefined, { month: "short", day: "numeric" })
+          .toLowerCase(),
+      });
+    d.setDate(d.getDate() + 7);
+    d.setHours(0, 0, 0, 0);
+  }
+  return ticks;
+}
+
+/** Y-axis ceiling: the busiest day in view, floored so a quiet species reads
+ * quiet, and rounded up to a clean step for the label (the `seriesCeil`
+ * recipe). */
+export function visitsCeil(bars: DayBar[], floor = VISITS_CEIL_FLOOR): number {
+  const max = Math.max(0, ...bars.map((b) => b.count));
+  const step = max > 40 ? 10 : max > 12 ? 5 : 2;
+  return Math.max(floor, Math.ceil(max / step) * step);
+}
+
+/** The bar nearest a pointer fraction across the window -- the crosshair
+ * snaps to a real day, never an interpolated instant (`nearestPoint`'s
+ * rule). Null when there's nothing to snap to. */
+export function nearestBar(
+  bars: DayBar[],
+  ts: number,
+): DayBar | null {
+  if (bars.length === 0) return null;
+  let best = bars[0];
+  for (const b of bars)
+    if (Math.abs(b.ts + 43200 - ts) < Math.abs(best.ts + 43200 - ts)) best = b;
+  return best;
 }
 
 // --- The recent route's row shaping ------------------------------------------

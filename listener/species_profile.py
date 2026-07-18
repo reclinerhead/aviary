@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS species_profile (
     image_file        TEXT,
     image_source      TEXT,
     image_attribution TEXT,
+    image_w           INTEGER,
+    image_h           INTEGER,
     fetched_ts        INTEGER NOT NULL
 );
 """
@@ -114,6 +116,16 @@ def connect(path):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    # Issue #185's upgrade, the repeatable-pass rule (never a one-time
+    # migration script): a #184-era file lacks the image dimensions. Add
+    # them in place; fresh files get them from SCHEMA. Both paths idempotent,
+    # so a fresh pearl and a week-old earl.db take the same code. Existing
+    # rows honestly NULL until the backfill arm of the worklist refills them.
+    columns = {r["name"] for r in
+               conn.execute("PRAGMA table_info(species_profile)")}
+    for col in ("image_w", "image_h"):
+        if col not in columns:
+            conn.execute(f"ALTER TABLE species_profile ADD COLUMN {col} INTEGER")
     conn.commit()
     return conn
 
@@ -171,7 +183,8 @@ def parse_summary(d):
     listing three species is not a portrait of anybody."""
     pages = ((d or {}).get("query") or {}).get("pages") or []
     page = pages[0] if pages else None
-    empty = {"description": None, "image_url": None, "image_name": None}
+    empty = {"description": None, "image_url": None, "image_name": None,
+             "image_w": None, "image_h": None}
     if not page or page.get("missing"):
         return empty
     if "disambiguation" in (page.get("pageprops") or {}):
@@ -181,6 +194,12 @@ def parse_summary(d):
         "description": clean_extract(page.get("extract")),
         "image_url": thumb.get("source"),
         "image_name": page.get("pageimage"),
+        # The thumbnail's real dimensions (issue #185). Already in this
+        # response and previously discarded, which is what left the GUI
+        # center-cropping portrait-orientation birds into landscape boxes and
+        # cutting off their heads. Stored so the browser can frame honestly.
+        "image_w": thumb.get("width"),
+        "image_h": thumb.get("height"),
     }
 
 
@@ -214,13 +233,25 @@ def attribution(license_name, artist):
 
 
 def worklist(conn):
-    """Life-list species with no profile row yet, common-name order. A
-    no-page species writes no row and so stays here -- re-runs get another
-    look for free."""
+    """What this run should fetch, common-name order. Two arms:
+
+    (1) Life-list species with NO profile row -- the original worklist. A
+        no-page species writes no row and so stays here; re-runs get another
+        look for free.
+    (2) BACKFILL (issue #185): rows that have a fetched image but no
+        dimensions, i.e. everything #184 wrote before the columns existed.
+        One ordinary re-run heals the whole life list -- an upgrade is a
+        re-run, never a migration script.
+
+    Owner rows are never in either arm: `image_source = 'owner'` is excluded
+    outright, so the pass cannot even spend a fetch on one."""
     return [(r["species_sci"], r["species_common"]) for r in conn.execute(
         "SELECT l.species_sci, l.species_common FROM life_list l"
         " LEFT JOIN species_profile p ON p.species_sci = l.species_sci"
-        " WHERE p.species_sci IS NULL ORDER BY l.species_common")]
+        " WHERE (p.species_sci IS NULL"
+        "        OR (p.image_source = 'wikipedia' AND p.image_file IS NOT NULL"
+        "            AND p.image_w IS NULL))"
+        " ORDER BY l.species_common")]
 
 
 def owner_locked(conn, sci):
@@ -297,9 +328,13 @@ def enrich_species(conn, media_dir, sci, *, fetch_json=get_json,
 
     conn.execute(
         "INSERT OR REPLACE INTO species_profile (species_sci, description,"
-        " image_file, image_source, image_attribution, fetched_ts)"
-        " VALUES (?,?,?,?,?,?)",
+        " image_file, image_source, image_attribution, image_w, image_h,"
+        " fetched_ts) VALUES (?,?,?,?,?,?,?,?)",
         (sci, summary["description"], image_file, image_source, credit,
+         # Dimensions belong to the file we actually wrote: no file, no
+         # claim about its shape (the honest-NULL rule).
+         summary["image_w"] if image_file else None,
+         summary["image_h"] if image_file else None,
          int(now())))
     conn.commit()
     return "enriched" if image_file else "no-image"

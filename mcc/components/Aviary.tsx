@@ -36,10 +36,13 @@ import {
   Visit,
   clipUrl,
   collapseVisits,
+  cropPosition,
+  portraitAspect,
   portraitUrl,
   rosterOrder,
   todayVisitors,
 } from "@/lib/aviary";
+import { VisitsChart } from "@/components/VisitsChart";
 
 // Ticker sizing: hydrate the newest 50, let live arrivals grow it to 80
 // before the oldest fall off -- the JOURNAL_LIMIT idea, one namespace over.
@@ -112,12 +115,26 @@ function Portrait({
   alt,
   glyphClass,
   className,
+  w,
+  h,
+  boxAspect,
+  style,
 }: {
   sci: string;
   has: boolean;
   alt: string;
   glyphClass: string;
   className: string;
+  // The portrait's real shape (#185), NULL on rows awaiting the pass's
+  // backfill -- unknown means "keep the old centered crop", never a guess.
+  w?: number | null;
+  h?: number | null;
+  /** The fixed box's own ratio (4/3 for tiles, 1 for thumbs). */
+  boxAspect: number;
+  /** Geometry the caller reserves (the profile's true-aspect figure). It
+   * rides BOTH branches, so the placeholder holds exactly the shape the
+   * photo will take -- enrichment landing can't shift the page. */
+  style?: React.CSSProperties;
 }) {
   const [lost, setLost] = useState(false);
   if (has && !lost)
@@ -127,11 +144,16 @@ function Portrait({
         alt={alt}
         loading="lazy"
         onError={() => setLost(true)}
+        // Crop from the TOP for portrait-orientation sources: a bird's head
+        // sits high in the frame, and a centered crop of a tall photo cuts
+        // exactly the part that identifies it (#185).
+        style={{ ...style, objectPosition: cropPosition(w, h, boxAspect) }}
         className={`${className} object-cover`}
       />
     );
   return (
     <span
+      style={style}
       className={`${className} flex flex-col items-center justify-center gap-1 text-inkfaint`}
     >
       <BirdGlyph className={glyphClass} />
@@ -146,7 +168,17 @@ function Portrait({
  * (un-enriched, a fresh lifer, a failed load) wear the glyph in the same
  * reserved square -- one geometry, never a broken image. Decorative
  * alt="": the species name sits right beside it. */
-function TickerThumb({ sci, has }: { sci: string; has: boolean }) {
+function TickerThumb({
+  sci,
+  has,
+  w,
+  h,
+}: {
+  sci: string;
+  has: boolean;
+  w?: number | null;
+  h?: number | null;
+}) {
   const [lost, setLost] = useState(false);
   return (
     <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-line bg-panel text-inkfaint">
@@ -156,6 +188,9 @@ function TickerThumb({ sci, has }: { sci: string; has: boolean }) {
           alt=""
           loading="lazy"
           onError={() => setLost(true)}
+          // Square box: same top-crop rule, so a tall photo keeps its head
+          // even at 36px, where a decapitated bird is unidentifiable (#185).
+          style={{ objectPosition: cropPosition(w, h, 1) }}
           className="h-full w-full object-cover"
         />
       ) : (
@@ -612,6 +647,9 @@ export function Aviary() {
                           has={Boolean(e.image_file)}
                           alt={e.species_common}
                           glyphClass="h-12 w-12"
+                          w={e.image_w}
+                          h={e.image_h}
+                          boxAspect={4 / 3}
                           className="aspect-[4/3] w-full rounded-sm border border-line bg-panel transition-colors group-hover:text-inkdim"
                         />
                         <span className="min-w-0">
@@ -673,6 +711,8 @@ export function Aviary() {
                           <TickerThumb
                             sci={e.species_sci}
                             has={Boolean(roster[e.species_sci]?.image_file)}
+                            w={roster[e.species_sci]?.image_w}
+                            h={roster[e.species_sci]?.image_h}
                           />
                           <PlaySlot clip={e.clip} player={player} />
                           <div className="min-w-0 flex-1">
@@ -846,12 +886,23 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                 under this. */}
             <div className="mt-4 flow-root">
               <div className="mb-3 w-full md:float-left md:mb-2 md:mr-5 md:w-[300px]">
+                {/* The profile crops NOTHING (#185): with real dimensions
+                    the figure takes the photo's own shape, so the whole
+                    bird is always in frame. The ratio is reserved before
+                    the bytes land, so the photo arriving shifts nothing;
+                    an un-backfilled row falls back to the old 4:3. */}
                 <Portrait
                   sci={sci}
                   has={Boolean(entry?.image_file)}
                   alt={entry?.species_common ?? sci}
                   glyphClass="h-16 w-16"
-                  className="aspect-[4/3] w-full rounded-sm border border-line bg-panel2"
+                  w={entry?.image_w}
+                  h={entry?.image_h}
+                  boxAspect={4 / 3}
+                  style={{
+                    aspectRatio: portraitAspect(entry?.image_w, entry?.image_h),
+                  }}
+                  className="w-full rounded-sm border border-line bg-panel2"
                 />
                 {entry?.image_attribution && (
                   <p className="stamp mt-1.5 text-[9px] leading-relaxed text-inkfaint">
@@ -922,8 +973,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           </section>
         </div>
       )}
-      {/* The visits-over-time chart (Phase 3, #185) lands full-width here,
-          under both columns -- the floor this layout clears for it. */}
+      {/* The visits-over-time chart (#185): full-width under both columns,
+          the floor #192's layout cleared for it. Only for a bird actually
+          in the record -- an unknown species has no rhythm to draw. */}
+      {entry && <VisitsChart sci={sci} />}
     </div>
   );
 }
