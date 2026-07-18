@@ -140,6 +140,31 @@ function Portrait({
   );
 }
 
+/** The ticker's identity thumb (#192): the music player's search-result
+ * idiom, one stack over -- a small square portrait leading the row so the
+ * eye finds the bird before the words. Species without a portrait yet
+ * (un-enriched, a fresh lifer, a failed load) wear the glyph in the same
+ * reserved square -- one geometry, never a broken image. Decorative
+ * alt="": the species name sits right beside it. */
+function TickerThumb({ sci, has }: { sci: string; has: boolean }) {
+  const [lost, setLost] = useState(false);
+  return (
+    <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-line bg-panel text-inkfaint">
+      {has && !lost ? (
+        <img
+          src={portraitUrl(sci)}
+          alt=""
+          loading="lazy"
+          onError={() => setLost(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <BirdGlyph className="h-5 w-5" />
+      )}
+    </span>
+  );
+}
+
 // --- Clip playback -----------------------------------------------------------
 
 type ClipPlayer = {
@@ -645,6 +670,10 @@ export function Aviary() {
                     >
                       {e.kind === "detection" ? (
                         <div className="flex items-center gap-2.5 rounded-sm border border-line bg-panel2 px-2.5 py-2">
+                          <TickerThumb
+                            sci={e.species_sci}
+                            has={Boolean(roster[e.species_sci]?.image_file)}
+                          />
                           <PlaySlot clip={e.clip} player={player} />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-baseline justify-between gap-2">
@@ -773,12 +802,50 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           </span>
         </section>
       ) : (
-        <>
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
           <section className="panel rounded-sm border border-line bg-panel p-4">
-            <div className="grid gap-5 sm:grid-cols-[300px_minmax(0,1fr)]">
-              {/* The portrait + its credit (#184): CC-BY means the byline
-                  ships with the photo, small but present. */}
-              <div className="min-w-0">
+            <h2
+              className="text-2xl text-ink"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              {entry?.species_common ?? "…"}
+            </h2>
+            <p className="text-sm italic text-inkdim">{sci}</p>
+            <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
+              <div>
+                <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
+                <dd className="text-inkdim">
+                  {entry ? (
+                    <>
+                      {dateOf(entry.first_ts)}
+                      <span className="text-inkfaint">
+                        {" "}
+                        · via {entry.first_source}
+                      </span>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="stamp text-[9px] text-inkfaint">visits</dt>
+                <dd className="text-inkdim">{entry ? entry.visits : "—"}</dd>
+              </div>
+              <div>
+                <dt className="stamp text-[9px] text-inkfaint">today</dt>
+                <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
+              </div>
+            </dl>
+            {/* The magazine body (#192): the portrait + its CC-BY credit
+                float left in the description's text flow -- the Field
+                Journal's magazine-wrap precedent, and flow-root so a short
+                description still holds the photo's full height. The float
+                drops on small screens, where wrapped text would be a
+                two-words-per-line ribbon. Phase 4's visit analysis lands
+                under this. */}
+            <div className="mt-4 flow-root">
+              <div className="mb-3 w-full md:float-left md:mb-2 md:mr-5 md:w-[300px]">
                 <Portrait
                   sci={sci}
                   has={Boolean(entry?.image_file)}
@@ -792,61 +859,24 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                   </p>
                 )}
               </div>
-              <div className="min-w-0">
-                <h2
-                  className="text-2xl text-ink"
-                  style={{ fontFamily: "var(--font-display)" }}
-                >
-                  {entry?.species_common ?? "…"}
-                </h2>
-                <p className="text-sm italic text-inkdim">{sci}</p>
-                <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
-                  <div>
-                    <dt className="stamp text-[9px] text-inkfaint">
-                      first heard
-                    </dt>
-                    <dd className="text-inkdim">
-                      {entry ? (
-                        <>
-                          {dateOf(entry.first_ts)}
-                          <span className="text-inkfaint">
-                            {" "}
-                            · via {entry.first_source}
-                          </span>
-                        </>
-                      ) : (
-                        "—"
-                      )}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="stamp text-[9px] text-inkfaint">visits</dt>
-                    <dd className="text-inkdim">{entry ? entry.visits : "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="stamp text-[9px] text-inkfaint">today</dt>
-                    <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
-                  </div>
-                </dl>
-                {/* Wikipedia's lead (#184) when the pass has run; the
-                    honest stamp until then. Phase 4's visit analysis lands
-                    under this. */}
-                {entry?.description ? (
-                  <div className="mt-4 max-w-[70ch] space-y-2.5 text-sm leading-relaxed text-inkdim">
-                    {entry.description.split(/\n+/).map((para, i) => (
-                      <p key={i}>{para}</p>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="stamp mt-4 text-[9px] text-inkfaint">
-                    field notes arrive with the enrichment pass
-                  </p>
-                )}
-              </div>
+              {entry?.description ? (
+                <div className="space-y-2.5 text-sm leading-relaxed text-inkdim">
+                  {entry.description.split(/\n+/).map((para, i) => (
+                    <p key={i}>{para}</p>
+                  ))}
+                </div>
+              ) : (
+                <p className="stamp text-[9px] text-inkfaint">
+                  field notes arrive with the enrichment pass
+                </p>
+              )}
             </div>
           </section>
 
-          <section className="panel mt-4 rounded-sm border border-line bg-panel">
+          {/* The right rail (#192): visits don't need the page's width, and
+              moving them clears the full-width floor below this grid for
+              Phase 3's visits-over-time chart. */}
+          <section className="panel rounded-sm border border-line bg-panel">
             <PanelLabel title="Recent Visits" />
             <div className="px-4 pb-4">
               {visits === null ? (
@@ -862,7 +892,7 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                   </span>
                 </div>
               ) : (
-                <ul className="flex flex-col gap-1.5">
+                <ul className="scrollpane flex max-h-[560px] flex-col gap-1.5 overflow-y-auto pr-1">
                   {visits.map((v) => (
                     <li
                       key={v.ts}
@@ -890,8 +920,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               )}
             </div>
           </section>
-        </>
+        </div>
       )}
+      {/* The visits-over-time chart (Phase 3, #185) lands full-width here,
+          under both columns -- the floor this layout clears for it. */}
     </div>
   );
 }
