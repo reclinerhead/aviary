@@ -36,6 +36,7 @@ import {
   Visit,
   clipUrl,
   collapseVisits,
+  portraitUrl,
   rosterOrder,
   todayVisitors,
 } from "@/lib/aviary";
@@ -97,6 +98,45 @@ function BirdGlyph({ className }: { className?: string }) {
       <path d="M11.5 17.8c-2.8-.4-4.4-2.5-4.4-5.2 0-3 2.2-5.1 4.9-5.1 1.9 0 3.3.9 4.1 2.3l2.9 1-2.4 1.5c-.2 3.3-2 5.2-5.1 5.5Z" />
       <circle cx="13.4" cy="9.9" r="0.5" />
     </svg>
+  );
+}
+
+/** The portrait slot (#184): the enrichment pass's Wikipedia photo when the
+ * roster says one exists, the reserved placeholder block otherwise -- one
+ * geometry, so enrichment landing can never shift a tile. A photo that
+ * 404s (shelf pruned by hand, pass half-run) falls back to the placeholder,
+ * never a broken image. Lazy: only portraits in view fetch. */
+function Portrait({
+  sci,
+  has,
+  alt,
+  glyphClass,
+  className,
+}: {
+  sci: string;
+  has: boolean;
+  alt: string;
+  glyphClass: string;
+  className: string;
+}) {
+  const [lost, setLost] = useState(false);
+  if (has && !lost)
+    return (
+      <img
+        src={portraitUrl(sci)}
+        alt={alt}
+        loading="lazy"
+        onError={() => setLost(true)}
+        className={`${className} object-cover`}
+      />
+    );
+  return (
+    <span
+      className={`${className} flex flex-col items-center justify-center gap-1 text-inkfaint`}
+    >
+      <BirdGlyph className={glyphClass} />
+      <span className="stamp text-[9px]">portrait pending</span>
+    </span>
   );
 }
 
@@ -542,18 +582,25 @@ export function Aviary() {
                         href={`/aviary/${encodeURIComponent(sci)}`}
                         className="group flex h-full flex-col gap-2 rounded-sm border border-line bg-panel2 p-3 transition-colors hover:border-linebright"
                       >
-                        <span className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-1 rounded-sm border border-line bg-panel text-inkfaint transition-colors group-hover:text-inkdim">
-                          <BirdGlyph className="h-12 w-12" />
-                          <span className="stamp text-[9px]">
-                            portrait pending
-                          </span>
-                        </span>
+                        <Portrait
+                          sci={sci}
+                          has={Boolean(e.image_file)}
+                          alt={e.species_common}
+                          glyphClass="h-12 w-12"
+                          className="aspect-[4/3] w-full rounded-sm border border-line bg-panel transition-colors group-hover:text-inkdim"
+                        />
                         <span className="min-w-0">
                           <span
                             className="block truncate text-ink"
                             style={{ fontFamily: "var(--font-display)" }}
                           >
                             {e.species_common}
+                          </span>
+                          {/* Two clamped lines of the lead, reserved whether
+                              or not prose has arrived -- enrichment landing
+                              never shifts the grid (#184). */}
+                          <span className="line-clamp-2 min-h-[2.6em] text-[11px] leading-[1.3] text-inkdim">
+                            {e.description ?? ""}
                           </span>
                           <span className="block text-xs text-inkdim">
                             {e.visits === 1 ? "1 visit" : `${e.visits} visits`}
@@ -728,12 +775,22 @@ export function SpeciesProfile({ sci }: { sci: string }) {
       ) : (
         <>
           <section className="panel rounded-sm border border-line bg-panel p-4">
-            <div className="grid gap-5 sm:grid-cols-[260px_minmax(0,1fr)]">
-              {/* The portrait slot Phase 2 fills; owner-uploaded beats
-                  fetched once provenance exists. Reserved either way. */}
-              <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-1.5 rounded-sm border border-line bg-panel2 text-inkfaint">
-                <BirdGlyph className="h-16 w-16" />
-                <span className="stamp text-[9px]">portrait pending</span>
+            <div className="grid gap-5 sm:grid-cols-[300px_minmax(0,1fr)]">
+              {/* The portrait + its credit (#184): CC-BY means the byline
+                  ships with the photo, small but present. */}
+              <div className="min-w-0">
+                <Portrait
+                  sci={sci}
+                  has={Boolean(entry?.image_file)}
+                  alt={entry?.species_common ?? sci}
+                  glyphClass="h-16 w-16"
+                  className="aspect-[4/3] w-full rounded-sm border border-line bg-panel2"
+                />
+                {entry?.image_attribution && (
+                  <p className="stamp mt-1.5 text-[9px] leading-relaxed text-inkfaint">
+                    {entry.image_attribution}
+                  </p>
+                )}
               </div>
               <div className="min-w-0">
                 <h2
@@ -771,11 +828,20 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                     <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
                   </div>
                 </dl>
-                {/* The description + visit-analysis prose land here
-                    (Phases 2 and 4); the slot stays honest until then. */}
-                <p className="stamp mt-4 text-[9px] text-inkfaint">
-                  field notes arrive with the enrichment pass
-                </p>
+                {/* Wikipedia's lead (#184) when the pass has run; the
+                    honest stamp until then. Phase 4's visit analysis lands
+                    under this. */}
+                {entry?.description ? (
+                  <div className="mt-4 max-w-[70ch] space-y-2.5 text-sm leading-relaxed text-inkdim">
+                    {entry.description.split(/\n+/).map((para, i) => (
+                      <p key={i}>{para}</p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="stamp mt-4 text-[9px] text-inkfaint">
+                    field notes arrive with the enrichment pass
+                  </p>
+                )}
               </div>
             </div>
           </section>

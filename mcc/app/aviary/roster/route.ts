@@ -31,6 +31,15 @@ import { parseSince, shapeRoster } from "@/lib/aviary";
 const LIFE_SQL =
   "SELECT species_sci, species_common, first_ts, first_source, first_clip " +
   "FROM life_list";
+// The enrichment join (#184): profile prose + portrait provenance ride the
+// roster so the grid and profile pages need no second fetch. LEFT JOIN --
+// an un-enriched species is honest NULLs, not a missing bird.
+const LIFE_JOINED_SQL =
+  "SELECT l.species_sci, l.species_common, l.first_ts, l.first_source, " +
+  "l.first_clip, p.description, p.image_file, p.image_source, " +
+  "p.image_attribution " +
+  "FROM life_list l " +
+  "LEFT JOIN species_profile p ON p.species_sci = l.species_sci";
 // Every (species, ts) pair -- the tally walks them all so the visit grouping
 // sees real gaps, not a LIMIT's arbitrary edge. Post-debounce this table
 // grows a few hundred rows a day; a full scan is milliseconds for years.
@@ -65,9 +74,15 @@ export async function GET(req: NextRequest) {
     return empty(); // no bird record yet, or not ours to read
   }
   try {
-    const life = db.prepare(LIFE_SQL).all() as Parameters<
-      typeof shapeRoster
-    >[0];
+    // A pre-#184 store has no species_profile table and the join would
+    // throw -- fall back to the bare life list rather than blanking the
+    // whole aviary because an enrichment pass hasn't run yet.
+    let life: Parameters<typeof shapeRoster>[0];
+    try {
+      life = db.prepare(LIFE_JOINED_SQL).all() as typeof life;
+    } catch {
+      life = db.prepare(LIFE_SQL).all() as typeof life;
+    }
     const rows = db.prepare(SIGHTINGS_SQL).all() as Parameters<
       typeof shapeRoster
     >[1];

@@ -173,10 +173,14 @@ def record(conn, row):
 def prune_selection(files, now_ts, keep_days, exempt):
     """Which clips to delete: older than the horizon AND not a lifer's first
     recording. `files` is [(relpath, mtime_ts)]; pure with an injected clock
-    -- the frame_archiver.prune_selection precedent, plus the exemption."""
+    -- the frame_archiver.prune_selection precedent, plus the exemption.
+    The species/ shelf (issue #184's portraits) shares the clips dir but is
+    a permanent collection, not a rolling window -- never selected, whatever
+    its age."""
     horizon = now_ts - keep_days * 86400
     return [relpath for relpath, mtime in files
-            if mtime < horizon and relpath not in exempt]
+            if mtime < horizon and relpath not in exempt
+            and not relpath.startswith("species/")]
 
 
 def list_clips(clips_dir):
