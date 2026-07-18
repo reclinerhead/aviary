@@ -1,20 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
+  VISITS_SPAN_S,
   VISIT_GAP_S,
+  clampVisitWindow,
   clipRelPath,
   clipUrl,
   collapseVisits,
   countVisits,
+  cropPosition,
+  dayBuckets,
+  dayStart,
   detectionFromRow,
+  nearestBar,
   parseLimit,
   parseSince,
+  portraitAspect,
   portraitUrl,
   rosterOrder,
   shapeRoster,
   speciesImageName,
   tallyVisits,
   todayVisitors,
+  visitTicks,
+  visitsCeil,
 } from "./aviary";
 
 const bird = (over: Partial<BirdEvent> = {}): BirdEvent => ({
@@ -337,6 +346,194 @@ describe("todayVisitors", () => {
       { species_sci: "A", species_common: "American Robin", count: 2 },
       { species_sci: "D", species_common: "Downy Woodpecker", count: 2 },
     ]);
+  });
+});
+
+// --- Portrait framing (#185) -------------------------------------------------
+
+describe("cropPosition", () => {
+  it("crops a portrait-orientation photo from the top -- the head stays", () => {
+    // The real case that motivated the fix: a 675x900 Blue Jay in a 4:3 box.
+    expect(cropPosition(675, 900, 4 / 3)).toBe("top");
+    expect(cropPosition(675, 900, 1)).toBe("top"); // and in a square thumb
+  });
+  it("leaves landscape sources centered -- they crop at the sides", () => {
+    expect(cropPosition(900, 600, 4 / 3)).toBe("center");
+    expect(cropPosition(1600, 900, 4 / 3)).toBe("center");
+  });
+  it("top-crops a SQUARE photo in a landscape box (it crops vertically)", () => {
+    // object-cover fills the width, so a 1:1 source overflows a 4:3 box top
+    // and bottom -- the same head-losing crop, so the same rule applies.
+    expect(cropPosition(900, 900, 4 / 3)).toBe("top");
+  });
+  it("centers exactly at the box ratio (no crop to make)", () => {
+    expect(cropPosition(400, 300, 4 / 3)).toBe("center");
+  });
+  it("treats a square photo in a square box as centered", () => {
+    expect(cropPosition(500, 500, 1)).toBe("center");
+  });
+  it("falls back to centered when dimensions are unknown", () => {
+    // A #184-era row awaiting backfill: never guess a shape we don't have.
+    expect(cropPosition(null, null, 4 / 3)).toBe("center");
+    expect(cropPosition(undefined, undefined, 1)).toBe("center");
+    expect(cropPosition(0, 900, 4 / 3)).toBe("center");
+  });
+});
+
+describe("portraitAspect", () => {
+  it("gives the photo its own shape so the profile crops nothing", () => {
+    expect(portraitAspect(675, 900)).toBe("675 / 900");
+    expect(portraitAspect(900, 600)).toBe("900 / 600");
+  });
+  it("falls back to the page's original 4:3 when dimensions are unknown", () => {
+    expect(portraitAspect(null, null)).toBe("4 / 3");
+    expect(portraitAspect(900, 0)).toBe("4 / 3");
+  });
+});
+
+// --- The visits chart (#185) -------------------------------------------------
+
+// Fixed local noon anchors, so these tests read the same in any timezone the
+// suite runs in (CI is UTC, the desk is Eastern).
+const noon = (y: number, m: number, d: number) =>
+  Math.floor(new Date(y, m, d, 12, 0, 0, 0).getTime() / 1000);
+
+describe("dayStart", () => {
+  it("floors to the viewer's local midnight", () => {
+    const ts = dayStart(noon(2026, 6, 18));
+    const d = new Date(ts * 1000);
+    expect([d.getHours(), d.getMinutes(), d.getDate()]).toEqual([0, 0, 18]);
+  });
+});
+
+describe("dayBuckets", () => {
+  const ts0 = dayStart(noon(2026, 6, 15));
+  const ts1 = dayStart(noon(2026, 6, 20));
+
+  it("counts visits into the viewer's local days", () => {
+    const bars = dayBuckets(
+      [noon(2026, 6, 16), noon(2026, 6, 16) + 3600, noon(2026, 6, 18)],
+      ts0,
+      ts1,
+    );
+    expect(bars.map((b) => b.count)).toEqual([0, 2, 0, 1, 0]);
+  });
+  it("draws an empty day as an honest zero, not a gap", () => {
+    const bars = dayBuckets([], ts0, ts1);
+    expect(bars).toHaveLength(5);
+    expect(bars.every((b) => b.count === 0)).toBe(true);
+  });
+  it("omits days before first-heard -- absence of record, not of bird", () => {
+    const bars = dayBuckets([noon(2026, 6, 18)], ts0, ts1, noon(2026, 6, 17));
+    // The window opens the 15th, but the record starts the 17th.
+    expect(bars).toHaveLength(3);
+    expect(bars[0].ts).toBe(dayStart(noon(2026, 6, 17)));
+  });
+  it("steps by calendar days, so a DST change can't skip or double one", () => {
+    // US spring-forward 2026: March 8. The 23-hour day must still be one bar.
+    const from = dayStart(noon(2026, 2, 6));
+    const to = dayStart(noon(2026, 2, 11));
+    const bars = dayBuckets([noon(2026, 2, 8)], from, to);
+    expect(bars).toHaveLength(5);
+    expect(bars.map((b) => new Date(b.ts * 1000).getDate())).toEqual([
+      6, 7, 8, 9, 10,
+    ]);
+    expect(bars.find((b) => new Date(b.ts * 1000).getDate() === 8)?.count).toBe(
+      1,
+    );
+  });
+  it("steps cleanly across a fall-back day too", () => {
+    // US fall-back 2026: November 1, a 25-hour day.
+    const from = dayStart(noon(2026, 9, 30));
+    const to = dayStart(noon(2026, 10, 4));
+    const bars = dayBuckets([noon(2026, 10, 1)], from, to);
+    expect(bars.map((b) => new Date(b.ts * 1000).getDate())).toEqual([
+      30, 31, 1, 2, 3,
+    ]);
+  });
+  it("is empty for a degenerate window", () => {
+    expect(dayBuckets([1000], 500, 500)).toEqual([]);
+  });
+});
+
+describe("clampVisitWindow", () => {
+  const span = VISITS_SPAN_S;
+  it("preserves the span on every clamp -- position moves, size never", () => {
+    const past = clampVisitWindow(0, span, 5000, 1_000_000);
+    expect(past.ts1 - past.ts0).toBe(span);
+    const future = clampVisitWindow(2_000_000, 2_000_000 + span, 0, 1_000_000);
+    expect(future.ts1 - future.ts0).toBe(span);
+  });
+  it("pins to today when dragged past the right edge", () => {
+    const c = clampVisitWindow(9_000_000, 9_000_000 + span, 0, 1_000_000);
+    expect(c.ts1).toBe(1_000_000);
+  });
+  it("pins to the record's start when dragged past the left", () => {
+    const c = clampVisitWindow(0, span, 500_000, 9_000_000);
+    expect(c.ts0).toBe(500_000);
+  });
+  it("lets the RIGHT wall win on a young record -- the day-one normal", () => {
+    // Record shorter than the span: the default window must stay reachable.
+    const c = clampVisitWindow(0, span, 900_000, 1_000_000);
+    expect(c.ts1).toBe(1_000_000);
+    expect(c.ts1 - c.ts0).toBe(span);
+  });
+  it("leaves a window already inside the walls alone", () => {
+    const c = clampVisitWindow(600_000, 600_000 + span, 0, 9_000_000);
+    expect(c).toEqual({ ts0: 600_000, ts1: 600_000 + span });
+  });
+});
+
+describe("visitTicks", () => {
+  it("marks week boundaries strictly inside the window", () => {
+    const ts0 = dayStart(noon(2026, 6, 1));
+    const ts1 = dayStart(noon(2026, 6, 29));
+    const ticks = visitTicks(ts0, ts1);
+    // Every tick is a Sunday, inside, with a sane fraction.
+    expect(ticks.length).toBeGreaterThan(0);
+    for (const t of ticks) {
+      expect(new Date(t.ts * 1000).getDay()).toBe(0);
+      expect(t.ts).toBeGreaterThan(ts0);
+      expect(t.ts).toBeLessThan(ts1);
+      expect(t.frac).toBeGreaterThan(0);
+      expect(t.frac).toBeLessThan(1);
+    }
+  });
+  it("is empty for a degenerate window", () => {
+    expect(visitTicks(500, 500)).toEqual([]);
+  });
+});
+
+describe("visitsCeil", () => {
+  const bars = (...counts: number[]) =>
+    counts.map((count, i) => ({ ts: i * 86400, count }));
+  it("floors so a quiet species reads quiet", () => {
+    expect(visitsCeil(bars(0, 1, 0))).toBe(4);
+    expect(visitsCeil(bars())).toBe(4);
+  });
+  it("rounds up to a clean step above the busiest day", () => {
+    expect(visitsCeil(bars(5, 9))).toBe(10);
+    expect(visitsCeil(bars(14))).toBe(15);
+    expect(visitsCeil(bars(42))).toBe(50);
+  });
+});
+
+describe("nearestBar", () => {
+  const bars = [
+    { ts: 0, count: 1 },
+    { ts: 86400, count: 5 },
+    { ts: 172800, count: 2 },
+  ];
+  it("snaps to the day containing the pointer, never between days", () => {
+    expect(nearestBar(bars, 86400 + 43200)?.ts).toBe(86400);
+    expect(nearestBar(bars, 1000)?.ts).toBe(0);
+  });
+  it("clamps to the ends rather than returning nothing", () => {
+    expect(nearestBar(bars, -99999)?.ts).toBe(0);
+    expect(nearestBar(bars, 999999)?.ts).toBe(172800);
+  });
+  it("is null when there are no bars", () => {
+    expect(nearestBar([], 0)).toBeNull();
   });
 });
 

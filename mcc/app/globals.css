@@ -41,6 +41,24 @@
      own range. Its CVD separation from every other ink is >= 34 ΔE against a
      target of 12 -- blue is the safest hue this palette could have grown. */
   --rain: #6bb6e5;
+
+  /* Aviary ink (issue #185). The palette's SECOND non-species accent, and it
+     follows --rain's rule rather than breaking it: species colors are the
+     vision stack's literal box colors and mean "this species", while this
+     names a MODULE -- the Aviary, whose charts count visits by any bird.
+     The per-species meaning is carried by the page itself (a profile chart
+     is already about one bird), so the bars need identity, not taxonomy.
+
+     Not invented here: it's the blaze the launchpad's Aviary placard has
+     worn since the tile went live (tiles.json), so the module reads the same
+     from the porch to its own charts -- the narrators' voice-color idiom.
+
+     Validated, not eyeballed: chroma 0.13 clears the 0.10 floor, contrast
+     against --panel clears 3:1, and its CVD separation from --led (the
+     nearest green, and the one color it must never be confused with, since
+     green means LIVE) is deutan ΔE 13.2 against a target of 12. --led also
+     never appears as a bar, so the two never share a mark. */
+  --wing: #9db35c;
 }
 
 @theme inline {
@@ -57,6 +75,7 @@
   --color-turkey: var(--turkey);
   --color-led: var(--led);
   --color-rain: var(--rain);
+  --color-wing: var(--wing);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
 }
