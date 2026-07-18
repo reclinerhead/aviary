@@ -9,8 +9,10 @@ import {
   detectionFromRow,
   parseLimit,
   parseSince,
+  portraitUrl,
   rosterOrder,
   shapeRoster,
+  speciesImageName,
   tallyVisits,
   todayVisitors,
 } from "./aviary";
@@ -157,6 +159,30 @@ describe("clipUrl", () => {
   });
 });
 
+describe("speciesImageName", () => {
+  it("mirrors the pass's scrub exactly (species_profile.image_filename)", () => {
+    expect(speciesImageName("Cardinalis cardinalis")).toBe(
+      "Cardinalis_cardinalis.jpg",
+    );
+  });
+  it("scrubs hostile input flat -- never a path step", () => {
+    expect(speciesImageName("../x/../y")).toBe("x_y.jpg");
+    expect(speciesImageName("a\\b")).toBe("a_b.jpg");
+  });
+  it("returns null for a name that scrubs to nothing", () => {
+    expect(speciesImageName("   ")).toBeNull();
+    expect(speciesImageName("...")).toBeNull();
+  });
+});
+
+describe("portraitUrl", () => {
+  it("routes by encoded scientific name", () => {
+    expect(portraitUrl("Cardinalis cardinalis")).toBe(
+      "/aviary/portrait/Cardinalis%20cardinalis",
+    );
+  });
+});
+
 describe("parseLimit", () => {
   it("defaults on absence or garbage", () => {
     expect(parseLimit(null)).toBe(50);
@@ -226,6 +252,28 @@ describe("shapeRoster", () => {
   it("tallies a lifer with no sighting rows honestly at zero", () => {
     const roster = shapeRoster(life.slice(0, 1), [], null);
     expect(roster[0]).toMatchObject({ visits: 0, today: 0 });
+  });
+  it("passes the enrichment columns (#184) through untouched", () => {
+    const enriched = [
+      {
+        ...life[0],
+        description: "A stout red songbird.",
+        image_file: "Cardinalis_cardinalis.jpg",
+        image_source: "wikipedia",
+        image_attribution: "photo: J · CC BY-SA 4.0 · via Wikipedia",
+      },
+    ];
+    const roster = shapeRoster(enriched, [], null);
+    expect(roster[0]).toMatchObject({
+      description: "A stout red songbird.",
+      image_file: "Cardinalis_cardinalis.jpg",
+      image_source: "wikipedia",
+      image_attribution: "photo: J · CC BY-SA 4.0 · via Wikipedia",
+    });
+    // A pre-pass row simply lacks the keys -- optional both ways.
+    expect(shapeRoster(life.slice(0, 1), [], null)[0].description).toBe(
+      undefined,
+    );
   });
 });
 

@@ -169,6 +169,17 @@ def test_prune_selection_age_math():
     assert sightings.prune_selection(files, now, 90, set()) == ["a/old.wav"]
 
 
+def test_species_portraits_are_never_pruned():
+    # The species/ shelf (issue #184) shares the clips dir but is a permanent
+    # collection, not a rolling window -- a portrait aged past any horizon
+    # stays; the identically-aged clip beside it goes.
+    now = 1000 * DAY
+    files = [("species/Cardinalis_cardinalis.jpg", 0),
+             ("amcrest/2-Common.wav", 0)]
+    assert sightings.prune_selection(files, now, 90, set()) == \
+        ["amcrest/2-Common.wav"]
+
+
 def test_lifer_first_clips_survive_forever():
     # The sacred exemption: a lifer's first recording outlives any horizon;
     # the identical path un-lifered would not.

@@ -130,6 +130,29 @@ export function clipUrl(rel: string): string {
   return "/clips/" + rel.split("/").map(encodeURIComponent).join("/");
 }
 
+// --- The portrait route's name guard ----------------------------------------
+
+// Mirror of species_profile.image_filename's scrub, byte-for-byte: the pass
+// writes species/<scrubbed_sci>.jpg and this route re-derives the same name
+// from the URL's species. One regex both sides or the portraits go missing.
+const SPECIES_UNSAFE = /[^A-Za-z0-9_-]+/g;
+
+/** 'Cardinalis cardinalis' -> 'Cardinalis_cardinalis.jpg'; null when the
+ * name scrubs to nothing. Hostile input scrubs flat -- '..' becomes '_',
+ * never a path step. */
+export function speciesImageName(sci: string): string | null {
+  const safe = sci
+    .trim()
+    .replace(SPECIES_UNSAFE, "_")
+    .replace(/^_+|_+$/g, "");
+  return safe ? `${safe}.jpg` : null;
+}
+
+/** The grid/profile URL for one species' portrait. */
+export function portraitUrl(sci: string): string {
+  return `/aviary/portrait/${encodeURIComponent(sci)}`;
+}
+
 // --- Route parameter parsing (the parseRange discipline) --------------------
 
 /** The recent-events limit, clamped at both ends of the wire: a missing or
@@ -164,6 +187,13 @@ export type RosterEntry = {
   first_clip: string | null;
   visits: number;
   today: number;
+  // The enrichment pass's columns (#184), optional twice over: a pre-pass
+  // earl.db has no species_profile table (the roster route falls back to
+  // the bare life list) and an un-enriched species LEFT JOINs to NULLs.
+  description?: string | null;
+  image_file?: string | null;
+  image_source?: string | null;
+  image_attribution?: string | null;
 };
 
 /** life_list rows + raw sighting (species, ts) pairs -> the roster the grid
