@@ -927,7 +927,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           </span>
         </section>
       ) : (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+          {/* Stretch, not items-start: the hero and the rail must share a
+              bottom edge. The hero sets the row's height (see the rail's
+              wrapper below) and the rail then matches it exactly. */}
           <section className="panel relative overflow-hidden rounded-sm border border-line bg-panel p-4">
             {/* The bird wears its own portrait (#196), the music player's
                 album-hero idiom on this palette. #157's finding carries
@@ -1080,10 +1083,18 @@ export function SpeciesProfile({ sci }: { sci: string }) {
 
           {/* The right rail (#192): visits don't need the page's width, and
               moving them clears the full-width floor below this grid for
-              Phase 3's visits-over-time chart. */}
-          <section className="panel rounded-sm border border-line bg-panel">
+              Phase 3's visits-over-time chart.
+              The wrapper contributes NO height of its own on lg -- its only
+              child is absolutely positioned -- so the grid row is sized by
+              the hero alone and the rail then fills it exactly, bottom edges
+              flush. Letting the rail size itself instead would misalign it
+              in both directions: a bird with two visits ends short, and one
+              with forty runs past. Below lg the panels stack, so the
+              absolute positioning drops away and the rail flows normally. */}
+          <div className="relative">
+          <section className="panel flex flex-col rounded-sm border border-line bg-panel lg:absolute lg:inset-0">
             <PanelLabel title="Recent Visits" />
-            <div className="px-4 pb-4">
+            <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
               {visits === null ? (
                 <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
                   <span className="stamp text-xs text-inkfaint">
@@ -1097,7 +1108,13 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                   </span>
                 </div>
               ) : (
-                <ul className="scrollpane flex max-h-[560px] flex-col gap-1.5 overflow-y-auto pr-1">
+                // On lg this fills whatever height the hero set, scrolling
+                // inside it -- a max-height there would fight the stretch
+                // and reopen the very gap this closes. Below lg the panels
+                // stack and there is no hero to match, so the cap stays:
+                // without it the list renders all 200 rows at ~11,000px and
+                // buries the chart under a mile of scrolling.
+                <ul className="scrollpane flex max-h-[560px] min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-1 lg:max-h-none">
                   {visits.map((v) => (
                     <li
                       key={v.ts}
@@ -1125,6 +1142,7 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               )}
             </div>
           </section>
+          </div>
         </div>
       )}
       {/* Full-width under both columns, the floor #192's layout cleared:
