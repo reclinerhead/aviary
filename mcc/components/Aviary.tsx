@@ -819,19 +819,20 @@ export function Aviary() {
                           />
                           <PlaySlot clip={e.clip} player={player} />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-baseline justify-between gap-2">
-                              <Link
-                                href={`/aviary/${encodeURIComponent(e.species_sci)}`}
-                                className="truncate text-sm text-ink transition-colors hover:text-squirrel"
-                                style={{ fontFamily: "var(--font-display)" }}
-                              >
-                                {e.species_common}
-                              </Link>
-                              <span className="shrink-0 text-[10px] text-inkdim">
-                                {stampOf(e.ts, midnight)}
-                              </span>
-                            </div>
+                            {/* The name owns its whole line now (#207): the
+                                stamp used to share it and squeezed half the
+                                common names into an ellipsis. The time drops
+                                into the meta row's front instead — where it
+                                reads next to the source it belongs with. */}
+                            <Link
+                              href={`/aviary/${encodeURIComponent(e.species_sci)}`}
+                              className="block truncate text-sm text-ink transition-colors hover:text-squirrel"
+                              style={{ fontFamily: "var(--font-display)" }}
+                            >
+                              {e.species_common}
+                            </Link>
                             <div className="stamp flex gap-2 text-[9px] text-inkfaint">
+                              <span>{stampOf(e.ts, midnight)}</span>
                               <span>{e.source}</span>
                               <span>{e.confidence.toFixed(2)}</span>
                               {e.wind_suspect && <span>wind?</span>}
@@ -875,12 +876,15 @@ export function Aviary() {
                     <li key={t.species_sci}>
                       <Link
                         href={`/aviary/${encodeURIComponent(t.species_sci)}`}
-                        className="flex items-baseline gap-2 rounded-sm border border-line bg-panel2 px-2.5 py-1.5 transition-colors hover:border-linebright"
+                        className="flex items-baseline gap-2 rounded-sm border border-line bg-panel2 px-2 py-1.5 transition-colors hover:border-linebright"
                       >
-                        <span className="text-xs text-ink">
+                        {/* text-[11px] (down from text-xs) + tighter px so the
+                            longer names stop forcing a one-tile row (#207) —
+                            most rows now hold two across the 340px rail. */}
+                        <span className="text-[11px] text-ink">
                           {t.species_common}
                         </span>
-                        <span className="text-xs text-inkdim">{t.count}</span>
+                        <span className="text-[11px] text-inkdim">{t.count}</span>
                       </Link>
                     </li>
                   ))}
