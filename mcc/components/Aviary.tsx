@@ -18,7 +18,13 @@
 
 import mqtt from "mqtt/dist/mqtt.esm";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   AUDIO_EVENTS_TOPIC,
   AUDIO_STATUS_TOPIC,
@@ -911,11 +917,31 @@ export function SpeciesProfile({ sci }: { sci: string }) {
     setBioOpen(false); // a different bird opens closed
   }, [sci]);
 
-  // The clamp shows six lines; anything near that is worth a toggle. Measured
-  // in characters rather than by probing the DOM for overflow -- the reflow
-  // that would need runs after paint, and a control appearing a frame late is
-  // the layout-shift rule broken in miniature.
-  const longBio = (entry?.description?.length ?? 0) > 420;
+  // How much prose to show at rest is set by the PHOTO, not by a constant
+  // (#196 follow-up): the clamp fills ~75% of the portrait's height, so a
+  // tall bird earns more text and a wide one less, and neither leaves the
+  // gutter beside the photo conspicuously empty. Computed from the stored
+  // dimensions rather than measured -- the figure is `md:w-[300px]`, and
+  // text-sm/leading-relaxed is 22.75px a line -- so it is known before
+  // first paint and nothing reflows. Bounded at both ends: a panoramic
+  // photo still shows a readable few lines, and a very tall one does not
+  // dump the whole encyclopedia. Unknown dimensions keep the original six.
+  const clampLines = (() => {
+    const w = entry?.image_w, h = entry?.image_h;
+    if (!w || !h) return 6;
+    return Math.max(5, Math.min(18, Math.round((300 * (h / w) * 0.75) / 22.75)));
+  })();
+  // Whether the toggle is needed at all, measured before paint (a control
+  // appearing a frame late is the layout-shift rule broken in miniature).
+  // Only measured while CLOSED: open, scrollHeight equals clientHeight, and
+  // re-measuring there would delete the "read less" control mid-read.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [longBio, setLongBio] = useState(false);
+  useLayoutEffect(() => {
+    if (bioOpen) return;
+    const el = bodyRef.current;
+    if (el) setLongBio(el.scrollHeight > el.clientHeight + 1);
+  }, [entry?.description, clampLines, bioOpen]);
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
@@ -927,7 +953,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           </span>
         </section>
       ) : (
-        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+          {/* Stretch, not items-start: the hero and the rail must share a
+              bottom edge. The hero sets the row's height (see the rail's
+              wrapper below) and the rail then matches it exactly. */}
           <section className="panel relative overflow-hidden rounded-sm border border-line bg-panel p-4">
             {/* The bird wears its own portrait (#196), the music player's
                 album-hero idiom on this palette. #157's finding carries
@@ -945,22 +974,31 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                 <img
                   src={portraitUrl(sci)}
                   alt=""
-                  className="h-full w-full scale-105 object-cover opacity-40 blur-md saturate-[1.15]"
-                  style={{
-                    objectPosition: cropPosition(
-                      entry.image_w,
-                      entry.image_h,
-                      3 / 1,
-                    ),
-                  }}
+                  className="h-full w-full scale-105 object-cover object-top opacity-[0.78] blur-md saturate-[1.2]"
                 />
                 {/* Two scrims share the legibility job (the AlbumView
                     trick): the house bottom-up fade, plus a right-anchored
                     one under the text column specifically -- darkest
-                    exactly where the prose runs, lightest over the photo
-                    where the art is the point. */}
-                <div className="absolute inset-0 bg-gradient-to-t from-panel via-panel/70 to-panel/30" />
-                <div className="absolute inset-0 bg-gradient-to-l from-panel/95 via-panel/60 to-transparent" />
+                    exactly where the prose runs, lightest where the art is
+                    the point.
+                    **Crank the art, then scrim the text** -- the first pass
+                    got this backwards, dimming the photo to 40% AND using a
+                    light scrim, which spent the contrast budget everywhere
+                    and showed the bird nowhere. These numbers come from a
+                    parameter sweep over every portrait actually on the life
+                    list, compositing this exact layer stack in a canvas and
+                    keeping the most visible setting whose WORST body-text
+                    contrast still clears AA: 2.7x the backdrop luminance of
+                    the first pass at 4.64:1 worst case. Re-tune by sweeping,
+                    not by eye -- a value that looks fine on the jay fails on
+                    the robin, whose photo is much brighter.
+                    Layout drives the asymmetry: the floated portrait covers
+                    the LEFT, so a left-open scrim shows image where nothing
+                    can be seen anyway, while the top band is where the
+                    header sits (2xl display type, which tolerates a busier
+                    ground than body prose does). */}
+                <div className="absolute inset-0 bg-gradient-to-t from-panel via-panel/75 to-panel/5" />
+                <div className="absolute inset-0 bg-gradient-to-l from-panel/95 via-panel/[0.78] to-transparent" />
               </div>
             )}
             <div className="relative">
@@ -1042,9 +1080,21 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                       way, so expanding grows the hero and shifts nothing
                       above it. */}
                   <div
-                    className={`space-y-2.5 text-sm leading-relaxed text-inkdim ${
-                      bioOpen ? "" : "line-clamp-6"
-                    }`}
+                    ref={bodyRef}
+                    className="space-y-2.5 text-sm leading-relaxed text-inkdim"
+                    // Inline rather than a line-clamp-N class: the count is
+                    // per-species, and Tailwind can only emit classes it can
+                    // see in the source.
+                    style={
+                      bioOpen
+                        ? undefined
+                        : {
+                            display: "-webkit-box",
+                            WebkitBoxOrient: "vertical",
+                            WebkitLineClamp: clampLines,
+                            overflow: "hidden",
+                          }
+                    }
                   >
                     {entry.description.split(/\n+/).map((para, i) => (
                       <p key={i}>{para}</p>
@@ -1071,10 +1121,18 @@ export function SpeciesProfile({ sci }: { sci: string }) {
 
           {/* The right rail (#192): visits don't need the page's width, and
               moving them clears the full-width floor below this grid for
-              Phase 3's visits-over-time chart. */}
-          <section className="panel rounded-sm border border-line bg-panel">
+              Phase 3's visits-over-time chart.
+              The wrapper contributes NO height of its own on lg -- its only
+              child is absolutely positioned -- so the grid row is sized by
+              the hero alone and the rail then fills it exactly, bottom edges
+              flush. Letting the rail size itself instead would misalign it
+              in both directions: a bird with two visits ends short, and one
+              with forty runs past. Below lg the panels stack, so the
+              absolute positioning drops away and the rail flows normally. */}
+          <div className="relative">
+          <section className="panel flex flex-col rounded-sm border border-line bg-panel lg:absolute lg:inset-0">
             <PanelLabel title="Recent Visits" />
-            <div className="px-4 pb-4">
+            <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
               {visits === null ? (
                 <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
                   <span className="stamp text-xs text-inkfaint">
@@ -1088,7 +1146,13 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                   </span>
                 </div>
               ) : (
-                <ul className="scrollpane flex max-h-[560px] flex-col gap-1.5 overflow-y-auto pr-1">
+                // On lg this fills whatever height the hero set, scrolling
+                // inside it -- a max-height there would fight the stretch
+                // and reopen the very gap this closes. Below lg the panels
+                // stack and there is no hero to match, so the cap stays:
+                // without it the list renders all 200 rows at ~11,000px and
+                // buries the chart under a mile of scrolling.
+                <ul className="scrollpane flex max-h-[560px] min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-1 lg:max-h-none">
                   {visits.map((v) => (
                     <li
                       key={v.ts}
@@ -1116,6 +1180,7 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               )}
             </div>
           </section>
+          </div>
         </div>
       )}
       {/* Full-width under both columns, the floor #192's layout cleared:
