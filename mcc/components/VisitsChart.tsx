@@ -10,24 +10,38 @@
 // and a "now" control that is always rendered and merely disabled while live.
 //
 // What's simpler here than at the weather desk: there is no forecast, so the
-// right wall is just today and the seam logic disappears entirely. What's
-// different: bars, not a trace -- a visit is a countable event, and 30 daily
-// counts read as bars where a line would imply continuity between days that
-// the data doesn't have.
+// right wall is just today and the seam logic disappears entirely.
+//
+// TWO MODES (#204), because the two questions are different questions.
+// Overview keeps the daily bars: a visit is a countable event and 30 daily
+// counts read as bars, where a line would imply a continuity between days
+// that the data doesn't have. Detail expands the axis to 48 hours of hourly
+// counts and DOES draw a line -- within a day the continuity is real (a bird
+// present at 6:40 and 7:10 was plausibly around at 6:55), and the whole
+// point of the mode is the SHAPE: the dawn spike, the dead afternoon, the
+// evening return. Bars at that width read as a picket fence and the rhythm
+// disappears into it. The toggle is the viewer's, and each mode's span is
+// fixed within itself -- a clamp still never resizes a window.
 
 import { useEffect, useRef, useState } from "react";
 import {
-  DayBar,
+  DETAIL_SPAN_S,
   TAP_SLOP_PX,
   VISITS_CHUNK_S,
   VISITS_SPAN_S,
   clampVisitWindow,
   dayBuckets,
   dayStart,
+  hourBuckets,
+  hourStart,
   nearestBar,
+  smoothPath,
+  visitHourTicks,
   visitTicks,
   visitsCeil,
 } from "@/lib/aviary";
+
+type Mode = "overview" | "detail";
 
 // The stretched viewBox the station charts use: pointer math runs against
 // the container rect and every label is an HTML overlay, never SVG text
@@ -43,9 +57,13 @@ export function VisitsChart({ sci }: { sci: string }) {
   // on last April, not creep as today ticks under it. It doubles as the
   // snap-back control's state: home is null, not a timestamp to recompute.
   const [windowEnd, setWindowEnd] = useState<number | null>(null);
+  const [mode, setMode] = useState<Mode>("overview");
   const [visits, setVisits] = useState<number[]>([]);
   const [firstTs, setFirstTs] = useState<number | null>(null);
-  const [today, setToday] = useState<number | null>(null);
+  // The clock at mount. Never Date.now() in render (the SSR/hydration rule);
+  // detail mode needs the hour, overview only the day, so the raw instant is
+  // what's kept and each mode floors it its own way.
+  const [now, setNow] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   // The wall: the record's start is known (first_ts), so unlike the weather
   // archive this one IS announced by the data -- but the FETCHED floor still
@@ -94,11 +112,12 @@ export function VisitsChart({ sci }: { sci: string }) {
   };
 
   useEffect(() => {
-    // Today's local midnight, computed client-side (never Date.now() in
-    // render -- the SSR/hydration rule) and the right wall of the chart.
-    const t = dayStart(Math.floor(Date.now() / 1000));
-    setToday(t);
-    const to = t + 86400; // through the end of today
+    const n = Math.floor(Date.now() / 1000);
+    setNow(n);
+    const to = dayStart(n) + 86400; // through the end of today
+    // The opening fetch is sized for OVERVIEW deliberately: 30 days plus a
+    // chunk covers detail's 48 hours many times over, so switching modes
+    // never waits on the network -- the data is already in hand.
     const from = to - VISITS_SPAN_S - VISITS_CHUNK_S;
     fetchedFrom.current = from;
     load(from, to, true).finally(() => setLoaded(true));
@@ -113,27 +132,40 @@ export function VisitsChart({ sci }: { sci: string }) {
     };
   }, [sci]);
 
-  if (today === null) {
+  if (now === null) {
     // Reserve the footprint before the clock is known (house rule #1).
     return <ChartFrame sci={sci} />;
   }
 
-  const newest = today + 86400;
+  const detail = mode === "detail";
+  const span = detail ? DETAIL_SPAN_S : VISITS_SPAN_S;
+  // The right wall, floored to the mode's own unit: overview runs through
+  // the end of today, detail only through the hour in progress -- ending it
+  // at midnight would spend half the window drawing a future that hasn't
+  // happened, which the bars never had to worry about.
+  const newest = detail ? hourStart(now) + 3600 : dayStart(now) + 86400;
   const ts1 = windowEnd ?? newest;
-  const ts0 = ts1 - VISITS_SPAN_S;
+  const ts0 = ts1 - span;
   const live = windowEnd === null;
   // The left wall: where the record begins, or -- until first_ts is known --
   // as far back as we've fetched.
   const oldest = firstTs ?? fetchedFrom.current ?? ts0;
 
-  const bars = dayBuckets(visits, ts0, ts1, firstTs);
+  const bars = detail
+    ? hourBuckets(visits, ts0, ts1, firstTs)
+    : dayBuckets(visits, ts0, ts1, firstTs);
   const liveCeil = visitsCeil(bars);
   // Frozen during a gesture so the axis can't rescale every frame (the
   // no-layout-shift rule, applied inside the chart's own frame).
   const ceil = frozenCeil ?? liveCeil;
-  const ticks = visitTicks(ts0, ts1);
+  const ticks = detail ? visitHourTicks(ts0, ts1) : visitTicks(ts0, ts1);
+  // Half a bucket: what the crosshair snaps by, and what centres a mark over
+  // the stretch of time it represents.
+  const half = detail ? 1800 : 43200;
   const hovered =
-    hoverFrac !== null ? nearestBar(bars, ts0 + hoverFrac * (ts1 - ts0)) : null;
+    hoverFrac !== null
+      ? nearestBar(bars, ts0 + hoverFrac * (ts1 - ts0), half)
+      : null;
 
   /** Ask for the chunk older than everything we hold. Keyed off what the
    * viewer ASKED for, never the clamped result: the clamp pins ts0 at the
@@ -151,16 +183,37 @@ export function VisitsChart({ sci }: { sci: string }) {
   };
 
   const panTo = (wantTs1: number) => {
-    const c = clampVisitWindow(
-      wantTs1 - VISITS_SPAN_S,
-      wantTs1,
-      oldest,
-      newest,
-    );
+    const c = clampVisitWindow(wantTs1 - span, wantTs1, oldest, newest);
     // Dragged back to the right edge: return to LIVE rather than freezing an
     // absolute end that today would immediately outrun.
     setWindowEnd(c.ts1 >= newest ? null : c.ts1);
-    askOlder(wantTs1 - VISITS_SPAN_S);
+    askOlder(wantTs1 - span);
+  };
+
+  /** Switch modes, keeping the viewer where they were looking rather than
+   * snapping home: a rhythm noticed in last April's bars is worth zooming
+   * into, and dumping them back on today would lose the place they found.
+   *
+   * A live window stays live. A panned one keeps its absolute right edge,
+   * re-clamped against the NEW mode's walls -- detail's right wall is the
+   * hour in progress rather than midnight, so an end that was legal for the
+   * bars can sit slightly in the future for the curve. */
+  const switchTo = (next: Mode) => {
+    if (next === mode) return;
+    setMode(next);
+    setHoverFrac(null);
+    if (windowEnd === null) return;
+    const nextSpan = next === "detail" ? DETAIL_SPAN_S : VISITS_SPAN_S;
+    const nextNewest =
+      next === "detail" ? hourStart(now) + 3600 : dayStart(now) + 86400;
+    const c = clampVisitWindow(
+      windowEnd - nextSpan,
+      windowEnd,
+      oldest,
+      nextNewest,
+    );
+    setWindowEnd(c.ts1 >= nextNewest ? null : c.ts1);
+    askOlder(c.ts0);
   };
 
   const fracAt = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -173,13 +226,62 @@ export function VisitsChart({ sci }: { sci: string }) {
   const dayW = (VW / (ts1 - ts0)) * 86400;
   const empty = loaded && bars.every((b) => b.count === 0);
 
+  // Detail's curve, in viewBox units: one point per hour, planted at the
+  // MIDDLE of the hour it counts. Planting them on the boundary would slide
+  // the whole rhythm half an hour early -- a dawn peak reported before dawn.
+  const x = (ts: number) => ((ts - ts0) / (ts1 - ts0)) * VW;
+  const y = (count: number) => VH - (count / ceil) * (VH - 4);
+  const pts = bars.map((b) => ({ x: x(b.ts + half), y: y(b.count) }));
+  const curve = detail ? smoothPath(pts) : "";
+  // The same curve closed down to the baseline: a translucent wash under the
+  // line that gives the shape a body without competing with it.
+  const wash =
+    curve === ""
+      ? ""
+      : `${curve}L${pts[pts.length - 1].x.toFixed(2)},${VH}L${pts[0].x.toFixed(2)},${VH}Z`;
+
   return (
     <ChartFrame
       sci={sci}
+      caption={
+        detail
+          ? "one point per hour · drag to travel back through the record"
+          : "one bar per day · drag to travel back through the record"
+      }
       right={
         <div className="flex items-center gap-2">
           <span className="stamp text-[10px] text-inkfaint">
-            {rangeLabel(ts0, ts1)}
+            {rangeLabel(ts0, ts1, detail)}
+          </span>
+          {/* The mode switch: EnhanceToggle's nameplate vocabulary, both
+              states always rendered at a fixed width so it reads as one
+              instrument rather than a control that resizes as you use it. */}
+          <span className="flex shrink-0 overflow-hidden rounded-sm border border-line">
+            {(
+              [
+                ["30d", "overview"],
+                ["48h", "detail"],
+              ] as const
+            ).map(([label, m]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => switchTo(m)}
+                aria-pressed={mode === m}
+                title={
+                  m === "detail"
+                    ? "two days, hour by hour — when in the day this bird shows up"
+                    : "a month of daily totals — how often this bird has been around"
+                }
+                className={`stamp w-9 py-0.5 text-[10px] transition-colors ${
+                  mode === m
+                    ? "bg-panel2 text-squirrel"
+                    : "text-inkfaint hover:text-inkdim"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </span>
           {/* Always rendered, merely disabled while live -- a control that
               appeared on pan would shove this line sideways (house rule #1).
@@ -220,7 +322,7 @@ export function VisitsChart({ sci }: { sci: string }) {
               setHoverFrac(null);
               // Drag right and the chart follows your hand, which means
               // walking backwards in time.
-              panTo(d.ts1 - (dx / r.width) * VISITS_SPAN_S);
+              panTo(d.ts1 - (dx / r.width) * span);
             }
             return;
           }
@@ -251,7 +353,11 @@ export function VisitsChart({ sci }: { sci: string }) {
             preserveAspectRatio="none"
             className="h-full w-full"
             role="img"
-            aria-label={`Daily visits over ${rangeLabel(ts0, ts1)}`}
+            aria-label={
+              detail
+                ? `Hourly visits over ${rangeLabel(ts0, ts1, true)}`
+                : `Daily visits over ${rangeLabel(ts0, ts1, false)}`
+            }
           >
             {/* Week gridlines, recessive behind the data. */}
             {ticks.map((t) => (
@@ -274,25 +380,39 @@ export function VisitsChart({ sci }: { sci: string }) {
               stroke="var(--line-bright)"
               vectorEffect="non-scaling-stroke"
             />
-            {bars.map((b) => {
-              const x = ((b.ts - ts0) / (ts1 - ts0)) * VW;
-              // 2px surface gap between adjacent bars (the mark spec), taken
-              // in viewBox units off a day's width.
-              const w = Math.max(1, dayW * 0.72);
-              const h = b.count > 0 ? (b.count / ceil) * (VH - 4) : 0;
-              if (b.count === 0) return null;
-              return (
-                <rect
-                  key={b.ts}
-                  x={x + (dayW - w) / 2}
-                  y={VH - h}
-                  width={w}
-                  height={h}
-                  fill="var(--wing)"
-                  opacity={hovered && hovered.ts === b.ts ? 1 : 0.85}
+            {detail ? (
+              <>
+                <path d={wash} fill="var(--wing)" opacity={0.14} />
+                <path
+                  d={curve}
+                  fill="none"
+                  stroke="var(--wing)"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
                 />
-              );
-            })}
+              </>
+            ) : (
+              bars.map((b) => {
+                // 2px surface gap between adjacent bars (the mark spec),
+                // taken in viewBox units off a day's width.
+                const w = Math.max(1, dayW * 0.72);
+                const h = b.count > 0 ? (b.count / ceil) * (VH - 4) : 0;
+                if (b.count === 0) return null;
+                return (
+                  <rect
+                    key={b.ts}
+                    x={x(b.ts) + (dayW - w) / 2}
+                    y={VH - h}
+                    width={w}
+                    height={h}
+                    fill="var(--wing)"
+                    opacity={hovered && hovered.ts === b.ts ? 1 : 0.85}
+                  />
+                );
+              })
+            )}
           </svg>
 
           {/* Y ceiling whisper, absolute so it can never shift the chart. */}
@@ -313,9 +433,23 @@ export function VisitsChart({ sci }: { sci: string }) {
               <span
                 className="pointer-events-none absolute top-0 h-full w-px bg-linebright"
                 style={{
-                  left: `${((hovered.ts + 43200 - ts0) / (ts1 - ts0)) * 100}%`,
+                  left: `${((hovered.ts + half - ts0) / (ts1 - ts0)) * 100}%`,
                 }}
               />
+              {/* The reading the crosshair snapped to, marked on the curve
+                  itself -- an HTML dot, not an SVG circle, because the
+                  viewBox is stretched and a circle would render as an
+                  ellipse that changes shape with the viewport. Bars don't
+                  need one: they brighten instead. */}
+              {detail && (
+                <span
+                  className="pointer-events-none absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-wing"
+                  style={{
+                    left: `${((hovered.ts + half - ts0) / (ts1 - ts0)) * 100}%`,
+                    top: `${(y(hovered.count) / VH) * 100}%`,
+                  }}
+                />
+              )}
               <span
                 className={`pointer-events-none absolute top-1 rounded-sm border border-line bg-panel2 px-1.5 py-1 text-[10px] leading-tight text-inkdim ${
                   (hovered.ts - ts0) / (ts1 - ts0) > 0.5
@@ -323,15 +457,11 @@ export function VisitsChart({ sci }: { sci: string }) {
                     : ""
                 }`}
                 style={{
-                  left: `${((hovered.ts + 43200 - ts0) / (ts1 - ts0)) * 100}%`,
+                  left: `${((hovered.ts + half - ts0) / (ts1 - ts0)) * 100}%`,
                 }}
               >
                 <span className="block text-ink">
-                  {new Date(hovered.ts * 1000).toLocaleDateString(undefined, {
-                    weekday: "short",
-                    month: "short",
-                    day: "numeric",
-                  })}
+                  {detail ? hourLabel(hovered.ts) : dayLabel(hovered.ts)}
                 </span>
                 <span className="tabular-nums">
                   {hovered.count === 1 ? "1 visit" : `${hovered.count} visits`}
@@ -362,10 +492,12 @@ export function VisitsChart({ sci }: { sci: string }) {
  * chart's footprint is reserved from first paint (house rule #1). */
 function ChartFrame({
   right,
+  caption,
   children,
 }: {
   sci: string;
   right?: React.ReactNode;
+  caption?: string;
   children?: React.ReactNode;
 }) {
   return (
@@ -382,18 +514,51 @@ function ChartFrame({
       <div className="px-4 pb-4">
         {children ?? <div className="h-56 w-full" />}
         <p className="stamp mt-1 text-[9px] text-inkfaint">
-          one bar per day · drag to travel back through the record
+          {caption ?? "one bar per day · drag to travel back through the record"}
         </p>
       </div>
     </section>
   );
 }
 
-/** "jun 18 — jul 18", the window's own honest label. */
-function rangeLabel(ts0: number, ts1: number): string {
-  const fmt = (ts: number) =>
-    new Date(ts * 1000)
+/** The window's own honest label: "jun 18 — jul 18" for the bars, "jul 18
+ * 3pm — jul 19 3pm" for the curve. Each names the last bucket DRAWN, not the
+ * exclusive edge past it -- a window ending at midnight tonight shows
+ * yesterday's date because tonight's midnight is a boundary, not a bar. */
+function rangeLabel(ts0: number, ts1: number, detail: boolean): string {
+  const fmt = (ts: number) => {
+    const d = new Date(ts * 1000);
+    const day = d
       .toLocaleDateString(undefined, { month: "short", day: "numeric" })
       .toLowerCase();
-  return `${fmt(ts0)} — ${fmt(ts1 - 86400)}`;
+    if (!detail) return day;
+    const hour = d
+      .toLocaleTimeString(undefined, { hour: "numeric" })
+      .toLowerCase()
+      .replace(/\s+/g, "");
+    return `${day} ${hour}`;
+  };
+  return `${fmt(ts0)} — ${fmt(ts1 - (detail ? 3600 : 86400))}`;
+}
+
+/** "Sat, Jul 18" -- the day a bar counts. */
+function dayLabel(ts: number): string {
+  return new Date(ts * 1000).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** "Sat 6–7 AM" -- the hour a point counts, named as the STRETCH it covers
+ * rather than the instant it starts, because that's what the count means:
+ * every visit that opened between six and seven. */
+function hourLabel(ts: number): string {
+  const d = new Date(ts * 1000);
+  const wd = d.toLocaleDateString(undefined, { weekday: "short" });
+  const hr = (t: number) =>
+    new Date(t * 1000)
+      .toLocaleTimeString(undefined, { hour: "numeric" })
+      .replace(/\s+/g, " ");
+  return `${wd} ${hr(ts)}–${hr(ts + 3600)}`;
 }

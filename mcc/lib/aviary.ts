@@ -344,10 +344,19 @@ export function todayVisitors(
 
 // --- The visits-over-time chart (issue #185) ---------------------------------
 
-/** The chart's opening span: ~30 days of daily bars. Fixed forever after --
- * only the window's POSITION moves (the station chart's rule: the span is
- * the viewer's setting, never something a clamp gets to change). */
+/** Overview mode's span: ~30 days of daily bars, the chart's opening state.
+ *
+ * This constant once read "fixed forever after -- only the window's POSITION
+ * moves." #204 made that half-true and the correction is worth stating: the
+ * span is still never something a CLAMP gets to change (the station chart's
+ * rule, and `clampVisitWindow` still takes the span as given), but it IS now
+ * something the VIEWER gets to change, by switching modes. Two spans, each
+ * fixed within its mode; a clamp may only slide a window, never resize it. */
 export const VISITS_SPAN_S = 30 * 86400;
+/** Detail mode's span (#204): 48 hours of hourly counts. Two days rather
+ * than one so a dawn/dusk rhythm shows up as a repeating shape -- a single
+ * day's curve is an anecdote, two is the beginning of a pattern. */
+export const DETAIL_SPAN_S = 48 * 3600;
 /** How much record to ask for when a drag reaches past what we hold. Far
  * more generous than the station's 7 days because the payload is one
  * integer per visit, not a row per 5 minutes -- a season at a time keeps a
@@ -360,8 +369,12 @@ export const TAP_SLOP_PX = 4;
  * full-height bar and read as a swarm (the wind-axis-floor reasoning). */
 export const VISITS_CEIL_FLOOR = 4;
 
-export type DayBar = {
-  /** Local midnight opening the day (epoch seconds). */
+/** One bucket of the visits chart: the local instant opening it, and how
+ * many visits opened inside it. Named for the mark, not the unit -- #204
+ * added hourly buckets and the shape didn't change, only its width. */
+export type VisitBar = {
+  /** Local start of the bucket (epoch seconds): midnight for a day bar,
+   * the top of the hour for an hour bar. */
   ts: number;
   count: number;
 };
@@ -386,7 +399,7 @@ export function dayBuckets(
   ts0: number,
   ts1: number,
   since: number | null = null,
-): DayBar[] {
+): VisitBar[] {
   if (ts1 <= ts0) return [];
   const counts = new Map<number, number>();
   for (const ts of visitTs) {
@@ -400,7 +413,7 @@ export function dayBuckets(
   cursor.setHours(0, 0, 0, 0);
   // Days before the record began aren't rendered at all.
   const floor = since === null ? null : dayStart(since);
-  const bars: DayBar[] = [];
+  const bars: VisitBar[] = [];
   while (cursor.getTime() / 1000 < ts1) {
     const ts = Math.floor(cursor.getTime() / 1000);
     if (ts >= ts0 && (floor === null || ts >= floor))
@@ -416,6 +429,56 @@ export function dayStart(ts: number): number {
   const d = new Date(ts * 1000);
   d.setHours(0, 0, 0, 0);
   return Math.floor(d.getTime() / 1000);
+}
+
+/** Top of the local hour containing `ts`.
+ *
+ * Not `Math.floor(ts / 3600) * 3600`, and the difference is not pedantry:
+ * India (+05:30) and Newfoundland (-03:30) put their hour boundaries on the
+ * half-hour in UTC, so the arithmetic version would draw every bucket 30
+ * minutes off the viewer's own clock -- the exact class of bug the
+ * client-buckets rule exists to prevent. */
+export function hourStart(ts: number): number {
+  const d = new Date(ts * 1000);
+  d.setMinutes(0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/** Visit-opening timestamps -> counts per the VIEWER's local hour (#204).
+ *
+ * `dayBuckets`' rules exactly, one unit finer, and deliberately the same
+ * function shape: empty hours inside the window are honest zeros, hours
+ * before `since` (first-heard) are omitted entirely, and a visit is bucketed
+ * by its OPENING detection -- so a visit that opened at 6:59 and ran past
+ * seven belongs to the six o'clock hour, matching what the listener
+ * published and what the day bars already claim.
+ *
+ * DST needs no special case here, unlike the day stepping: advancing the
+ * cursor by 3600 REAL seconds and re-flooring lands on every hour the
+ * viewer's clock actually experienced. Spring forward yields 23 buckets
+ * because 2am never happened; fall back yields 25, the repeated 1am hours
+ * landing in distinct buckets because they are distinct absolute hours. */
+export function hourBuckets(
+  visitTs: number[],
+  ts0: number,
+  ts1: number,
+  since: number | null = null,
+): VisitBar[] {
+  if (ts1 <= ts0) return [];
+  const counts = new Map<number, number>();
+  for (const ts of visitTs) {
+    const key = hourStart(ts);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const floor = since === null ? null : hourStart(since);
+  const bars: VisitBar[] = [];
+  let cursor = hourStart(ts0);
+  while (cursor < ts1) {
+    if (cursor >= ts0 && (floor === null || cursor >= floor))
+      bars.push({ ts: cursor, count: counts.get(cursor) ?? 0 });
+    cursor = hourStart(cursor + 3600);
+  }
+  return bars;
 }
 
 /** Slide the window back inside the walls WITHOUT resizing it -- the
@@ -465,27 +528,153 @@ export function visitTicks(ts0: number, ts1: number): VisitTick[] {
   return ticks;
 }
 
-/** Y-axis ceiling: the busiest day in view, floored so a quiet species reads
- * quiet, and rounded up to a clean step for the label (the `seriesCeil`
+/** Axis gridlines for detail mode (#204): one every six local hours, so 48
+ * hours reads as morning/noon/evening/midnight without 48 labels colliding.
+ * Stepping walks REAL hours and re-floors for the same reason `hourBuckets`
+ * does -- a spring-forward day has no 6am-to-noon of the usual length, and
+ * the gridline has to land where the clock actually said six. */
+export function visitHourTicks(ts0: number, ts1: number): VisitTick[] {
+  if (ts1 <= ts0) return [];
+  const ticks: VisitTick[] = [];
+  let cursor = hourStart(ts0);
+  // Walked an hour at a time rather than six at a stride: a spring-forward
+  // day is 23 hours long, so a six-hour stride would land on 7am and stay
+  // off the six-hour grid for the rest of the window.
+  while (cursor < ts1) {
+    const d = new Date(cursor * 1000);
+    const h = d.getHours();
+    if (cursor > ts0 && h % 6 === 0) {
+      ticks.push({
+        ts: cursor,
+        frac: (cursor - ts0) / (ts1 - ts0),
+        // Midnight names its day; the rest name their hour. A 48-hour
+        // window otherwise reads as eight anonymous times with no way to
+        // tell which of the two days you're looking at.
+        label:
+          h === 0
+            ? d
+                .toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                })
+                .toLowerCase()
+            : d
+                .toLocaleTimeString(undefined, { hour: "numeric" })
+                .toLowerCase()
+                .replace(/\s+/g, ""),
+      });
+    }
+    cursor = hourStart(cursor + 3600);
+  }
+  return ticks;
+}
+
+/** Y-axis ceiling: the busiest bucket in view, floored so a quiet species
+ * reads quiet, and rounded up to a clean step for the label (the `seriesCeil`
  * recipe). */
-export function visitsCeil(bars: DayBar[], floor = VISITS_CEIL_FLOOR): number {
+export function visitsCeil(bars: VisitBar[], floor = VISITS_CEIL_FLOOR): number {
   const max = Math.max(0, ...bars.map((b) => b.count));
   const step = max > 40 ? 10 : max > 12 ? 5 : 2;
   return Math.max(floor, Math.ceil(max / step) * step);
 }
 
-/** The bar nearest a pointer fraction across the window -- the crosshair
- * snaps to a real day, never an interpolated instant (`nearestPoint`'s
- * rule). Null when there's nothing to snap to. */
+/** The bar nearest a pointer instant -- the crosshair snaps to a real
+ * bucket, never an interpolated moment (`nearestPoint`'s rule). Distance is
+ * measured from each bucket's MIDDLE, hence `halfWidth`: half a day for the
+ * day bars it was written for, half an hour for #204's hourly ones. Null
+ * when there's nothing to snap to. */
 export function nearestBar(
-  bars: DayBar[],
+  bars: VisitBar[],
   ts: number,
-): DayBar | null {
+  halfWidth = 43200,
+): VisitBar | null {
   if (bars.length === 0) return null;
   let best = bars[0];
   for (const b of bars)
-    if (Math.abs(b.ts + 43200 - ts) < Math.abs(best.ts + 43200 - ts)) best = b;
+    if (Math.abs(b.ts + halfWidth - ts) < Math.abs(best.ts + halfWidth - ts))
+      best = b;
   return best;
+}
+
+// --- Detail mode's curve (#204) ---------------------------------------------
+
+export type Pt = { x: number; y: number };
+/** One cubic Bezier segment: from `p0` to `p1`, bent by `c1`/`c2`. */
+export type Seg = { p0: Pt; c1: Pt; c2: Pt; p1: Pt };
+
+/** Hourly counts -> monotone cubic Bezier segments, the smooth line detail
+ * mode draws.
+ *
+ * Fritsch-Carlson monotone Hermite interpolation, and the choice is about
+ * honesty rather than looks. A plain Catmull-Rom or natural spline through
+ * sparse counts OVERSHOOTS: a quiet 3am between two busy hours dips the
+ * curve below the baseline and the chart shows negative visits, while an
+ * isolated peak rings above the count that produced it. Fritsch-Carlson
+ * zeroes the tangent at every local extremum and clamps the rest to three
+ * times the local secant, which bounds each control point inside its own
+ * segment's y-range -- and a cubic Bezier never leaves the convex hull of
+ * its control points, so the drawn curve cannot exceed the counts it
+ * interpolates in either direction. That is a property the tests assert
+ * directly, not a hope about how it renders.
+ *
+ * Y is passed in whatever space the caller draws in; the guarantee is about
+ * neighbouring values, so it holds for SVG's inverted axis unchanged. */
+export function smoothSegments(pts: Pt[]): Seg[] {
+  const n = pts.length;
+  if (n < 2) return [];
+  // Secant slopes between neighbours.
+  const d: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const h = pts[i + 1].x - pts[i].x;
+    d.push(h === 0 ? 0 : (pts[i + 1].y - pts[i].y) / h);
+  }
+  // Tangents: one-sided at the ends, averaged inside.
+  const m: number[] = [d[0]];
+  for (let i = 1; i < n - 1; i++) m.push((d[i - 1] + d[i]) / 2);
+  m.push(d[n - 2]);
+  // The clamp that buys the no-overshoot guarantee.
+  for (let i = 0; i < n - 1; i++) {
+    if (d[i] === 0) {
+      // A flat run: both ends go flat, or the curve would bulge across it.
+      m[i] = 0;
+      m[i + 1] = 0;
+      continue;
+    }
+    const a = m[i] / d[i];
+    const b = m[i + 1] / d[i];
+    // A tangent pointing against its secant would create a local wobble.
+    if (a < 0) m[i] = 0;
+    if (b < 0) m[i + 1] = 0;
+    const s = a * a + b * b;
+    if (s > 9) {
+      const t = 3 / Math.sqrt(s);
+      m[i] = t * a * d[i];
+      m[i + 1] = t * b * d[i];
+    }
+  }
+  const segs: Seg[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const h = pts[i + 1].x - pts[i].x;
+    segs.push({
+      p0: pts[i],
+      c1: { x: pts[i].x + h / 3, y: pts[i].y + (m[i] * h) / 3 },
+      c2: { x: pts[i + 1].x - h / 3, y: pts[i + 1].y - (m[i + 1] * h) / 3 },
+      p1: pts[i + 1],
+    });
+  }
+  return segs;
+}
+
+/** The segments as an SVG path. Empty string for nothing to draw, which is
+ * a valid `d` and renders as no ink -- the caller doesn't need a branch. */
+export function smoothPath(pts: Pt[]): string {
+  const segs = smoothSegments(pts);
+  if (segs.length === 0) return "";
+  const r = (v: number) => Math.round(v * 100) / 100;
+  let out = `M${r(segs[0].p0.x)},${r(segs[0].p0.y)}`;
+  for (const s of segs)
+    out += `C${r(s.c1.x)},${r(s.c1.y)} ${r(s.c2.x)},${r(s.c2.y)} ${r(s.p1.x)},${r(s.p1.y)}`;
+  return out;
 }
 
 // --- The recent route's row shaping ------------------------------------------
