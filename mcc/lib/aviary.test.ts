@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
+  DETAIL_SPAN_S,
   VISITS_SPAN_S,
   VISIT_GAP_S,
   clampVisitWindow,
@@ -14,6 +15,8 @@ import {
   dayBuckets,
   dayStart,
   detectionFromRow,
+  hourBuckets,
+  hourStart,
   nearestBar,
   parseLimit,
   parseSince,
@@ -21,9 +24,12 @@ import {
   portraitUrl,
   rosterOrder,
   shapeRoster,
+  smoothPath,
+  smoothSegments,
   speciesImageName,
   tallyVisits,
   todayVisitors,
+  visitHourTicks,
   visitTicks,
   visitsCeil,
 } from "./aviary";
@@ -561,6 +567,194 @@ describe("nearestBar", () => {
   });
   it("is null when there are no bars", () => {
     expect(nearestBar([], 0)).toBeNull();
+  });
+  it("snaps by the bucket's own width, not always a day (#204)", () => {
+    // Hour bars: the pointer 40 minutes into the 1:00 hour belongs to 1:00.
+    const hours = [
+      { ts: 0, count: 1 },
+      { ts: 3600, count: 5 },
+      { ts: 7200, count: 2 },
+    ];
+    expect(nearestBar(hours, 3600 + 2400, 1800)?.ts).toBe(3600);
+    // The same instant under the day-wide default snaps to the first bar,
+    // which is exactly why the width had to become a parameter.
+    expect(nearestBar(hours, 3600 + 2400)?.ts).toBe(0);
+  });
+});
+
+// --- Detail mode (#204) ------------------------------------------------------
+
+describe("hourStart", () => {
+  it("floors to the viewer's local top-of-hour", () => {
+    const d = new Date(hourStart(noon(2026, 6, 18) + 2000) * 1000);
+    expect([d.getMinutes(), d.getSeconds()]).toEqual([0, 0]);
+  });
+  it("is idempotent", () => {
+    const h = hourStart(noon(2026, 6, 18) + 2000);
+    expect(hourStart(h)).toBe(h);
+  });
+});
+
+describe("hourBuckets", () => {
+  const ts0 = hourStart(noon(2026, 6, 18));
+  const ts1 = ts0 + 6 * 3600;
+
+  it("counts visits into the viewer's local hours", () => {
+    const bars = hourBuckets(
+      [ts0 + 60, ts0 + 120, ts0 + 2 * 3600 + 30, ts0 + 5 * 3600],
+      ts0,
+      ts1,
+    );
+    expect(bars.map((b) => b.count)).toEqual([2, 0, 1, 0, 0, 1]);
+  });
+  it("draws a quiet hour as an honest zero, not a gap", () => {
+    const bars = hourBuckets([], ts0, ts1);
+    expect(bars).toHaveLength(6);
+    expect(bars.every((b) => b.count === 0)).toBe(true);
+  });
+  it("buckets a visit by its OPENING, so 6:59 is the six o'clock hour", () => {
+    // The rule the day bars already claim, one unit finer: a visit that
+    // opened at 6:59 and ran past seven counts once, at six.
+    const bars = hourBuckets([ts0 + 3599], ts0, ts1);
+    expect(bars[0].count).toBe(1);
+    expect(bars[1].count).toBe(0);
+  });
+  it("omits hours before first-heard -- absence of record, not of bird", () => {
+    const bars = hourBuckets([ts0 + 4 * 3600], ts0, ts1, ts0 + 3 * 3600 + 900);
+    expect(bars).toHaveLength(3);
+    expect(bars[0].ts).toBe(ts0 + 3 * 3600);
+  });
+  it("is empty for a degenerate window", () => {
+    expect(hourBuckets([1000], 500, 500)).toEqual([]);
+  });
+
+  // The DST pair. Written to hold in ANY zone the suite runs in (CI is UTC,
+  // Todd's machine is not): rather than asserting "23 buckets", they assert
+  // that the buckets exactly tile the real seconds between two local
+  // midnights and every one lands on a real local hour. In a DST zone that
+  // IS 23 or 25; in UTC it's 24; the invariant is the same either way, and
+  // a stepper that skipped or doubled an hour fails all three.
+  const tiles = (from: number, to: number) => {
+    const bars = hourBuckets([], from, to);
+    expect(bars).toHaveLength(Math.round((to - from) / 3600));
+    for (let i = 1; i < bars.length; i++)
+      expect(bars[i].ts).toBeGreaterThan(bars[i - 1].ts);
+    for (const b of bars)
+      expect(new Date(b.ts * 1000).getMinutes()).toBe(0);
+  };
+  it("tiles a spring-forward day without skipping an hour", () => {
+    // US spring-forward 2026: March 8.
+    tiles(dayStart(noon(2026, 2, 8)), dayStart(noon(2026, 2, 9)));
+  });
+  it("tiles a fall-back day without doubling one", () => {
+    // US fall-back 2026: November 1. The repeated 1am hours are distinct
+    // absolute hours and must land in distinct buckets.
+    tiles(dayStart(noon(2026, 9, 1)), dayStart(noon(2026, 9, 2)));
+  });
+});
+
+describe("visitHourTicks", () => {
+  // Anchored at noon rather than midnight, which is both the realistic live
+  // case (the window ends at the hour in progress) and the one that puts two
+  // midnights inside it.
+  const ts0 = hourStart(noon(2026, 6, 18));
+  const ts1 = ts0 + DETAIL_SPAN_S;
+
+  it("marks every sixth local hour across the window", () => {
+    const ticks = visitHourTicks(ts0, ts1);
+    for (const t of ticks)
+      expect(new Date(t.ts * 1000).getHours() % 6).toBe(0);
+    // Both edges excluded -- a gridline on the frame is just the frame --
+    // so 48 hours from noon gives 18/00/06/12/18/00/06, not nine.
+    expect(ticks).toHaveLength(7);
+  });
+  it("places every tick inside the window", () => {
+    for (const t of visitHourTicks(ts0, ts1)) {
+      expect(t.frac).toBeGreaterThan(0);
+      expect(t.frac).toBeLessThanOrEqual(1);
+    }
+  });
+  it("names midnight by its date so the two days can be told apart", () => {
+    const ticks = visitHourTicks(ts0, ts1);
+    const midnights = ticks.filter(
+      (t) => new Date(t.ts * 1000).getHours() === 0,
+    );
+    expect(midnights).toHaveLength(2);
+    // A date, not a time: digits without an am/pm.
+    for (const m of midnights) expect(m.label).not.toMatch(/[ap]m/);
+  });
+  it("is empty for a degenerate window", () => {
+    expect(visitHourTicks(500, 500)).toEqual([]);
+  });
+});
+
+describe("smoothSegments", () => {
+  const pts = (ys: number[]) => ys.map((y, i) => ({ x: i * 10, y }));
+
+  it("needs two points to make a segment", () => {
+    expect(smoothSegments([])).toEqual([]);
+    expect(smoothSegments([{ x: 0, y: 1 }])).toEqual([]);
+    expect(smoothSegments(pts([1, 2]))).toHaveLength(1);
+  });
+  it("passes exactly through every data point", () => {
+    const segs = smoothSegments(pts([0, 9, 2, 7]));
+    expect(segs.map((s) => s.p0.y)).toEqual([0, 9, 2]);
+    expect(segs[segs.length - 1].p1.y).toBe(7);
+  });
+
+  // THE guarantee, and the reason this is Fritsch-Carlson rather than a
+  // plain spline: a cubic Bezier never leaves the convex hull of its four
+  // control points, so control points penned inside each segment's own
+  // y-range prove the drawn curve can't dip below a quiet hour or ring
+  // above a busy one. A natural spline through this series fails it.
+  const penned = (ys: number[]) => {
+    for (const s of smoothSegments(pts(ys))) {
+      const lo = Math.min(s.p0.y, s.p1.y);
+      const hi = Math.max(s.p0.y, s.p1.y);
+      for (const c of [s.c1, s.c2]) {
+        expect(c.y).toBeGreaterThanOrEqual(lo - 1e-9);
+        expect(c.y).toBeLessThanOrEqual(hi + 1e-9);
+      }
+    }
+  };
+  it("never overshoots a spike or undershoots the quiet around it", () => {
+    // A dawn/dusk day: the 3am zeros must not be dragged negative by the
+    // peaks on either side of them.
+    penned([0, 0, 9, 1, 0, 0, 0, 4, 12, 2, 0]);
+  });
+  it("holds the guarantee for a monotone climb and a lone spike", () => {
+    penned([0, 1, 2, 3, 4, 5]);
+    penned([0, 0, 0, 20, 0, 0, 0]);
+  });
+  it("keeps a flat run flat instead of bulging across it", () => {
+    for (const s of smoothSegments(pts([3, 3, 3, 3]))) {
+      expect(s.c1.y).toBe(3);
+      expect(s.c2.y).toBe(3);
+    }
+  });
+  it("survives repeated x without dividing by zero", () => {
+    for (const s of smoothSegments([
+      { x: 0, y: 1 },
+      { x: 0, y: 5 },
+      { x: 10, y: 2 },
+    ]))
+      for (const c of [s.c1, s.c2]) expect(Number.isFinite(c.y)).toBe(true);
+  });
+});
+
+describe("smoothPath", () => {
+  it("is an empty (valid, inkless) path when there's nothing to draw", () => {
+    expect(smoothPath([])).toBe("");
+    expect(smoothPath([{ x: 0, y: 1 }])).toBe("");
+  });
+  it("opens with a move and carries one cubic per segment", () => {
+    const d = smoothPath([
+      { x: 0, y: 4 },
+      { x: 10, y: 8 },
+      { x: 20, y: 2 },
+    ]);
+    expect(d.startsWith("M0,4")).toBe(true);
+    expect(d.match(/C/g)).toHaveLength(2);
   });
 });
 
