@@ -817,7 +817,6 @@ export function Aviary() {
                             w={roster[e.species_sci]?.image_w}
                             h={roster[e.species_sci]?.image_h}
                           />
-                          <PlaySlot clip={e.clip} player={player} />
                           <div className="min-w-0 flex-1">
                             {/* The name owns its whole line now (#207): the
                                 stamp used to share it and squeezed half the
@@ -838,12 +837,16 @@ export function Aviary() {
                               {e.wind_suspect && <span>wind?</span>}
                             </div>
                           </div>
+                          {/* Play control trails the row (#209): the flex-1
+                              text block above pushes it to the right edge, so
+                              the eye reads the bird first and the affordance
+                              sits in one predictable spot. */}
+                          <PlaySlot clip={e.clip} player={player} />
                         </div>
                       ) : (
                         // A notable sound (#174): quieter, species-less, and
                         // bus-only -- it vanishes on reload by design (#182).
                         <div className="flex items-center gap-2.5 rounded-sm border border-line/60 px-2.5 py-1.5 opacity-70">
-                          <PlaySlot clip={e.clip} player={player} />
                           <div className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
                             <span className="stamp truncate text-[10px] lowercase text-inkfaint">
                               {e.class}
@@ -852,6 +855,9 @@ export function Aviary() {
                               {stampOf(e.ts, midnight)}
                             </span>
                           </div>
+                          {/* Play control trails the row too (#209), so the
+                              panel reads consistently across both row types. */}
+                          <PlaySlot clip={e.clip} player={player} />
                         </div>
                       )}
                     </li>
