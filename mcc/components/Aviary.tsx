@@ -44,6 +44,11 @@ import {
   enhancedClipUrl,
   collapseVisits,
   cropPosition,
+  dayAnchor,
+  dayGroups,
+  dayStart,
+  nextBefore,
+  parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
   rosterOrder,
@@ -58,8 +63,12 @@ const TICKER_CAP = 80;
 // The profile reads enough raw rows to survive a pre-#175 morning (25
 // windows per visit) and still show a real page of visits.
 const PROFILE_ROWS = 200;
+// The archive's page size (#211): one fetch per scroll-reach, deduped by
+// key against the cursor's deliberate one-row overlap.
+const ARCHIVE_PAGE = 100;
 
 type TickerEvent = AudioEvent & { key: string };
+type ArchiveRow = BirdEvent & { key: string };
 type TodayTile = { species_sci: string; species_common: string; count: number };
 
 // --- Formatting (locale-side -- the audio namespace is epoch end to end) ----
@@ -84,6 +93,28 @@ const stampOf = (ts: number, midnight: number | null) =>
   midnight !== null && ts >= midnight
     ? timeOf(ts)
     : `${dayOf(ts)} · ${timeOf(ts)}`;
+/** The archive's day headers (#211): weekday + date, the year only when it
+ * isn't this one. Render-time locale calls are fine here for the same reason
+ * stampOf's are -- archive rows only exist client-side. */
+const dayLabelOf = (day: number) => {
+  const d = new Date(day * 1000);
+  return d.toLocaleDateString([], {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    ...(d.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" }),
+  });
+};
+/** A local epoch -> the date input's "yyyy-mm-dd" (dayAnchor's inverse leg:
+ * both sides speak the VIEWER's calendar, never UTC's). */
+const dateInputOf = (ts: number) => {
+  const d = new Date(ts * 1000);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
 
 // --- The placeholder portrait (Phase 2 replaces it with Wikipedia's) --------
 
@@ -180,15 +211,23 @@ function TickerThumb({
   has,
   w,
   h,
+  // The archive (#211) wears the same thumb at h-16; the ticker keeps its
+  // h-9. Two real callers, one geometry rule -- the size is the only knob.
+  box = "h-9 w-9",
+  glyph = "h-5 w-5",
 }: {
   sci: string;
   has: boolean;
   w?: number | null;
   h?: number | null;
+  box?: string;
+  glyph?: string;
 }) {
   const [lost, setLost] = useState(false);
   return (
-    <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-line bg-panel text-inkfaint">
+    <span
+      className={`flex ${box} shrink-0 items-center justify-center overflow-hidden rounded-sm border border-line bg-panel text-inkfaint`}
+    >
       {has && !lost ? (
         <img
           src={portraitUrl(sci)}
@@ -201,7 +240,7 @@ function TickerThumb({
           className="h-full w-full object-cover"
         />
       ) : (
-        <BirdGlyph className="h-5 w-5" />
+        <BirdGlyph className={glyph} />
       )}
     </span>
   );
@@ -864,6 +903,18 @@ export function Aviary() {
                   ))}
                 </ul>
               )}
+              {/* The archive's front door (#211): always rendered -- present
+                  in the empty state too, so it can never pop in and shift
+                  the panel below. The ticker shows the last 80; the record
+                  goes back to the first bird. */}
+              <div className="pt-2.5 text-right">
+                <Link
+                  href="/aviary/events"
+                  className="stamp text-[10px] text-inkdim transition-colors hover:text-squirrel"
+                >
+                  browse the full record →
+                </Link>
+              </div>
             </div>
           </section>
 
@@ -1303,6 +1354,430 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           <FieldNotes analysis={analysis} />
         </>
       )}
+    </div>
+  );
+}
+
+// --- The /aviary/events page (issue #211) ------------------------------------
+
+/** The Full Record: the archive the ticker isn't. The ticker shows the last
+ * 80 moments and forgets; this page walks the whole store -- newest first
+ * under sticky local-day headers, filtered by species pills (combinable),
+ * repositioned by a jump-to-date, paged backward by an IntersectionObserver
+ * as the viewer scrolls. Filters live in the query string (replaceState, read
+ * once on mount), so a filtered view is a shareable URL -- the /weather page
+ * reasoning for being a page at all.
+ *
+ * Deliberately NO bus client here (v1): this is an archive browser, not a
+ * second ticker; new arrivals appear on reload. And only detections ever
+ * appear -- sound events are bus-only by design (#182), so the archive can't
+ * hold what the store never kept.
+ *
+ * Pagination is the hydration/live merge trick turned sideways: the cursor
+ * is INCLUSIVE (`ts <= before`, the client's own oldest row re-requested)
+ * and audioEventKey dedupes the overlap, so a same-second sighting straddling
+ * a page boundary is a no-op instead of a dropped bird. A short page is the
+ * record's true end for the active filter -- the WHERE runs before the
+ * LIMIT -- so `exhausted` needs no second opinion. */
+export function AviaryEvents() {
+  const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
+  // Pill order: most-visited first, computed once at load (rosterOrder --
+  // the grid's sort logic, reused). Static thereafter: a filter bar that
+  // reshuffles as you use it is house rule #1 broken in a control.
+  const [pillOrder, setPillOrder] = useState<string[]>([]);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // The date input's own value ("" = live); dayAnchor turns it into a cursor.
+  const [anchorDay, setAnchorDay] = useState("");
+  const [rows, setRows] = useState<ArchiveRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [exhausted, setExhausted] = useState(false);
+  const [midnight, setMidnight] = useState<number | null>(null);
+  // Gate: the first page waits for the URL parse, so a shared link fetches
+  // its filtered view once rather than the unfiltered view and then again.
+  const [ready, setReady] = useState(false);
+  const player = useClipPlayer();
+  // Generation guards every async landing: a filter click mid-fetch makes
+  // the in-flight page stale, and stale pages must not splice into the new
+  // list. Refs beside it mirror state the observer callback needs without
+  // re-subscribing per render.
+  const genRef = useRef(0);
+  const beforeRef = useRef<number | null>(null);
+  const queryRef = useRef("");
+  const busyRef = useRef(false);
+  const exhaustedRef = useRef(false);
+  const keysRef = useRef<Set<string>>(new Set());
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    const mid = Math.floor(d.getTime() / 1000);
+    setMidnight(mid);
+
+    fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { species: [] }))
+      .then((body: { species?: RosterEntry[] }) => {
+        const entries = Array.isArray(body.species) ? body.species : [];
+        setRoster(Object.fromEntries(entries.map((e) => [e.species_sci, e])));
+        setPillOrder(rosterOrder(entries, "visits", "desc"));
+      })
+      .catch(() => {});
+
+    // The shared-link leg: filters arrive in the query string exactly as
+    // the writeback below leaves them.
+    const qs = new URLSearchParams(window.location.search);
+    const sel = parseSpeciesFilter(qs.get("species"));
+    if (sel.length > 0) setSelected(new Set(sel));
+    const day = qs.get("day") ?? "";
+    if (day !== "" && dayAnchor(day) !== null) setAnchorDay(day);
+    setReady(true);
+  }, []);
+
+  /** One page from the archive. Stable on purpose (everything varying rides
+   * refs), so the observer effect subscribes once. */
+  const loadPage = useCallback(async (gen: number, append: boolean) => {
+    busyRef.current = true;
+    setLoading(true);
+    const before = beforeRef.current;
+    const url =
+      `/aviary/recent?${queryRef.current}` +
+      (before !== null ? `&before=${before}` : "");
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      const body: { events?: unknown[] } = r.ok
+        ? await r.json()
+        : { events: [] };
+      if (gen !== genRef.current) return; // superseded by a filter change
+      const raw = (Array.isArray(body.events) ? body.events : [])
+        .map(audioEventFrom)
+        .filter((e): e is BirdEvent => e?.kind === "detection");
+      const fresh: ArchiveRow[] = [];
+      for (const e of raw) {
+        const key = audioEventKey(e);
+        if (keysRef.current.has(key)) continue; // the cursor's overlap row
+        keysRef.current.add(key);
+        fresh.push({ ...e, key });
+      }
+      if (raw.length < ARCHIVE_PAGE) {
+        exhaustedRef.current = true;
+        setExhausted(true);
+      } else {
+        beforeRef.current = nextBefore(raw[raw.length - 1].ts, before);
+      }
+      setRows((prev) => (append ? [...prev, ...fresh] : fresh));
+    } catch {
+      // A failed page ends the scroll politely rather than hammering a dead
+      // route from the observer; a reload starts fresh.
+      if (gen === genRef.current) {
+        exhaustedRef.current = true;
+        setExhausted(true);
+      }
+    } finally {
+      if (gen === genRef.current) {
+        busyRef.current = false;
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  // Filter changes (and the gated first load): reset and fetch page one.
+  useEffect(() => {
+    if (!ready) return;
+    const gen = ++genRef.current;
+    keysRef.current = new Set();
+    exhaustedRef.current = false;
+    beforeRef.current = anchorDay === "" ? null : dayAnchor(anchorDay);
+    const qp = new URLSearchParams();
+    qp.set("limit", String(ARCHIVE_PAGE));
+    if (selected.size > 0) qp.set("species", [...selected].join(","));
+    queryRef.current = qp.toString();
+    setExhausted(false);
+    setRows([]);
+    void loadPage(gen, false);
+
+    // Writeback: the URL always says what the view shows.
+    const share = new URLSearchParams();
+    if (selected.size > 0) share.set("species", [...selected].join(","));
+    if (anchorDay !== "") share.set("day", anchorDay);
+    const search = share.toString();
+    window.history.replaceState(
+      null,
+      "",
+      search ? `?${search}` : window.location.pathname,
+    );
+  }, [ready, selected, anchorDay, loadPage]);
+
+  // The scroll's engine: reaching within 600px of the sentinel asks for the
+  // next page. Refs carry the guards; the boolean dep re-subscribes when the
+  // sentinel itself mounts or unmounts (it only exists alongside rows).
+  const hasRows = rows.length > 0;
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((en) => en.isIntersecting)) return;
+        if (busyRef.current || exhaustedRef.current) return;
+        if (genRef.current === 0) return; // first page not kicked off yet
+        void loadPage(genRef.current, true);
+      },
+      { rootMargin: "600px 0px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [loadPage, hasRows]);
+
+  const togglePill = (sci: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sci)) next.delete(sci);
+      else next.add(sci);
+      return next;
+    });
+
+  const pillClass = (on: boolean) =>
+    `stamp flex items-baseline gap-1.5 rounded-sm border px-2 py-1 text-[10px] transition-colors ${
+      on
+        ? "border-linebright bg-panel2 text-squirrel"
+        : "border-line text-inkdim hover:border-linebright hover:text-ink"
+    }`;
+
+  const soloSci = selected.size === 1 ? [...selected][0] : null;
+  const solo = soloSci !== null ? roster[soloSci] : undefined;
+  const groups = dayGroups(rows);
+
+  return (
+    <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
+      <AviaryMasthead back={{ href: "/aviary", label: "← the aviary" }} />
+      <section className="panel rounded-sm border border-line bg-panel">
+        <PanelLabel
+          title="The Full Record"
+          right={<EnhanceToggle player={player} />}
+        />
+
+        {/* The controls: species pills (combinable), then the date leg.
+            Wrapping flex -- on a phone the date group drops to its own
+            line rather than crushing the pills. */}
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-2 px-4 pb-3">
+          <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              aria-pressed={selected.size === 0}
+              className={pillClass(selected.size === 0)}
+            >
+              all birds
+            </button>
+            {pillOrder.map((sci) => {
+              const e = roster[sci];
+              if (!e) return null;
+              return (
+                <button
+                  key={sci}
+                  type="button"
+                  onClick={() => togglePill(sci)}
+                  aria-pressed={selected.has(sci)}
+                  className={pillClass(selected.has(sci))}
+                >
+                  <span>{e.species_common}</span>
+                  <span className="text-inkfaint">{e.visits}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <label className="flex items-center gap-1.5">
+              <span className="stamp text-[9px] text-inkfaint">jump to</span>
+              <input
+                type="date"
+                value={anchorDay}
+                max={midnight === null ? undefined : dateInputOf(midnight)}
+                onChange={(ev) => setAnchorDay(ev.target.value)}
+                className="stamp rounded-sm border border-line bg-panel2 px-2 py-1 text-[10px] text-inkdim [color-scheme:dark] focus:border-linebright focus:outline-none"
+              />
+            </label>
+            {/* Always rendered, merely disabled while live -- the chart's
+                now-control idiom; a button popping in on jump would shove
+                the date input sideways (house rule #1). */}
+            <button
+              type="button"
+              onClick={() => setAnchorDay("")}
+              disabled={anchorDay === ""}
+              title={
+                anchorDay === ""
+                  ? "already showing the latest"
+                  : "back to the latest"
+              }
+              className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkdim transition-colors enabled:hover:border-squirrel enabled:hover:text-squirrel disabled:opacity-40"
+            >
+              now
+            </button>
+          </div>
+        </div>
+
+        {/* The solo band (#211): one selected bird earns its context --
+            totals, first-heard, and the enrichment lead -- because the
+            filtered page IS that bird's story and there is room to say so.
+            Reserved while the roster is still landing, so a shared
+            single-species link can't pop the band in under the reader. */}
+        {soloSci !== null && (
+          <div className="mx-4 mb-3 rounded-sm border border-line bg-panel2 p-3">
+            {solo ? (
+              <div className="flex gap-3">
+                <Portrait
+                  sci={soloSci}
+                  has={Boolean(solo.image_file)}
+                  alt={solo.species_common}
+                  glyphClass="h-8 w-8"
+                  w={solo.image_w}
+                  h={solo.image_h}
+                  boxAspect={4 / 3}
+                  style={{
+                    aspectRatio: portraitAspect(solo.image_w, solo.image_h),
+                  }}
+                  className="w-24 shrink-0 self-start rounded-sm border border-line bg-panel"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                    <span
+                      className="text-lg text-ink"
+                      style={{ fontFamily: "var(--font-display)" }}
+                    >
+                      {solo.species_common}
+                    </span>
+                    <span className="text-xs italic text-inkdim">
+                      {soloSci}
+                    </span>
+                    <Link
+                      href={`/aviary/${encodeURIComponent(soloSci)}`}
+                      className="stamp text-[10px] text-inkdim transition-colors hover:text-squirrel"
+                    >
+                      full profile →
+                    </Link>
+                  </div>
+                  <dl className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+                    <div>
+                      <dt className="stamp text-[9px] text-inkfaint">visits</dt>
+                      <dd className="text-inkdim">{solo.visits}</dd>
+                    </div>
+                    <div>
+                      <dt className="stamp text-[9px] text-inkfaint">today</dt>
+                      <dd className="text-inkdim">{solo.today}</dd>
+                    </div>
+                    <div>
+                      <dt className="stamp text-[9px] text-inkfaint">
+                        first heard
+                      </dt>
+                      <dd className="text-inkdim">{dayOf(solo.first_ts)}</dd>
+                    </div>
+                  </dl>
+                  {solo.description && (
+                    <p className="mt-1.5 line-clamp-2 text-[11px] leading-[1.4] text-inkdim">
+                      {solo.description}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-[96px] items-center justify-center">
+                <span className="stamp text-xs text-inkfaint">
+                  opening the record …
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="px-4 pb-4">
+          {rows.length === 0 ? (
+            <div className="flex min-h-[200px] items-center justify-center rounded-sm border border-line bg-panel2">
+              <span className="stamp px-4 text-center text-xs text-inkfaint">
+                {loading
+                  ? "opening the record …"
+                  : selected.size > 0
+                    ? "no events on record for this selection"
+                    : "no events on record yet — earl is listening"}
+              </span>
+            </div>
+          ) : (
+            <>
+              {groups.map((g) => (
+                <section key={g.day}>
+                  {/* Sticky day headers are what fix "which day am I in":
+                      the date is structural, not a per-row stamp. Opaque
+                      panel ground so rows slide under, never through. */}
+                  <div className="sticky top-0 z-10 flex items-baseline gap-2 bg-panel py-1.5">
+                    <span className="stamp text-[10px] text-inkdim">
+                      {dayLabelOf(g.day)}
+                    </span>
+                    {midnight !== null && g.day === midnight && (
+                      <span className="stamp text-[9px] text-led">today</span>
+                    )}
+                    {midnight !== null &&
+                      g.day === dayStart(midnight - 3600) && (
+                        <span className="stamp text-[9px] text-inkfaint">
+                          yesterday
+                        </span>
+                      )}
+                    <span className="stamp ml-auto text-[9px] text-inkfaint">
+                      {g.rows.length === 1
+                        ? "1 event"
+                        : `${g.rows.length} events`}
+                    </span>
+                  </div>
+                  <ul className="grid gap-2 pb-3 lg:grid-cols-2 2xl:grid-cols-3">
+                    {g.rows.map((e) => (
+                      <li
+                        key={e.key}
+                        className="flex items-center gap-3 rounded-sm border border-line bg-panel2 px-3 py-2.5"
+                      >
+                        <TickerThumb
+                          sci={e.species_sci}
+                          has={Boolean(roster[e.species_sci]?.image_file)}
+                          w={roster[e.species_sci]?.image_w}
+                          h={roster[e.species_sci]?.image_h}
+                          box="h-16 w-16"
+                          glyph="h-7 w-7"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <Link
+                            href={`/aviary/${encodeURIComponent(e.species_sci)}`}
+                            className="block truncate text-base text-ink transition-colors hover:text-squirrel"
+                            style={{ fontFamily: "var(--font-display)" }}
+                          >
+                            {e.species_common}
+                          </Link>
+                          <div className="text-xs text-inkdim">
+                            {timeOf(e.ts)}
+                          </div>
+                          <div className="stamp flex gap-2 text-[9px] text-inkfaint">
+                            <span>{e.source}</span>
+                            <span>{e.confidence.toFixed(2)}</span>
+                            {e.wind_suspect && <span>wind?</span>}
+                          </div>
+                        </div>
+                        <PlaySlot clip={e.clip} player={player} />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+              <div ref={sentinelRef} className="h-px" />
+              {/* Fixed-height tail: the endcap and the fetching stamp share
+                  one reserved row, so neither arriving can shift the list. */}
+              <div className="flex h-9 items-center justify-center">
+                <span className="stamp text-[10px] text-inkfaint">
+                  {exhausted
+                    ? "the record begins here"
+                    : loading
+                      ? "opening older days …"
+                      : ""}
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

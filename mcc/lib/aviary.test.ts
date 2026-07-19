@@ -12,14 +12,19 @@ import {
   collapseVisits,
   countVisits,
   cropPosition,
+  dayAnchor,
   dayBuckets,
+  dayGroups,
   dayStart,
   detectionFromRow,
   hourBuckets,
   hourStart,
   nearestBar,
+  nextBefore,
+  parseBefore,
   parseLimit,
   parseSince,
+  parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
   rosterOrder,
@@ -789,5 +794,124 @@ describe("detectionFromRow", () => {
     expect(e.rms).toBeNull();
     expect(e.clip).toBeNull();
     expect(e.wind_suspect).toBe(false);
+  });
+});
+
+// --- The event archive (#211) ------------------------------------------------
+
+describe("parseSpeciesFilter", () => {
+  it("splits a comma list into exact names", () => {
+    expect(
+      parseSpeciesFilter("Cardinalis cardinalis,Cyanocitta cristata"),
+    ).toEqual(["Cardinalis cardinalis", "Cyanocitta cristata"]);
+  });
+  it("trims, drops empties, and de-duplicates", () => {
+    expect(parseSpeciesFilter(" A a , , A a ,B b ")).toEqual(["A a", "B b"]);
+  });
+  it("null or blank means no filter, never an error", () => {
+    expect(parseSpeciesFilter(null)).toEqual([]);
+    expect(parseSpeciesFilter("  ")).toEqual([]);
+    expect(parseSpeciesFilter(",,,")).toEqual([]);
+  });
+  it("caps the count -- a URL can't demand a 500-placeholder IN clause", () => {
+    const raw = Array.from({ length: 60 }, (_, i) => `Species ${i}`).join(",");
+    expect(parseSpeciesFilter(raw)).toHaveLength(40);
+  });
+});
+
+describe("parseBefore", () => {
+  const now = 1_800_000_000;
+  it("passes an ordinary cursor through truncated", () => {
+    expect(parseBefore("1799990000.7", now)).toBe(1799990000);
+  });
+  it("garbage and non-positive mean no cursor (newest first)", () => {
+    expect(parseBefore(null, now)).toBeNull();
+    expect(parseBefore("", now)).toBeNull();
+    expect(parseBefore("birds", now)).toBeNull();
+    expect(parseBefore("0", now)).toBeNull();
+    expect(parseBefore("-5", now)).toBeNull();
+  });
+  it("clamps the far future to now plus a day", () => {
+    expect(parseBefore("9999999999", now)).toBe(now + 86400);
+  });
+});
+
+describe("dayGroups", () => {
+  it("splits newest-first rows at the viewer's local midnight", () => {
+    const rows = [
+      { ts: noon(2026, 6, 19) + 3600 },
+      { ts: noon(2026, 6, 19) },
+      { ts: noon(2026, 6, 18) },
+      { ts: noon(2026, 6, 15) },
+    ];
+    const groups = dayGroups(rows);
+    expect(groups.map((g) => g.rows.length)).toEqual([2, 1, 1]);
+    expect(groups.map((g) => new Date(g.day * 1000).getDate())).toEqual([
+      19, 18, 15,
+    ]);
+    // Every group's day is a true local midnight.
+    for (const g of groups) {
+      const d = new Date(g.day * 1000);
+      expect([d.getHours(), d.getMinutes()]).toEqual([0, 0]);
+    }
+  });
+  it("keeps row order within a group -- it groups, it does not sort", () => {
+    const rows = [
+      { ts: noon(2026, 6, 19) + 60, who: "a" },
+      { ts: noon(2026, 6, 19), who: "b" },
+    ];
+    expect(dayGroups(rows)[0].rows.map((r) => r.who)).toEqual(["a", "b"]);
+  });
+  it("groups a DST-transition day once, whatever its length", () => {
+    // US fall-back 2026: November 1 is a 25-hour local day; both of that
+    // day's rows land in one group, flanked by its neighbours.
+    const rows = [
+      { ts: noon(2026, 10, 2) },
+      { ts: noon(2026, 10, 1) + 3600 },
+      { ts: noon(2026, 10, 1) - 3600 },
+      { ts: noon(2026, 9, 31) },
+    ];
+    const groups = dayGroups(rows);
+    expect(groups.map((g) => g.rows.length)).toEqual([1, 2, 1]);
+  });
+  it("is empty for no rows", () => {
+    expect(dayGroups([])).toEqual([]);
+  });
+});
+
+describe("nextBefore", () => {
+  it("advances to the oldest loaded row (inclusive query, key dedupe)", () => {
+    expect(nextBefore(1000, null)).toBe(1000);
+    expect(nextBefore(1000, 2000)).toBe(1000);
+  });
+  it("steps past a page that made no progress rather than looping", () => {
+    expect(nextBefore(2000, 2000)).toBe(1999);
+    expect(nextBefore(2500, 2000)).toBe(1999); // never moves forward either
+  });
+});
+
+describe("dayAnchor", () => {
+  it("lands on the last second of the named LOCAL day", () => {
+    const end = dayAnchor("2026-07-18");
+    expect(end).not.toBeNull();
+    const d = new Date((end as number) * 1000);
+    expect([d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()]).toEqual(
+      [18, 23, 59, 59],
+    );
+    // One second later is the 19th -- the boundary is exact.
+    expect(new Date(((end as number) + 1) * 1000).getDate()).toBe(19);
+  });
+  it("handles the 25-hour fall-back day by re-flooring", () => {
+    const end = dayAnchor("2026-11-01");
+    const d = new Date((end as number) * 1000);
+    expect([d.getDate(), d.getHours()]).toEqual([1, 23]);
+    expect(new Date(((end as number) + 1) * 1000).getDate()).toBe(2);
+  });
+  it("rejects garbage and rolled-over dates", () => {
+    expect(dayAnchor("")).toBeNull();
+    expect(dayAnchor("last tuesday")).toBeNull();
+    expect(dayAnchor("2026-2-30")).toBeNull(); // wrong shape
+    expect(dayAnchor("2026-02-30")).toBeNull(); // right shape, not a date
+    expect(dayAnchor("2026-13-01")).toBeNull();
   });
 });

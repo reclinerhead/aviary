@@ -1,28 +1,44 @@
-// The Latest Events ticker's hydration (epic #182 Phase 1, issue #183):
-// the newest sightings from MERLE_EARL_DB, shaped like audio/events bus
-// payloads -- the /weather/history idiom, one namespace over: the body is
-// byte-shaped like the wire, so lib/bus's audioEventFrom() reads both and
-// the ticker can't tell a hydrated bird from a live one. Sound events
-// (kind:"sound") never appear here because sightings.py deliberately
-// doesn't persist them -- bus-only, gone on reload (accepted in #182).
+// The Latest Events ticker's hydration (epic #182 Phase 1, issue #183) and
+// the event archive's pages (#211): the newest sightings from MERLE_EARL_DB,
+// shaped like audio/events bus payloads -- the /weather/history idiom, one
+// namespace over: the body is byte-shaped like the wire, so lib/bus's
+// audioEventFrom() reads both and the ticker can't tell a hydrated bird from
+// a live one. Sound events (kind:"sound") never appear here because
+// sightings.py deliberately doesn't persist them -- bus-only, gone on reload
+// (accepted in #182).
 //
 // GET /aviary/recent?limit=<n>              ->  { events: [...] }  newest first
 // GET /aviary/recent?species=<sci>&limit=<n>    the profile's per-species cut
+// GET /aviary/recent?species=<sci>,<sci>&before=<epoch>&limit=<n>
+//                                               the archive's filtered page
 //
 // The limit is clamped at both ends of the wire (parseLimit here mirrors the
-// range clamps of #105); `species` is an exact species_sci match,
-// parameterized, so it needs no scrubbing. Unset env, missing DB, and a
-// store without the table yet all answer a QUIET { events: [] } -- day one's
-// normal state. No default path -- the roster route's WorkingDirectory
-// reasoning, verbatim.
+// range clamps of #105); `species` is one or more exact species_sci matches
+// (comma-separated -- scientific names never contain commas), parameterized,
+// so it needs no scrubbing. `before` (#211) is an INCLUSIVE ts ceiling: the
+// archive re-requests its own oldest row and dedupes by audioEventKey, so a
+// same-second sighting straddling a page boundary is a no-op, never a
+// dropped bird. Unset env, missing DB, and a store without the table yet all
+// answer a QUIET { events: [] } -- day one's normal state. No default path --
+// the roster route's WorkingDirectory reasoning, verbatim.
 
 import { DatabaseSync } from "node:sqlite";
 import type { NextRequest } from "next/server";
-import { detectionFromRow, parseLimit } from "@/lib/aviary";
+import {
+  detectionFromRow,
+  parseBefore,
+  parseLimit,
+  parseSpeciesFilter,
+} from "@/lib/aviary";
 
 // Named columns, not SELECT * -- the row shape the client parses is a
-// contract, not whatever the table happens to hold. ORDER BY id: insertion
-// order, which keeps two species sharing a window's ts stable.
+// contract, not whatever the table happens to hold. ORDER BY ts DESC with id
+// as the tiebreak (#211): the cursor paginates on ts, and cursor and order
+// MUST ride the same axis -- the previous bare `id DESC` matched ts order
+// only by the coincidence of sequential insertion, and a store with any
+// out-of-order timestamps (measured on the dev copy) jumbled pages and broke
+// the inclusive-overlap contract. id still breaks same-second ties, which
+// keeps two species sharing a window stable.
 const COLUMNS =
   "ts, source, species_sci, species_common, confidence, clip, " +
   "wind_suspect, rms";
@@ -42,7 +58,30 @@ export async function GET(req: NextRequest) {
 
   const q = req.nextUrl.searchParams;
   const limit = parseLimit(q.get("limit"));
-  const sci = q.get("species");
+  const species = parseSpeciesFilter(q.get("species"));
+  const before = parseBefore(
+    q.get("before"),
+    Math.floor(Date.now() / 1000),
+  );
+
+  // The WHERE assembles from whichever filters arrived; placeholders only,
+  // so the species list rides IN (?, ...) at exactly its parsed length.
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (species.length > 0) {
+    where.push(
+      `species_sci IN (${species.map(() => "?").join(", ")})`,
+    );
+    params.push(...species);
+  }
+  if (before !== null) {
+    where.push("ts <= ?");
+    params.push(before);
+  }
+  const sql =
+    `SELECT ${COLUMNS} FROM sightings` +
+    (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+    " ORDER BY ts DESC, id DESC LIMIT ?";
 
   let db: DatabaseSync;
   try {
@@ -51,20 +90,9 @@ export async function GET(req: NextRequest) {
     return empty();
   }
   try {
-    const rows = (
-      sci
-        ? db
-            .prepare(
-              `SELECT ${COLUMNS} FROM sightings WHERE species_sci = ?
-               ORDER BY id DESC LIMIT ?`,
-            )
-            .all(sci, limit)
-        : db
-            .prepare(
-              `SELECT ${COLUMNS} FROM sightings ORDER BY id DESC LIMIT ?`,
-            )
-            .all(limit)
-    ) as Parameters<typeof detectionFromRow>[0][];
+    const rows = db
+      .prepare(sql)
+      .all(...params, limit) as Parameters<typeof detectionFromRow>[0][];
     return events(rows.map(detectionFromRow));
   } catch {
     return empty();
