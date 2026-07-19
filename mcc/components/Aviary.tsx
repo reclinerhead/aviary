@@ -18,7 +18,13 @@
 
 import mqtt from "mqtt/dist/mqtt.esm";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   AUDIO_EVENTS_TOPIC,
   AUDIO_STATUS_TOPIC,
@@ -911,11 +917,31 @@ export function SpeciesProfile({ sci }: { sci: string }) {
     setBioOpen(false); // a different bird opens closed
   }, [sci]);
 
-  // The clamp shows six lines; anything near that is worth a toggle. Measured
-  // in characters rather than by probing the DOM for overflow -- the reflow
-  // that would need runs after paint, and a control appearing a frame late is
-  // the layout-shift rule broken in miniature.
-  const longBio = (entry?.description?.length ?? 0) > 420;
+  // How much prose to show at rest is set by the PHOTO, not by a constant
+  // (#196 follow-up): the clamp fills ~75% of the portrait's height, so a
+  // tall bird earns more text and a wide one less, and neither leaves the
+  // gutter beside the photo conspicuously empty. Computed from the stored
+  // dimensions rather than measured -- the figure is `md:w-[300px]`, and
+  // text-sm/leading-relaxed is 22.75px a line -- so it is known before
+  // first paint and nothing reflows. Bounded at both ends: a panoramic
+  // photo still shows a readable few lines, and a very tall one does not
+  // dump the whole encyclopedia. Unknown dimensions keep the original six.
+  const clampLines = (() => {
+    const w = entry?.image_w, h = entry?.image_h;
+    if (!w || !h) return 6;
+    return Math.max(5, Math.min(18, Math.round((300 * (h / w) * 0.75) / 22.75)));
+  })();
+  // Whether the toggle is needed at all, measured before paint (a control
+  // appearing a frame late is the layout-shift rule broken in miniature).
+  // Only measured while CLOSED: open, scrollHeight equals clientHeight, and
+  // re-measuring there would delete the "read less" control mid-read.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [longBio, setLongBio] = useState(false);
+  useLayoutEffect(() => {
+    if (bioOpen) return;
+    const el = bodyRef.current;
+    if (el) setLongBio(el.scrollHeight > el.clientHeight + 1);
+  }, [entry?.description, clampLines, bioOpen]);
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
@@ -1054,9 +1080,21 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                       way, so expanding grows the hero and shifts nothing
                       above it. */}
                   <div
-                    className={`space-y-2.5 text-sm leading-relaxed text-inkdim ${
-                      bioOpen ? "" : "line-clamp-6"
-                    }`}
+                    ref={bodyRef}
+                    className="space-y-2.5 text-sm leading-relaxed text-inkdim"
+                    // Inline rather than a line-clamp-N class: the count is
+                    // per-species, and Tailwind can only emit classes it can
+                    // see in the source.
+                    style={
+                      bioOpen
+                        ? undefined
+                        : {
+                            display: "-webkit-box",
+                            WebkitBoxOrient: "vertical",
+                            WebkitLineClamp: clampLines,
+                            overflow: "hidden",
+                          }
+                    }
                   >
                     {entry.description.split(/\n+/).map((para, i) => (
                       <p key={i}>{para}</p>
