@@ -241,6 +241,37 @@ export function parseSince(raw: string | null, now: number): number | null {
   return Math.min(now, Math.max(now - 2 * 86400, Math.trunc(n)));
 }
 
+/** The archive's species filter (#211): a comma-separated list of exact
+ * species_sci values -- scientific names never contain commas, which is what
+ * makes the encoding safe. Trimmed, de-duplicated, capped (a URL can't ask
+ * the store to build a 500-placeholder IN clause); empty means "no filter",
+ * never an error. The names stay exact-match parameters downstream, so they
+ * need no scrubbing here -- the same reasoning as the single `species` param. */
+export function parseSpeciesFilter(raw: string | null, max = 40): string[] {
+  if (raw === null) return [];
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const name = part.trim();
+    if (name !== "") seen.add(name);
+    if (seen.size >= max) break;
+  }
+  return [...seen];
+}
+
+/** The archive's pagination cursor (#211): "rows at or before this epoch".
+ * INCLUSIVE on purpose -- the client re-requests its own oldest row and
+ * dedupes by audioEventKey, so a same-second sighting straddling a page
+ * boundary is a no-op instead of a dropped bird (the hydration/live merge
+ * trick, reused as overlap tolerance). Garbage or a non-positive value means
+ * "no cursor" (newest first, exactly as before); a far-future value clamps
+ * to now plus a day, which is the same thing said politely. */
+export function parseBefore(raw: string | null, now: number): number | null {
+  if (raw === null || raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(now + 86400, Math.trunc(n));
+}
+
 // --- Roster shaping ----------------------------------------------------------
 
 export type RosterEntry = {
@@ -704,4 +735,65 @@ export function detectionFromRow(row: {
     wind_suspect: Boolean(row.wind_suspect),
     rms: row.rms,
   };
+}
+
+// --- The event archive (issue #211) ------------------------------------------
+
+export type DayGroup<T extends { ts: number }> = {
+  /** Local midnight opening this group's day -- the header's identity. */
+  day: number;
+  rows: T[];
+};
+
+/** Newest-first rows -> day sections for the archive's sticky headers, split
+ * at the VIEWER's local midnight (`dayStart` -- the client-buckets rule; the
+ * server never sees a day boundary). Grouping is by consecutive runs, which
+ * on sorted input is exact and on anything else refuses to invent an order:
+ * this function groups, it does not sort. DST needs no case here at all --
+ * whatever length the local day was, `dayStart` names it once. */
+export function dayGroups<T extends { ts: number }>(rows: T[]): DayGroup<T>[] {
+  const groups: DayGroup<T>[] = [];
+  for (const row of rows) {
+    const day = dayStart(row.ts);
+    const last = groups[groups.length - 1];
+    if (last && last.day === day) last.rows.push(row);
+    else groups.push({ day, rows: [row] });
+  }
+  return groups;
+}
+
+/** The next page's cursor from the oldest loaded row. Ordinarily that IS the
+ * cursor (inclusive query + key dedupe, see `parseBefore`); the guard handles
+ * the pathological page whose rows all share one second -- re-asking at the
+ * same cursor would loop forever, so it steps past it and accepts the
+ * theoretical loss over the certain hang. */
+export function nextBefore(oldestTs: number, prev: number | null): number {
+  return prev !== null && oldestTs >= prev ? prev - 1 : oldestTs;
+}
+
+/** A date input's "yyyy-mm-dd" -> the last second of that LOCAL day: the
+ * jump-to-date cursor (#211). Parsed by hand because `new Date(string)`
+ * reads a bare date as UTC midnight -- off by a whole day for every viewer
+ * west of Greenwich. End-of-day is found by stepping to the NEXT local
+ * midnight and backing off one second, so a 23- or 25-hour DST day lands
+ * exactly (the re-floor rule, `dayBuckets`' comment). Null for anything
+ * that isn't a real calendar date -- a typo shows the latest record,
+ * never an error. */
+export function dayAnchor(value: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(y, mo - 1, d, 12, 0, 0, 0);
+  // Reject rollovers (Feb 30 becomes Mar 2): a rolled date is a typo, and
+  // jumping somewhere the viewer didn't name would be worse than ignoring it.
+  if (
+    date.getFullYear() !== y ||
+    date.getMonth() !== mo - 1 ||
+    date.getDate() !== d
+  )
+    return null;
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + 1);
+  date.setHours(0, 0, 0, 0); // re-floor: DST days are 23h or 25h
+  return Math.floor(date.getTime() / 1000) - 1;
 }
