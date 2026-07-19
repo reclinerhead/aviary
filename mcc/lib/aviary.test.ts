@@ -6,6 +6,8 @@ import {
   clampVisitWindow,
   clipRelPath,
   clipUrl,
+  enhancedClipUrl,
+  enhancedRelPath,
   collapseVisits,
   countVisits,
   cropPosition,
@@ -165,6 +167,31 @@ describe("clipUrl", () => {
   });
   it("encodes hostile characters -- transport only; the route's guard is what rejects them", () => {
     expect(clipUrl("a b/c?.wav")).toBe("/clips/a%20b/c%3F.wav");
+  });
+});
+
+describe("enhancedRelPath / enhancedClipUrl", () => {
+  it("names the sibling the pass writes (clip_enhance.enhanced_relpath)", () => {
+    expect(enhancedRelPath("amcrest/1000-Blue_Jay.wav")).toBe(
+      "amcrest/1000-Blue_Jay-enh.wav",
+    );
+    expect(enhancedClipUrl("amcrest/1000-Blue_Jay.wav")).toBe(
+      "/clips/amcrest/1000-Blue_Jay-enh.wav",
+    );
+  });
+  it("refuses to double-enhance or to touch a non-wav", () => {
+    expect(enhancedRelPath("amcrest/1000-Blue_Jay-enh.wav")).toBeNull();
+    expect(enhancedClipUrl("species/Cyanocitta_cristata.jpg")).toBeNull();
+  });
+  it("the sibling passes the EXISTING route guard, unloosened (#190)", () => {
+    // The point of the naming choice: '-' was already in the allowlist, so a
+    // sibling is an ordinary clip name and the traversal guard needed no
+    // exception carved into it. If this ever fails, the guard was changed --
+    // and it should not have been.
+    expect(clipRelPath(["amcrest", "1000-Blue_Jay-enh.wav"])).toBe(
+      "amcrest/1000-Blue_Jay-enh.wav",
+    );
+    expect(clipRelPath(["..", "x-enh.wav"])).toBeNull();
   });
 });
 

@@ -41,6 +41,7 @@ import {
   SortKey,
   Visit,
   clipUrl,
+  enhancedClipUrl,
   collapseVisits,
   cropPosition,
   portraitAspect,
@@ -211,57 +212,115 @@ function TickerThumb({
 type ClipPlayer = {
   playing: string | null;
   faded: ReadonlySet<string>;
-  toggle: (url: string) => void;
+  enhanced: boolean;
+  setEnhanced: (on: boolean) => void;
+  toggle: (clip: string) => void;
 };
 
 /** One shared <audio> per view: clicking a second clip stops the first
  * (two yards' worth of birdsong at once is noise, not data). A clip that
  * fails to load is marked faded -- pruned past the retention window is the
- * normal end of a clip's life, the Field Journal's pruned-thumbnail rule. */
+ * normal end of a clip's life, the Field Journal's pruned-thumbnail rule.
+ *
+ * ENHANCED PLAYBACK (issue #190). In enhanced mode the player asks for the
+ * pass's `-enh` sibling first and, if the route 404s, retries the raw clip
+ * and says nothing. That silent retry IS the existence check: the pass keeps
+ * no state about which clips it has processed -- file existence is the
+ * source of truth, deliberately -- so the only honest way to ask "is there
+ * an enhanced version?" is to ask for it. A clip only earns the faded mark
+ * once the RAW file is gone too, which is the one thing that actually means
+ * the recording is pruned.
+ *
+ * Every key here -- `playing`, `faded`, `pending` -- is the RAW clip path,
+ * never the sibling. Rows are identified by the recording, not by which
+ * rendering of it happened to play, so flipping the mode mid-session can't
+ * strand a lit button or double-mark a faded one. */
 function useClipPlayer(): ClipPlayer {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const pendingRef = useRef<string | null>(null);
   const playingRef = useRef<string | null>(null);
+  // Aborted when an attempt ends, which is what makes each attempt's failure
+  // signals identifiable -- see the note in `start`.
+  const attemptRef = useRef<AbortController | null>(null);
+  const enhancedRef = useRef(true);
   const [playing, setPlaying] = useState<string | null>(null);
   const [faded, setFaded] = useState<ReadonlySet<string>>(new Set());
+  // Default ON: a faint bird under a plane is the case that motivated the
+  // pass, and the raw clip is one click away for the A/B.
+  const [enhanced, setEnhancedState] = useState(true);
 
-  const stop = useCallback((url: string | null) => {
-    playingRef.current = url;
-    setPlaying(url);
+  const stop = useCallback((clip: string | null) => {
+    playingRef.current = clip;
+    setPlaying(clip);
   }, []);
 
+  /** Point the element at one rendering of `clip` and play it.
+   *
+   * A missing file reports itself TWICE -- the element's `error` event and
+   * the `play()` promise's rejection, in an order that varies by engine --
+   * and the fallback made that a real bug: the error event would kick off
+   * the raw retry, and then the stale rejection from the *enhanced* attempt
+   * would land, read the now-current state, and mark a clip faded that was
+   * at that moment playing perfectly. (Measured: a clip with no sibling fell
+   * back to raw, fetched 200, and still wore the faded stamp.)
+   *
+   * So each attempt owns an AbortController. Whichever signal arrives first
+   * aborts it and acts; the second sees an aborted controller and returns.
+   * Listeners are registered against the signal, so a superseded attempt
+   * detaches itself rather than lingering to misjudge its successor. */
+  const start = useCallback(
+    (a: HTMLAudioElement, clip: string, useEnhanced: boolean) => {
+      attemptRef.current?.abort();
+      const ctl = new AbortController();
+      attemptRef.current = ctl;
+      const enh = useEnhanced ? enhancedClipUrl(clip) : null;
+
+      const failed = () => {
+        if (ctl.signal.aborted) return; // this attempt was already resolved
+        ctl.abort();
+        if (enh !== null) {
+          // No sibling for this one. Fall back quietly -- an un-enhanced clip
+          // is not an error, it's a clip the pass hasn't reached yet. This
+          // silent retry IS the existence check (see the hook's note).
+          start(a, clip, false);
+          return;
+        }
+        setFaded((prev) => new Set(prev).add(clip));
+        stop(null);
+      };
+
+      a.addEventListener("error", failed, { signal: ctl.signal });
+      a.src = enh ?? clipUrl(clip);
+      a.play().catch(failed);
+      stop(clip);
+    },
+    [stop],
+  );
+
   const toggle = useCallback(
-    (url: string) => {
+    (clip: string) => {
       let a = audioRef.current;
       if (!a) {
         a = new Audio();
         a.addEventListener("ended", () => stop(null));
-        // The error's target src is absolute; the ref remembers which of OUR
-        // urls was asked for, so the faded mark lands on the right row.
-        a.addEventListener("error", () => {
-          const dead = pendingRef.current;
-          if (dead) setFaded((prev) => new Set(prev).add(dead));
-          stop(null);
-        });
         audioRef.current = a;
       }
-      if (playingRef.current === url) {
+      if (playingRef.current === clip) {
         a.pause();
         stop(null);
         return;
       }
-      pendingRef.current = url;
-      a.src = url;
-      a.play().catch(() => {
-        // NotSupportedError lands here on a 404 before the error event does
-        // on some engines; same verdict either way.
-        setFaded((prev) => new Set(prev).add(url));
-        stop(null);
-      });
-      stop(url);
+      start(a, clip, enhancedRef.current);
     },
-    [stop],
+    [start, stop],
   );
+
+  const setEnhanced = useCallback((on: boolean) => {
+    enhancedRef.current = on;
+    setEnhancedState(on);
+    // Whatever is playing was rendered the other way; let it finish rather
+    // than restarting it under the listener (house rule #1's spirit -- the
+    // control changes what plays NEXT, it doesn't yank the current clip).
+  }, []);
 
   useEffect(
     () => () => {
@@ -271,7 +330,43 @@ function useClipPlayer(): ClipPlayer {
     [],
   );
 
-  return { playing, faded, toggle };
+  return { playing, faded, enhanced, setEnhanced, toggle };
+}
+
+/** The raw/enhanced switch, in a panel's label row. Two states, both always
+ * rendered at a fixed width -- it reads as one instrument nameplate rather
+ * than a control that resizes as you use it (house rule #1). */
+function EnhanceToggle({ player }: { player: ClipPlayer }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="stamp text-[9px] text-inkfaint">audio</span>
+      <span className="flex overflow-hidden rounded-sm border border-line">
+        {([
+          ["raw", false],
+          ["enh", true],
+        ] as const).map(([label, on]) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => player.setEnhanced(on)}
+            aria-pressed={player.enhanced === on}
+            title={
+              on
+                ? "play the enhanced clip — band-limited, denoised, normalized"
+                : "play the clip exactly as Earl recorded it"
+            }
+            className={`stamp w-8 py-0.5 text-[9px] transition-colors ${
+              player.enhanced === on
+                ? "bg-panel2 text-squirrel"
+                : "text-inkfaint hover:text-inkdim"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
 }
 
 /** The reserved player slot every event row carries (fixed w-12 x h-8, the
@@ -280,16 +375,15 @@ function useClipPlayer(): ClipPlayer {
  * dot when the clip write failed -- never a missing element, never a broken
  * player. Playing wears --led: green means live. */
 function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer }) {
-  const url = clip ? clipUrl(clip) : null;
   const box =
     "flex h-8 w-12 shrink-0 items-center justify-center rounded-sm border";
-  if (!url)
+  if (!clip)
     return (
       <span className={`${box} border-line text-inkfaint`} title="no clip">
         <span className="text-[9px]">·</span>
       </span>
     );
-  if (player.faded.has(url))
+  if (player.faded.has(clip))
     return (
       <span
         className={`${box} border-line`}
@@ -298,11 +392,11 @@ function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer })
         <span className="stamp text-[9px] text-inkfaint">faded</span>
       </span>
     );
-  const on = player.playing === url;
+  const on = player.playing === clip;
   return (
     <button
       type="button"
-      onClick={() => player.toggle(url)}
+      onClick={() => player.toggle(clip)}
       aria-label={on ? "Stop the clip" : "Play the clip"}
       title={on ? "stop" : "play the recording"}
       className={`${box} transition-colors ${
@@ -693,7 +787,10 @@ export function Aviary() {
         {/* Right rail */}
         <div className="flex flex-col gap-4">
           <section className="panel rounded-sm border border-line bg-panel">
-            <PanelLabel title="Latest Events" />
+            <PanelLabel
+              title="Latest Events"
+              right={<EnhanceToggle player={player} />}
+            />
             <div className="px-4 pb-4">
               {events.length === 0 ? (
                 <div className="flex min-h-[160px] items-center justify-center rounded-sm border border-line bg-panel2">
@@ -1131,7 +1228,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               absolute positioning drops away and the rail flows normally. */}
           <div className="relative">
           <section className="panel flex flex-col rounded-sm border border-line bg-panel lg:absolute lg:inset-0">
-            <PanelLabel title="Recent Visits" />
+            <PanelLabel
+              title="Recent Visits"
+              right={<EnhanceToggle player={player} />}
+            />
             <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
               {visits === null ? (
                 <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">

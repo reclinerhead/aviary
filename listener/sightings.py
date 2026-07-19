@@ -170,17 +170,51 @@ def record(conn, row):
 
 # --- clip retention (issue #175) ---------------------------------------------
 
+# Mirror of clip_enhance.ENH_SUFFIX (issue #190). Deliberately duplicated
+# rather than imported: clip_enhance needs numpy, and this consumer runs from
+# the LEAN repo venv (paho only) -- test_import_boundary.py enforces exactly
+# that, and would fail the moment this file reached for the pass. Two lines of
+# string handling is a far better trade than dragging numpy onto a unit that
+# never does arithmetic.
+ENH_SUFFIX = "-enh.wav"
+
+
 def prune_selection(files, now_ts, keep_days, exempt):
     """Which clips to delete: older than the horizon AND not a lifer's first
     recording. `files` is [(relpath, mtime_ts)]; pure with an injected clock
     -- the frame_archiver.prune_selection precedent, plus the exemption.
     The species/ shelf (issue #184's portraits) shares the clips dir but is
     a permanent collection, not a rolling window -- never selected, whatever
-    its age."""
+    its age.
+
+    ENHANCED SIBLINGS (issue #190) share their original's fate exactly: a
+    doomed clip takes its <stem>-enh.wav with it, and a lifer's exempt first
+    clip keeps its sibling too. Judging a sibling on its OWN age would be
+    subtly wrong in both directions -- it is always newer than its original
+    (written by a later pass run), so it would outlive the evidence it
+    enhances, and an exempt lifer's sibling would eventually age out from
+    under a clip that is supposed to be permanent. A sibling whose original
+    is already gone is an orphan -- nothing to inherit from, so it ages out
+    on its own."""
     horizon = now_ts - keep_days * 86400
-    return [relpath for relpath, mtime in files
-            if mtime < horizon and relpath not in exempt
-            and not relpath.startswith("species/")]
+    present = {relpath for relpath, _ in files}
+    doomed = []
+    for relpath, mtime in files:
+        if relpath.startswith("species/"):
+            continue
+        if relpath.endswith(ENH_SUFFIX):
+            original = relpath[:-len(ENH_SUFFIX)] + ".wav"
+            if original in present:
+                continue          # goes when its original goes, below
+            if mtime < horizon:   # orphan: its original is already gone
+                doomed.append(relpath)
+            continue
+        if mtime < horizon and relpath not in exempt:
+            doomed.append(relpath)
+            sibling = relpath[:-len(".wav")] + ENH_SUFFIX
+            if relpath.endswith(".wav") and sibling in present:
+                doomed.append(sibling)
+    return doomed
 
 
 def list_clips(clips_dir):

@@ -190,6 +190,44 @@ def test_lifer_first_clips_survive_forever():
         ["amcrest/2-Common.wav"]
 
 
+def test_a_doomed_clip_takes_its_enhanced_sibling_with_it():
+    # Issue #190: the enhancement pass writes a sibling per clip. A pass that
+    # quietly doubles disk growth on a shared 48G LV is a bug, so the sibling
+    # goes when its original goes -- even though it is always the NEWER file
+    # (written by a later pass run) and would survive an age test of its own.
+    now = 1000 * DAY
+    files = [("amcrest/2-Common.wav", 0),
+             ("amcrest/2-Common-enh.wav", now - DAY)]
+    assert sorted(sightings.prune_selection(files, now, 90, set())) == \
+        ["amcrest/2-Common-enh.wav", "amcrest/2-Common.wav"]
+
+
+def test_a_lifers_enhanced_sibling_is_exempt_too():
+    # The exemption is about the RECORDING, not one file: pruning the
+    # enhanced half of a permanent lifer clip would quietly degrade the
+    # permanent record to its least listenable version.
+    now = 1000 * DAY
+    files = [("amcrest/1-Lifer.wav", 0), ("amcrest/1-Lifer-enh.wav", 0)]
+    assert sightings.prune_selection(files, now, 90,
+                                     {"amcrest/1-Lifer.wav"}) == []
+
+
+def test_a_young_clips_sibling_survives_with_it():
+    now = 1000 * DAY
+    files = [("amcrest/3-Recent.wav", now - DAY),
+             ("amcrest/3-Recent-enh.wav", now - DAY)]
+    assert sightings.prune_selection(files, now, 90, set()) == []
+
+
+def test_an_orphaned_sibling_ages_out_on_its_own():
+    # Its original is already gone (a hand-deleted file, say), so there is
+    # nothing to inherit a verdict from -- the horizon applies directly.
+    now = 1000 * DAY
+    files = [("amcrest/4-Gone-enh.wav", 0), ("amcrest/5-Fresh-enh.wav", now)]
+    assert sightings.prune_selection(files, now, 90, set()) == \
+        ["amcrest/4-Gone-enh.wav"]
+
+
 def test_exempt_clips_reads_the_life_list(conn):
     sightings.record(conn, sightings.parse_event(
         event(clip="amcrest/1-first.wav")))

@@ -130,6 +130,32 @@ export function clipUrl(rel: string): string {
   return "/clips/" + rel.split("/").map(encodeURIComponent).join("/");
 }
 
+// Mirror of clip_enhance.ENH_SUFFIX (issue #190): the pass writes a sibling
+// <stem>-enh.wav beside every clip, never in place.
+const ENH_SUFFIX = "-enh.wav";
+
+/** The enhanced sibling's path for a clip, or null when the argument is
+ * already one (there is no -enh-enh).
+ *
+ * Note what does NOT change for this: the route's guard. `CLIP_FILE_SEG`
+ * already admits a `-enh` stem, because `-` has been in the allowlist since
+ * day one -- the sibling is an ordinary clip name by construction, not an
+ * exception carved into the guard. The traversal rules are untouched, which
+ * is exactly the property #190 asked for. */
+export function enhancedRelPath(rel: string): string | null {
+  if (rel.endsWith(ENH_SUFFIX) || !rel.endsWith(".wav")) return null;
+  return rel.slice(0, -".wav".length) + ENH_SUFFIX;
+}
+
+/** The enhanced sibling's URL, or null when there can't be one. Whether the
+ * file actually EXISTS is not knowable from the path -- the player asks for
+ * it and falls back to the raw clip if the route 404s, which is the same
+ * "file existence is the source of truth" rule the pass itself runs on. */
+export function enhancedClipUrl(rel: string): string | null {
+  const enh = enhancedRelPath(rel);
+  return enh === null ? null : clipUrl(enh);
+}
+
 // --- The portrait route's name guard ----------------------------------------
 
 // Mirror of species_profile.image_filename's scrub, byte-for-byte: the pass
