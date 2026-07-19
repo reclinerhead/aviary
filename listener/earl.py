@@ -100,6 +100,7 @@
 import json
 import multiprocessing
 import os
+import select
 import shlex
 import subprocess
 import time
@@ -113,9 +114,13 @@ from listener import gate
 
 CLIENT_ID = "earl"
 DEFAULT_RTSP_HOST = "192.168.1.102"
-DEFAULT_ROVER_CMD = ("ssh -o BatchMode=yes -o ConnectTimeout=5 todd@merle "
+DEFAULT_ROVER_CMD = ("ssh -o BatchMode=yes -o ConnectTimeout=5 "
+                     "-o ServerAliveInterval=5 -o ServerAliveCountMax=3 "
+                     "todd@merle "
                      "arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw -q")
 RESTART_BACKOFF_S = (3, 10, 30, 60)   # then stays at 60 forever
+STALL_TIMEOUT_S = 15                  # no bytes at all -> the capture is hung
+SOCKET_TIMEOUT_US = STALL_TIMEOUT_S * 1_000_000   # same bar, ffmpeg's units
 SILENT_AFTER_WINDOWS = 20             # ~1 min of rms-nothing -> "silent"
 SILENT_RMS = 0.001
 WEATHER_STALE_S = 30 * 60             # the narrator's staleness rule
@@ -123,6 +128,11 @@ GEO_MIN_CONFIDENCE = 0.03             # birdnet's own default, kept explicit
 YAMNET_HANDLE = "https://tfhub.dev/google/yamnet/1"   # hub caches locally
 GATE_TOP_K = 7                        # classes handed to gate.route per window
 GATE_STATS_WINDOWS = 100              # gate counter log cadence (~5 min)
+
+# read_exact's third answer, distinct from EOF's None: the pipe is still open
+# but nothing is coming. A sentinel object rather than a falsy value so the
+# caller's `is` check can never be confused with an empty read.
+STALLED = object()
 
 
 def week_of(month, day):
@@ -143,7 +153,15 @@ def rtsp_argv(host, user, password):
     frames.rtsp_url() convention: build once, redact at the same counter."""
     url = (f"rtsp://{user}:{password}@{host}:554/"
            "cam/realmonitor?channel=1&subtype=0")
+    # -timeout is the RTSP demuxer's socket-I/O bar in MICROseconds (issue
+    # #201). It is what makes a dropped-but-unreset session END: the camera
+    # going away mid-stream sends no FIN, so without it ffmpeg blocks on a
+    # socket that stays ESTAB forever and the source dies silently. Measured
+    # on pearl's ffmpeg 8.0.1 against a socket that accepts and never speaks:
+    # flagged, it exits in ~9 s; unflagged, it was still waiting at 20 s.
+    # (NOT -rw_timeout, which the rtsp demuxer does not carry.)
     argv = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-timeout", str(SOCKET_TIMEOUT_US),
             "-rtsp_transport", "tcp", "-allowed_media_types", "audio",
             "-i", url, "-vn", "-f", "s16le",
             "-ar", str(gate.SAMPLE_RATE), "-ac", "1", "-"]
@@ -194,14 +212,23 @@ def write_clip(clips_dir, relpath, windows):
     return relpath
 
 
-def read_exact(stream, n):
-    """Exactly n bytes from a pipe via os.read; None on EOF. (The Phase 0
+def read_exact(stream, n, timeout=None):
+    """Exactly n bytes from a pipe via os.read; None on EOF, STALLED if
+    `timeout` seconds pass with no bytes arriving at all. (The Phase 0
     listener's loop: os.read, not sys.stdin.buffer -- no buffered-reader lock
     for birdnet's fork to inherit, even though this process also keeps no
-    other threads.)"""
+    other threads. The timeout is select on the fd for that same reason: a
+    watchdog thread here would be the fork trap, so the wait itself has to be
+    the thing that expires.)
+
+    The bar is bytes, not windows: the clock restarts on every chunk, so a
+    stream delivering anything at all is never called stalled -- only one
+    that has gone completely quiet, which a live 48 kHz source cannot do."""
     fd = stream.fileno()
     parts, got = [], 0
     while got < n:
+        if timeout is not None and not select.select([fd], [], [], timeout)[0]:
+            return STALLED
         chunk = os.read(fd, n - got)
         if not chunk:
             return None
@@ -321,14 +348,24 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                 continue
 
             state = "starting"
+            stalled = False
             quiet_windows = 0
             prev_window = None
             # Clip writes waiting on their post-roll window (issue #175:
             # a list, since one window can open/upgrade several visits).
             pending = []
             while True:
-                buf = read_exact(capture.stdout, gate.WINDOW_BYTES)
+                buf = read_exact(capture.stdout, gate.WINDOW_BYTES,
+                                 timeout=STALL_TIMEOUT_S)
                 if buf is None:
+                    break
+                if buf is STALLED:
+                    # The device went away without closing the pipe (a camera
+                    # unplugged mid-session, a rover powered down to charge).
+                    # Kill the capture so the restart path below is the same
+                    # one a clean exit takes -- one way back online, not two.
+                    stalled = True
+                    capture.kill()
                     break
 
                 if state == "starting":
@@ -463,7 +500,9 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
             queue.put(("state", name, "offline"))
             delay = RESTART_BACKOFF_S[min(backoff, len(RESTART_BACKOFF_S) - 1)]
             backoff += 1
-            log(f"capture ended (rc {capture.returncode}); retry in {delay}s")
+            why = (f"capture stalled (no audio for {STALL_TIMEOUT_S}s)"
+                   if stalled else f"capture ended (rc {capture.returncode})")
+            log(f"{why}; retry in {delay}s")
             time.sleep(delay)
 
 
