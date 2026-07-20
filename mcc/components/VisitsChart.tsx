@@ -57,7 +57,12 @@ export function VisitsChart({ sci }: { sci: string }) {
   // on last April, not creep as today ticks under it. It doubles as the
   // snap-back control's state: home is null, not a timestamp to recompute.
   const [windowEnd, setWindowEnd] = useState<number | null>(null);
-  const [mode, setMode] = useState<Mode>("overview");
+  // Opens in DETAIL: the 48-hour hourly rhythm is the question most worth
+  // landing on -- when in the day this bird shows up -- while the 30-day
+  // bars are the "how often" the standings band above already summarizes.
+  // The opening fetch is sized for overview either way (see the mount
+  // effect), so this default costs no extra network.
+  const [mode, setMode] = useState<Mode>("detail");
   const [visits, setVisits] = useState<number[]>([]);
   const [firstTs, setFirstTs] = useState<number | null>(null);
   // The clock at mount. Never Date.now() in render (the SSR/hydration rule);
