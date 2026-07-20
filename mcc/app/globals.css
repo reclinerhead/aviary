@@ -15,8 +15,14 @@
   --line: #27392e;
   --line-bright: #3b5443;
   --ink: #ece4cf;
-  --ink-dim: #93a794;
-  --ink-faint: #5c6f5f;
+  /* The muted inks were raised in #222 -- the original --ink-faint (#5c6f5f)
+     measured 3.0:1 against --panel-2, unreadable on real hardware at the
+     9-10px mono sizes it mostly renders at. Same sage hue, lightness only:
+     faint now clears 4.9:1 worst-case (WCAG AA for small text), dim 7.6:1,
+     and the three-step hierarchy keeps visible separation. Measured against
+     BOTH panel surfaces, not eyeballed (the hero-scrim rule). */
+  --ink-dim: #a3b6a4;
+  --ink-faint: #7e937f;
 
   /* The species accents are the ACTUAL box colors the vision stack draws, which
      is what makes the dashboard and the stream read as one instrument. Never
