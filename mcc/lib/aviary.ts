@@ -195,6 +195,42 @@ export function portraitUrl(sci: string): string {
   return `/aviary/portrait/${encodeURIComponent(sci)}`;
 }
 
+// --- Species removal (issue #216) -------------------------------------------
+
+// Mirror of the pass's portrait shelf: species_profile.image_file holds a
+// scrubbed <name>.jpg -- one dot, no separators -- so anything else in the
+// column is a hand-edited row this must never turn into a path.
+const PORTRAIT_FILE = /^[A-Za-z0-9_-]+\.jpg$/;
+const SPECIES_DIR = "species";
+
+/** The files a species removal dooms, as relative paths under
+ * MERLE_EARL_CLIPS: every sighting clip and the lifer's first_clip (deduped
+ * -- the first sighting's clip usually IS first_clip), each with its -enh
+ * sibling named unconditionally (the enhancement pass keeps no registry, so
+ * the filesystem is asked by deleting: a sibling never written is a missing
+ * file, and missing files are not errors), plus the portrait on the
+ * species/ shelf. Every row-held path re-runs the clips route's own
+ * traversal guard before it may name a file -- rows normally hold exactly
+ * what Earl wrote, but this feeds the MCC's first delete, and a hand-edited
+ * row must skip quietly rather than escape the clips dir. */
+export function doomedFiles(
+  clips: (string | null | undefined)[],
+  imageFile: string | null | undefined,
+): string[] {
+  const out = new Set<string>();
+  for (const clip of clips) {
+    if (!clip) continue;
+    const rel = clipRelPath(clip.split("/"));
+    if (rel === null) continue;
+    out.add(rel);
+    const enh = enhancedRelPath(rel);
+    if (enh !== null) out.add(enh);
+  }
+  if (imageFile && PORTRAIT_FILE.test(imageFile))
+    out.add(`${SPECIES_DIR}/${imageFile}`);
+  return [...out];
+}
+
 // --- Portrait framing (issue #185) ------------------------------------------
 
 /** `object-position` for a portrait inside a FIXED box (grid tiles at 4:3,

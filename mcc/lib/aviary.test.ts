@@ -20,6 +20,7 @@ import {
   dayGroups,
   dayStart,
   detectionFromRow,
+  doomedFiles,
   hourBuckets,
   hourStart,
   liferNumber,
@@ -265,6 +266,61 @@ describe("portraitUrl", () => {
     expect(portraitUrl("Cardinalis cardinalis")).toBe(
       "/aviary/portrait/Cardinalis%20cardinalis",
     );
+  });
+});
+
+describe("doomedFiles", () => {
+  it("collects sighting clips with their -enh siblings", () => {
+    expect(
+      doomedFiles(["amcrest/1000-Wood_Duck.wav", "rover/2000-Wood_Duck.wav"], null),
+    ).toEqual([
+      "amcrest/1000-Wood_Duck.wav",
+      "amcrest/1000-Wood_Duck-enh.wav",
+      "rover/2000-Wood_Duck.wav",
+      "rover/2000-Wood_Duck-enh.wav",
+    ]);
+  });
+  it("dedupes first_clip against the sighting row that made it", () => {
+    // The lifer's opening sighting and life_list.first_clip name the same
+    // file -- the caller appends first_clip to the row clips, and the set
+    // must not doom it twice.
+    expect(
+      doomedFiles(
+        ["amcrest/1000-Wood_Duck.wav", "amcrest/1000-Wood_Duck.wav"],
+        null,
+      ),
+    ).toEqual(["amcrest/1000-Wood_Duck.wav", "amcrest/1000-Wood_Duck-enh.wav"]);
+  });
+  it("skips null clips (pre-clip-era rows) quietly", () => {
+    expect(doomedFiles([null, undefined, "amcrest/1000-Blue_Jay.wav"], null))
+      .toEqual(["amcrest/1000-Blue_Jay.wav", "amcrest/1000-Blue_Jay-enh.wav"]);
+    expect(doomedFiles([], null)).toEqual([]);
+  });
+  it("re-runs the clips route's guard: a hostile row skips, never escapes", () => {
+    expect(
+      doomedFiles(
+        ["../../../etc/passwd", "a/b/c.wav", "amcrest/a.b.wav", "amcrest/x.mp3"],
+        null,
+      ),
+    ).toEqual([]);
+  });
+  it("does not name an -enh-enh for a row already holding a sibling", () => {
+    // Sightings never store the sibling, but a hand-edited row is a row:
+    // enhancedRelPath's no-double-enhance rule carries over unchanged.
+    expect(doomedFiles(["amcrest/1000-Blue_Jay-enh.wav"], null)).toEqual([
+      "amcrest/1000-Blue_Jay-enh.wav",
+    ]);
+  });
+  it("adds the portrait on the species/ shelf", () => {
+    expect(doomedFiles([], "Aix_sparsa.jpg")).toEqual(["species/Aix_sparsa.jpg"]);
+  });
+  it("refuses a portrait filename that could step off the shelf", () => {
+    expect(doomedFiles([], "../evil.jpg")).toEqual([]);
+    expect(doomedFiles([], "x/y.jpg")).toEqual([]);
+    expect(doomedFiles([], "a.b.jpg")).toEqual([]);
+    expect(doomedFiles([], "portrait.png")).toEqual([]);
+    expect(doomedFiles([], null)).toEqual([]);
+    expect(doomedFiles([], "")).toEqual([]);
   });
 });
 
