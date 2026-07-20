@@ -26,17 +26,31 @@ export function countVisits(ts: number[], gapS = VISIT_GAP_S): number {
   return visits;
 }
 
-export type Tally = { visits: number; today: number };
+export type Tally = { visits: number; today: number; week: number };
+
+/** The standings' trailing week (issue #220): the 7 local days ending today,
+ * derived from the client's own midnight rather than a second timezone
+ * param. Subtracting fixed days from a LOCAL midnight is the arithmetic the
+ * chart code refuses to do -- across a DST change the boundary lands an hour
+ * off the client's actual midnight. Accepted here, stated plainly: this
+ * feeds a leaderboard, the skew touches one boundary hour two nights a year,
+ * and the alternative is new timezone plumbing for a rank. The chart's
+ * bucketing rules are untouched. */
+export function weekWindowStart(todayStart: number): number {
+  return todayStart - 6 * 86400;
+}
 
 /** Per-species visit tallies over raw sighting rows. `todayStart` (epoch, or
  * null for "don't count today") buckets a visit by its OPENING detection --
  * a visit that opened at 23:59 and ran past midnight belongs to yesterday,
- * which matches what the listener published (one opening event). */
+ * which matches what the listener published (one opening event). The week
+ * tally (#220) rides the same walk, windowed by weekWindowStart. */
 export function tallyVisits(
   rows: { species_sci: string; ts: number }[],
   todayStart: number | null,
   gapS = VISIT_GAP_S,
 ): Record<string, Tally> {
+  const weekStart = todayStart === null ? null : weekWindowStart(todayStart);
   const bySpecies = new Map<string, number[]>();
   for (const r of rows) {
     const list = bySpecies.get(r.species_sci);
@@ -48,12 +62,14 @@ export function tallyVisits(
     ts.sort((a, b) => a - b);
     let visits = 0;
     let today = 0;
+    let week = 0;
     for (let i = 0; i < ts.length; i++) {
       if (i > 0 && ts[i] - ts[i - 1] <= gapS) continue; // same visit
       visits++;
       if (todayStart !== null && ts[i] >= todayStart) today++;
+      if (weekStart !== null && ts[i] >= weekStart) week++;
     }
-    out[sci] = { visits, today };
+    out[sci] = { visits, today, week };
   }
   return out;
 }
@@ -282,6 +298,7 @@ export type RosterEntry = {
   first_clip: string | null;
   visits: number;
   today: number;
+  week: number;
   // The enrichment pass's columns (#184), optional twice over: a pre-pass
   // earl.db has no species_profile table (the roster route falls back to
   // the bare life list) and an un-enriched species LEFT JOINs to NULLs.
@@ -318,6 +335,7 @@ export function shapeRoster(
       ...r,
       visits: tallies[r.species_sci]?.visits ?? 0,
       today: tallies[r.species_sci]?.today ?? 0,
+      week: tallies[r.species_sci]?.week ?? 0,
     }))
     .sort((a, b) => a.species_common.localeCompare(b.species_common));
 }
@@ -769,6 +787,260 @@ export function dayGroups<T extends { ts: number }>(rows: T[]): DayGroup<T>[] {
  * theoretical loss over the certain hang. */
 export function nextBefore(oldestTs: number, prev: number | null): number {
   return prev !== null && oldestTs >= prev ? prev - 1 : oldestTs;
+}
+
+// --- The field desk (issue #220) ----------------------------------------------
+//
+// Standings, records, and margin-figure shaping for the species profile's
+// bottom half. Two data regimes, deliberately distinct: standings and yard
+// records derive CLIENT-SIDE from payloads the page already holds (roster
+// entries, visit openings) using the viewer-local day rules above, while the
+// margin figures render the pass's stored stats_json VERBATIM -- the same
+// numbers the prose was written from, server-local hours and all, so figure
+// and prose cannot disagree (#186's auditability design paying rent).
+
+export type Standing = {
+  /** Competition ranking: ties share a rank, the next rank skips. */
+  rank: number;
+  of: number;
+  count: number;
+  /** Whether another species shares this exact count (the "tied" phrasing). */
+  tied: boolean;
+  /** The nearest species strictly ahead -- the rival line's target. Null
+   * when leading. Ties among the ahead break alphabetically, determinism
+   * over drama. */
+  leader: { species_common: string; count: number } | null;
+};
+
+/** One species' standing in the yard by any count the roster carries.
+ * Computed at load, never on live events -- ranks reshuffling under the
+ * reader is house rule #1 broken with a scoreboard. */
+export function standingFor<
+  T extends { species_sci: string; species_common: string },
+>(entries: T[], sci: string, count: (e: T) => number): Standing | null {
+  const me = entries.find((e) => e.species_sci === sci);
+  if (!me) return null;
+  const mine = count(me);
+  const ahead = entries.filter((e) => count(e) > mine);
+  let leader: Standing["leader"] = null;
+  if (ahead.length > 0) {
+    const nearest = Math.min(...ahead.map(count));
+    const holder = ahead
+      .filter((e) => count(e) === nearest)
+      .sort((a, b) => a.species_common.localeCompare(b.species_common))[0];
+    leader = { species_common: holder.species_common, count: nearest };
+  }
+  return {
+    rank: 1 + ahead.length,
+    of: entries.length,
+    count: mine,
+    tied: entries.some((e) => e.species_sci !== sci && count(e) === mine),
+    leader,
+  };
+}
+
+/** The rivalry line under a rank: what stands between this bird and the next
+ * rung. `quiet` names the zero-count state ("no visits this week" for the
+ * week tile, never a rank nobody earned). */
+export function rivalLine(s: Standing, quiet: string): string {
+  if (s.count === 0) return quiet;
+  if (s.leader === null)
+    return s.tied ? "tied for the lead" : "leading the yard";
+  const gap = s.leader.count - s.count;
+  return `${gap === 1 ? "one visit" : `${gap} visits`} behind the ${s.leader.species_common}`;
+}
+
+/** "1 in 6 of everything Earl hears" -- the nearest whole ratio of the
+ * yard's total visits to this species'. Null when either side is zero
+ * (nothing honest to say); a species that IS the majority says so instead
+ * of claiming a silly "1 in 1". */
+export function shareOfYard(totalVisits: number, mine: number): string | null {
+  if (mine <= 0 || totalVisits <= 0) return null;
+  const n = Math.round(totalVisits / mine);
+  if (n <= 1) return "most of everything Earl hears";
+  return `1 in ${n} of everything Earl hears`;
+}
+
+export type YardRecords = {
+  busiestDay: { day: number; count: number } | null;
+  /** Consecutive local days heard, ending today -- or yesterday, because an
+   * unfinished day hasn't broken anything yet. 0 when the streak is over. */
+  streak: number;
+  /** The longest stretch without a visit, in whole days -- including the
+   * silence running right now, which for a bird gone a month IS the record. */
+  longestSilenceDays: number;
+  /** Seconds into the local day of the earliest/latest opening ever. */
+  earliest: number | null;
+  latest: number | null;
+};
+
+/** Step one local day back from a local midnight, DST-safe (the re-floor
+ * rule -- a 23/25h day is one day, not an hour's drift). */
+function prevDay(dayTs: number): number {
+  const d = new Date(dayTs * 1000);
+  d.setDate(d.getDate() - 1);
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/** Seconds into the viewer's local day -- `Date` getters, never `ts % 86400`
+ * (which is a UTC claim wearing a local costume). */
+export function secondsIntoDay(ts: number): number {
+  const d = new Date(ts * 1000);
+  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+}
+
+/** The records panel, from one species' visit openings (any order) in the
+ * viewer's local calendar. Empty input is all-nulls-and-zeros -- the
+ * placeholders' state, never NaN. */
+export function yardRecords(visitTs: number[], now: number): YardRecords {
+  if (visitTs.length === 0)
+    return {
+      busiestDay: null,
+      streak: 0,
+      longestSilenceDays: 0,
+      earliest: null,
+      latest: null,
+    };
+  const sorted = [...visitTs].sort((a, b) => a - b);
+
+  const perDay = new Map<number, number>();
+  for (const ts of sorted) {
+    const day = dayStart(ts);
+    perDay.set(day, (perDay.get(day) ?? 0) + 1);
+  }
+  // Busiest day: highest count; ties go to the most RECENT day -- "again
+  // yesterday" is the interesting claim, and determinism either way.
+  let busiestDay: YardRecords["busiestDay"] = null;
+  for (const [day, count] of perDay)
+    if (
+      busiestDay === null ||
+      count > busiestDay.count ||
+      (count === busiestDay.count && day > busiestDay.day)
+    )
+      busiestDay = { day, count };
+
+  // The current streak: walk back from today (or yesterday -- today merely
+  // being unfinished doesn't break a streak) through consecutive heard days.
+  const today = dayStart(now);
+  let cursor = perDay.has(today) ? today : prevDay(today);
+  let streak = 0;
+  while (perDay.has(cursor)) {
+    streak++;
+    cursor = prevDay(cursor);
+  }
+
+  let longestGapS = Math.max(0, now - sorted[sorted.length - 1]);
+  for (let i = 1; i < sorted.length; i++)
+    longestGapS = Math.max(longestGapS, sorted[i] - sorted[i - 1]);
+
+  let earliest: number | null = null;
+  let latest: number | null = null;
+  for (const ts of sorted) {
+    const s = secondsIntoDay(ts);
+    if (earliest === null || s < earliest) earliest = s;
+    if (latest === null || s > latest) latest = s;
+  }
+
+  return {
+    busiestDay,
+    streak,
+    longestSilenceDays: Math.floor(longestGapS / 86400),
+    earliest,
+    latest,
+  };
+}
+
+/** Lifer number: where this species falls in first-heard order. Ties (a
+ * hand-edited store) break by scientific name -- a number, deterministically,
+ * never two birds both claiming № 12. */
+export function liferNumber(
+  entries: { species_sci: string; first_ts: number }[],
+  sci: string,
+): { n: number; of: number } | null {
+  const order = [...entries].sort(
+    (a, b) => a.first_ts - b.first_ts || a.species_sci.localeCompare(b.species_sci),
+  );
+  const i = order.findIndex((e) => e.species_sci === sci);
+  return i === -1 ? null : { n: i + 1, of: order.length };
+}
+
+/** The slice of stats_json the margin figures read. Everything optional:
+ * the stats are whatever the pass stored, and a missing piece renders a
+ * reserved placeholder, never a crash. */
+export type AnalysisStats = {
+  total_visits?: number;
+  hours?: number[] | null;
+  peak_window?: {
+    start_hour: number;
+    end_hour: number;
+  } | null;
+  weather?: {
+    visits_matched?: number;
+    enough?: boolean;
+    conditions?: StatsFinding[] | null;
+    temperature?: StatsFinding[] | null;
+  } | null;
+};
+
+export type StatsFinding = {
+  bucket: string;
+  effect: number | null;
+  thin: boolean;
+};
+
+export type RhythmCell = { frac: number; peak: boolean };
+
+/** stats_json's 24 hour counts -> bar fractions for the rhythm strip, peak
+ * window flagged (wrapping midnight the way peak_window does -- an owl's
+ * peak is one stretch, not two). SERVER-local hours by design: these must
+ * match the prose beside them, not the chart below (see the section note).
+ * Null when the stats carry no usable histogram; all-zero hours are honest
+ * flat cells, not NaN. */
+export function rhythmStrip(stats: AnalysisStats | null): RhythmCell[] | null {
+  const hours = stats?.hours;
+  if (!Array.isArray(hours) || hours.length !== 24) return null;
+  const max = Math.max(...hours);
+  const peak = stats?.peak_window ?? null;
+  const inPeak = (h: number): boolean => {
+    if (!peak) return false;
+    const { start_hour: a, end_hour: b } = peak;
+    return a < b ? h >= a && h < b : h >= a || h < b;
+  };
+  return hours.map((count, h) => ({
+    frac: max > 0 ? count / max : 0,
+    peak: inPeak(h),
+  }));
+}
+
+export type StatChip = { label: string; pct: number; thin: boolean };
+
+/** stats_json's weather findings -> the weather page's margin chips.
+ * Rendered only when the pass itself judged the sample sufficient
+ * (`weather.enough` -- the prose hedges below that line, and a confident
+ * chip over hedged prose would be the figure contradicting the writing).
+ * Skips the unknown bucket, null effects, and about-average findings
+ * (|effect| < 10%, the prose's own threshold); strongest first, capped --
+ * a margin is a margin. Thin findings KEEP their flag and render hedged,
+ * the show-with-hedging rule in pixels. */
+export function weatherChips(stats: AnalysisStats | null, cap = 4): StatChip[] {
+  const w = stats?.weather;
+  if (!w?.enough) return [];
+  const findings = [...(w.conditions ?? []), ...(w.temperature ?? [])];
+  return findings
+    .filter(
+      (f): f is StatsFinding & { effect: number } =>
+        f.bucket !== "unknown" &&
+        typeof f.effect === "number" &&
+        Math.abs(Math.round(f.effect * 100)) >= 10,
+    )
+    .map((f) => ({
+      label: f.bucket,
+      pct: Math.round(f.effect * 100),
+      thin: f.thin,
+    }))
+    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct) || a.label.localeCompare(b.label))
+    .slice(0, cap);
 }
 
 /** A date input's "yyyy-mm-dd" -> the last second of that LOCAL day: the

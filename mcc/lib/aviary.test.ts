@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
+  AnalysisStats,
   DETAIL_SPAN_S,
   VISITS_SPAN_S,
   VISIT_GAP_S,
@@ -19,6 +20,7 @@ import {
   detectionFromRow,
   hourBuckets,
   hourStart,
+  liferNumber,
   nearestBar,
   nextBefore,
   parseBefore,
@@ -27,16 +29,24 @@ import {
   parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
+  rhythmStrip,
+  rivalLine,
   rosterOrder,
+  secondsIntoDay,
   shapeRoster,
+  shareOfYard,
   smoothPath,
   smoothSegments,
   speciesImageName,
+  standingFor,
   tallyVisits,
   todayVisitors,
   visitHourTicks,
   visitTicks,
   visitsCeil,
+  weatherChips,
+  weekWindowStart,
+  yardRecords,
 } from "./aviary";
 
 const bird = (over: Partial<BirdEvent> = {}): BirdEvent => ({
@@ -83,8 +93,8 @@ describe("tallyVisits", () => {
       { species_sci: "A", ts: 400 }, // new A visit
     ];
     expect(tallyVisits(rows, null)).toEqual({
-      A: { visits: 2, today: 0 },
-      B: { visits: 1, today: 0 },
+      A: { visits: 2, today: 0, week: 0 },
+      B: { visits: 1, today: 0, week: 0 },
     });
   });
   it("buckets today by the visit's OPENING detection", () => {
@@ -95,12 +105,37 @@ describe("tallyVisits", () => {
       { species_sci: "A", ts: 2000 }, // today's visit
     ];
     expect(tallyVisits(rows, midnight)).toEqual({
-      A: { visits: 2, today: 1 },
+      A: { visits: 2, today: 1, week: 2 },
     });
   });
   it("counts no today buckets when todayStart is null", () => {
     expect(tallyVisits([{ species_sci: "A", ts: 5 }], null)).toEqual({
-      A: { visits: 1, today: 0 },
+      A: { visits: 1, today: 0, week: 0 },
+    });
+  });
+  it("windows the week tally to 7 local days back from today (#220)", () => {
+    const midnight = 100 * 86400;
+    const weekStart = midnight - 6 * 86400;
+    const rows = [
+      { species_sci: "A", ts: weekStart }, // the boundary itself: inclusive
+      { species_sci: "A", ts: weekStart - 100 }, // its own visit, outside
+      { species_sci: "A", ts: midnight + 100 }, // today counts twice over
+    ];
+    expect(tallyVisits(rows, midnight)).toEqual({
+      A: { visits: 3, today: 1, week: 2 },
+    });
+  });
+  it("attributes a boundary-straddling visit by its OPENING (#220)", () => {
+    // Opens one second before the window, runs into it: last week's visit,
+    // the same opening-attribution rule `today` has always used.
+    const midnight = 100 * 86400;
+    const weekStart = midnight - 6 * 86400;
+    const rows = [
+      { species_sci: "A", ts: weekStart - 1 },
+      { species_sci: "A", ts: weekStart + 30 },
+    ];
+    expect(tallyVisits(rows, midnight)).toEqual({
+      A: { visits: 1, today: 0, week: 0 },
     });
   });
 });
@@ -329,14 +364,17 @@ const entry = (
   common: string,
   visits: number,
   today = 0,
+  week = 0,
+  first_ts = 0,
 ) => ({
   species_sci: sci,
   species_common: common,
-  first_ts: 0,
+  first_ts,
   first_source: "amcrest",
   first_clip: null,
   visits,
   today,
+  week,
 });
 
 describe("rosterOrder", () => {
@@ -913,5 +951,280 @@ describe("dayAnchor", () => {
     expect(dayAnchor("2026-2-30")).toBeNull(); // wrong shape
     expect(dayAnchor("2026-02-30")).toBeNull(); // right shape, not a date
     expect(dayAnchor("2026-13-01")).toBeNull();
+  });
+});
+
+// --- The field desk (issue #220) ----------------------------------------------
+
+/** A local epoch at an hour of the named calendar day (1-indexed month --
+ * unlike the chart section's `noon` above, which speaks Date's 0-indexed
+ * one), so day-math tests read the same in any timezone. */
+const at = (year: number, month: number, day: number, hour = 12) =>
+  Math.floor(new Date(year, month - 1, day, hour, 0, 0).getTime() / 1000);
+
+describe("standingFor", () => {
+  const yard = [
+    entry("jay", "Blue Jay", 40, 0, 9),
+    entry("robin", "American Robin", 25, 0, 7),
+    entry("finch", "American Goldfinch", 25, 0, 7),
+    entry("wren", "Carolina Wren", 10, 0, 0),
+  ];
+  it("ranks by the given count, competition style", () => {
+    expect(standingFor(yard, "jay", (e) => e.visits)).toMatchObject({
+      rank: 1,
+      of: 4,
+      count: 40,
+      tied: false,
+      leader: null,
+    });
+    expect(standingFor(yard, "wren", (e) => e.visits)).toMatchObject({
+      rank: 4,
+      count: 10,
+    });
+  });
+  it("shares a rank on ties and skips the next", () => {
+    const robin = standingFor(yard, "robin", (e) => e.visits);
+    const finch = standingFor(yard, "finch", (e) => e.visits);
+    expect(robin?.rank).toBe(2);
+    expect(finch?.rank).toBe(2);
+    expect(robin?.tied).toBe(true);
+    // The species below the tie is 4th -- 3rd was consumed by the pair.
+    expect(standingFor(yard, "wren", (e) => e.visits)?.rank).toBe(4);
+  });
+  it("names the NEAREST species strictly ahead as the rival", () => {
+    expect(standingFor(yard, "wren", (e) => e.visits)?.leader).toEqual({
+      species_common: "American Goldfinch", // alphabetical among the tied 25s
+      count: 25,
+    });
+  });
+  it("returns null for a species not in the roster", () => {
+    expect(standingFor(yard, "ghost", (e) => e.visits)).toBeNull();
+  });
+});
+
+describe("rivalLine", () => {
+  const yard = [
+    entry("jay", "Blue Jay", 40),
+    entry("finch", "American Goldfinch", 38),
+    entry("wren", "Carolina Wren", 0),
+  ];
+  const s = (sci: string) => standingFor(yard, sci, (e) => e.visits)!;
+  it("counts the gap to the next rung", () => {
+    expect(rivalLine(s("finch"), "quiet")).toBe("2 visits behind the Blue Jay");
+  });
+  it("says so at the top", () => {
+    expect(rivalLine(s("jay"), "quiet")).toBe("leading the yard");
+  });
+  it("phrases a one-visit gap in words", () => {
+    const close = [entry("a", "A Bird", 5), entry("b", "B Bird", 4)];
+    expect(rivalLine(standingFor(close, "b", (e) => e.visits)!, "quiet")).toBe(
+      "one visit behind the A Bird",
+    );
+  });
+  it("calls a shared lead a tie", () => {
+    const tied = [entry("a", "A Bird", 5), entry("b", "B Bird", 5)];
+    expect(rivalLine(standingFor(tied, "a", (e) => e.visits)!, "quiet")).toBe(
+      "tied for the lead",
+    );
+  });
+  it("hands zero counts the caller's quiet phrase, never a rank", () => {
+    expect(rivalLine(s("wren"), "no visits this week")).toBe(
+      "no visits this week",
+    );
+  });
+});
+
+describe("shareOfYard", () => {
+  it("rounds to the nearest whole ratio", () => {
+    expect(shareOfYard(300, 50)).toBe("1 in 6 of everything Earl hears");
+    expect(shareOfYard(100, 32)).toBe("1 in 3 of everything Earl hears");
+  });
+  it("says nothing over zeros", () => {
+    expect(shareOfYard(0, 0)).toBeNull();
+    expect(shareOfYard(100, 0)).toBeNull();
+  });
+  it("calls a majority a majority, not '1 in 1'", () => {
+    expect(shareOfYard(100, 80)).toBe("most of everything Earl hears");
+  });
+});
+
+describe("yardRecords", () => {
+  it("is all nulls and zeros on an empty record -- the placeholder state", () => {
+    expect(yardRecords([], at(2026, 7, 20))).toEqual({
+      busiestDay: null,
+      streak: 0,
+      longestSilenceDays: 0,
+      earliest: null,
+      latest: null,
+    });
+  });
+  it("finds the busiest local day, ties to the most recent", () => {
+    const r = yardRecords(
+      [
+        at(2026, 7, 18, 7),
+        at(2026, 7, 18, 9),
+        at(2026, 7, 19, 7),
+        at(2026, 7, 19, 9),
+      ],
+      at(2026, 7, 20),
+    );
+    expect(r.busiestDay).toEqual({ day: dayStart(at(2026, 7, 19)), count: 2 });
+  });
+  it("streak ends today or survives an unfinished today", () => {
+    const now = at(2026, 7, 20);
+    const heardToday = [at(2026, 7, 18, 7), at(2026, 7, 19, 7), at(2026, 7, 20, 7)];
+    expect(yardRecords(heardToday, now).streak).toBe(3);
+    // Not heard *yet* today: the streak through yesterday still stands.
+    const throughYesterday = [at(2026, 7, 18, 7), at(2026, 7, 19, 7)];
+    expect(yardRecords(throughYesterday, now).streak).toBe(2);
+    // A day's gap before yesterday ends it.
+    const broken = [at(2026, 7, 16, 7), at(2026, 7, 19, 7)];
+    expect(yardRecords(broken, now).streak).toBe(1);
+    // Last heard before yesterday: no current streak at all.
+    const over = [at(2026, 7, 17, 7)];
+    expect(yardRecords(over, now).streak).toBe(0);
+  });
+  it("counts the longest silence in whole days, the ongoing one included", () => {
+    const now = at(2026, 7, 20);
+    const gapInside = [at(2026, 7, 1, 7), at(2026, 7, 11, 7), at(2026, 7, 20, 7)];
+    expect(yardRecords(gapInside, now).longestSilenceDays).toBe(10);
+    // A bird gone twelve days: the silence running NOW is the record.
+    const goneQuiet = [at(2026, 7, 1, 7), at(2026, 7, 8, 12)];
+    expect(yardRecords(goneQuiet, now).longestSilenceDays).toBe(12);
+    // Same-day visits: under a day reads as zero whole days.
+    const busy = [at(2026, 7, 20, 7), at(2026, 7, 20, 9)];
+    expect(yardRecords(busy, at(2026, 7, 20, 10)).longestSilenceDays).toBe(0);
+  });
+  it("takes earliest and latest as local time-of-day across the record", () => {
+    const r = yardRecords(
+      [at(2026, 7, 18, 5) + 41 * 60, at(2026, 7, 19, 20)],
+      at(2026, 7, 20),
+    );
+    expect(r.earliest).toBe(5 * 3600 + 41 * 60);
+    expect(r.latest).toBe(20 * 3600);
+  });
+});
+
+describe("secondsIntoDay", () => {
+  it("reads the viewer's local clock, not UTC arithmetic", () => {
+    expect(secondsIntoDay(at(2026, 7, 18, 5) + 41 * 60)).toBe(
+      5 * 3600 + 41 * 60,
+    );
+    expect(secondsIntoDay(dayStart(at(2026, 7, 18)))).toBe(0);
+  });
+});
+
+describe("liferNumber", () => {
+  const yard = [
+    entry("wren", "Carolina Wren", 1, 0, 0, 300),
+    entry("jay", "Blue Jay", 1, 0, 0, 100),
+    entry("robin", "American Robin", 1, 0, 0, 200),
+  ];
+  it("numbers by first-heard order", () => {
+    expect(liferNumber(yard, "jay")).toEqual({ n: 1, of: 3 });
+    expect(liferNumber(yard, "wren")).toEqual({ n: 3, of: 3 });
+  });
+  it("breaks a first_ts tie by scientific name, one number each", () => {
+    const tied = [
+      entry("b sci", "B Bird", 1, 0, 0, 100),
+      entry("a sci", "A Bird", 1, 0, 0, 100),
+    ];
+    expect(liferNumber(tied, "a sci")).toEqual({ n: 1, of: 2 });
+    expect(liferNumber(tied, "b sci")).toEqual({ n: 2, of: 2 });
+  });
+  it("returns null off the roster", () => {
+    expect(liferNumber(yard, "ghost")).toBeNull();
+  });
+});
+
+describe("rhythmStrip", () => {
+  it("normalizes the stored histogram to the busiest hour", () => {
+    const hours = Array.from({ length: 24 }, () => 0);
+    hours[7] = 20;
+    hours[8] = 10;
+    const cells = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 7, end_hour: 10 },
+    })!;
+    expect(cells[7]).toEqual({ frac: 1, peak: true });
+    expect(cells[8]).toEqual({ frac: 0.5, peak: true });
+    expect(cells[12]).toEqual({ frac: 0, peak: false });
+    expect(cells[6].peak).toBe(false);
+  });
+  it("wraps a midnight-spanning peak -- an owl's peak is one stretch", () => {
+    const hours = Array.from({ length: 24 }, () => 1);
+    const cells = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 23, end_hour: 2 },
+    })!;
+    expect(cells[23].peak).toBe(true);
+    expect(cells[0].peak).toBe(true);
+    expect(cells[1].peak).toBe(true);
+    expect(cells[2].peak).toBe(false);
+  });
+  it("keeps all-zero hours honest flat cells, never NaN", () => {
+    const cells = rhythmStrip({ hours: Array.from({ length: 24 }, () => 0) })!;
+    expect(cells.every((c) => c.frac === 0)).toBe(true);
+  });
+  it("returns null without a usable histogram -- the reserved placeholder", () => {
+    expect(rhythmStrip(null)).toBeNull();
+    expect(rhythmStrip({})).toBeNull();
+    expect(rhythmStrip({ hours: [1, 2, 3] })).toBeNull();
+  });
+});
+
+describe("weatherChips", () => {
+  const stats = (over: Partial<NonNullable<AnalysisStats["weather"]>> = {}) => ({
+    weather: {
+      enough: true,
+      conditions: [
+        { bucket: "clear", effect: 0.37, thin: false },
+        { bucket: "cloudy", effect: -0.22, thin: false },
+        { bucket: "unknown", effect: 0.9, thin: false },
+        { bucket: "rain", effect: null, thin: true },
+      ],
+      temperature: [
+        { bucket: "warm", effect: 0.18, thin: true },
+        { bucket: "mild", effect: 0.04, thin: false }, // about average
+      ],
+      ...over,
+    },
+  });
+  it("keeps real findings, strongest first, thin flags intact", () => {
+    expect(weatherChips(stats())).toEqual([
+      { label: "clear", pct: 37, thin: false },
+      { label: "cloudy", pct: -22, thin: false },
+      { label: "warm", pct: 18, thin: true },
+    ]);
+  });
+  it("skips the unknown bucket, null effects, and about-average findings", () => {
+    const labels = weatherChips(stats()).map((c) => c.label);
+    expect(labels).not.toContain("unknown");
+    expect(labels).not.toContain("rain");
+    expect(labels).not.toContain("mild");
+  });
+  it("renders nothing when the pass itself hedged the whole sample", () => {
+    expect(weatherChips(stats({ enough: false }))).toEqual([]);
+    expect(weatherChips(null)).toEqual([]);
+  });
+  it("caps the margin -- a margin is a margin", () => {
+    const many = {
+      weather: {
+        enough: true,
+        conditions: Array.from({ length: 8 }, (_, i) => ({
+          bucket: `c${i}`,
+          effect: 0.5 + i / 100,
+          thin: false,
+        })),
+        temperature: [],
+      },
+    };
+    expect(weatherChips(many)).toHaveLength(4);
+  });
+});
+
+describe("weekWindowStart", () => {
+  it("is six days before the client's midnight -- seven local days inclusive", () => {
+    expect(weekWindowStart(700 * 86400)).toBe(694 * 86400);
   });
 });
