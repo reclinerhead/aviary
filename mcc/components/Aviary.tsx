@@ -1685,15 +1685,15 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           </div>
         </div>
       )}
-      {/* Full-width under both columns, the floor #192's layout cleared:
-          the chart (#185), then the field desk (#220) -- standings first,
-          then the journal spread the standings set up. Only for a bird
-          actually in the record -- an unknown species has no rhythm to draw
-          and nothing to say. */}
+      {/* Full-width under both columns, the floor #192's layout cleared.
+          Order per #222: the standings band leads (the at-a-glance card),
+          then the chart it summarizes, then the journal spread. Only for a
+          bird actually in the record -- an unknown species has no rhythm to
+          draw and nothing to say. */}
       {entry && (
         <>
-          <VisitsChart sci={sci} />
           <StandingsBand roster={roster} sci={sci} openings={openings} now={now} />
+          <VisitsChart sci={sci} />
           <FieldNotes analysis={analysis} />
         </>
       )}
