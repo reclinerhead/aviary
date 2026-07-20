@@ -965,6 +965,30 @@ export function liferNumber(
   return i === -1 ? null : { n: i + 1, of: order.length };
 }
 
+/** New Arrivals' windows (#224): the last two days by default, the last
+ * week on the toggle. Plain trailing spans off a mount-time `now` -- the
+ * cards never silently drop out mid-session as the clock advances; the
+ * window moves on reload or toggle (the midnight-state rule). */
+export const ARRIVALS_48H_S = 48 * 3600;
+export const ARRIVALS_WEEK_S = 7 * 86400;
+
+/** The New Arrivals cut (#224): species first heard at or after `sinceTs`,
+ * newest first (ties by name, determinism over drama). Pure filter over the
+ * roster the page already holds -- a lifer is an event the moment its
+ * first_ts says so, and nothing else needs asking. */
+export function newArrivals(
+  entries: RosterEntry[],
+  sinceTs: number,
+): RosterEntry[] {
+  return entries
+    .filter((e) => e.first_ts >= sinceTs)
+    .sort(
+      (a, b) =>
+        b.first_ts - a.first_ts ||
+        a.species_common.localeCompare(b.species_common),
+    );
+}
+
 /** The slice of stats_json the margin figures read. Everything optional:
  * the stats are whatever the pass stored, and a missing piece renders a
  * reserved placeholder, never a crash. */

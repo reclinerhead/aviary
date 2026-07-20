@@ -37,6 +37,8 @@ import {
   parseAudioEvent,
 } from "@/lib/bus";
 import {
+  ARRIVALS_48H_S,
+  ARRIVALS_WEEK_S,
   AnalysisStats,
   RosterEntry,
   SortDir,
@@ -50,6 +52,7 @@ import {
   dayGroups,
   dayStart,
   liferNumber,
+  newArrivals,
   nextBefore,
   parseSpeciesFilter,
   portraitAspect,
@@ -423,6 +426,146 @@ function EnhanceToggle({ player }: { player: ClipPlayer }) {
   );
 }
 
+/** New Arrivals' window switch (#224): the EnhanceToggle nameplate, one
+ * knob over -- two states, both always rendered at a fixed width. */
+function ArrivalsToggle({
+  windowS,
+  onChange,
+}: {
+  windowS: number;
+  onChange: (s: number) => void;
+}) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="stamp text-[9px] text-inkfaint">window</span>
+      <span className="flex overflow-hidden rounded-sm border border-line">
+        {(
+          [
+            ["48h", ARRIVALS_48H_S],
+            ["7d", ARRIVALS_WEEK_S],
+          ] as const
+        ).map(([label, s]) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => onChange(s)}
+            aria-pressed={windowS === s}
+            title={
+              s === ARRIVALS_48H_S
+                ? "species first heard in the last 48 hours"
+                : "species first heard in the last week"
+            }
+            className={`stamp w-8 py-0.5 text-[9px] transition-colors ${
+              windowS === s
+                ? "bg-panel2 text-squirrel"
+                : "text-inkfaint hover:text-inkdim"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/** New Arrivals (#224): the yard's newest species, featured -- a lifer is
+ * the most exciting thing Earl ever reports, and it deserves more than a
+ * ticker row. Each arrival is a card: the portrait at full rail width (the
+ * 4:3 top-crop tile idiom -- the head stays in frame; a lifer the
+ * enrichment loop hasn't dressed yet wears the pending glyph in the same
+ * reserved frame), names, the first-heard moment, its lifer number, and a
+ * play slot for the first-contact recording. Derives from the roster the
+ * grid already maintains -- zero new fetches -- so a live lifer surfaces
+ * here the moment the bus announces it (the ticker-prepend precedent:
+ * appearing IS this panel's purpose; existing cards never reorder). The
+ * empty state holds the panel's footprint, which is most days -- the quiet
+ * frame is what makes a card landing feel like an event. */
+function NewArrivals({
+  roster,
+  now,
+  midnight,
+  player,
+}: {
+  roster: Record<string, RosterEntry>;
+  now: number | null;
+  midnight: number | null;
+  player: ClipPlayer;
+}) {
+  const [windowS, setWindowS] = useState<number>(ARRIVALS_48H_S);
+  const entries = Object.values(roster);
+  const arrivals = now === null ? [] : newArrivals(entries, now - windowS);
+  return (
+    <section className="panel rounded-sm border border-line bg-panel">
+      <PanelLabel
+        title="New Arrivals"
+        right={<ArrivalsToggle windowS={windowS} onChange={setWindowS} />}
+      />
+      <div className="px-4 pb-4">
+        {arrivals.length === 0 ? (
+          <div className="flex min-h-[88px] items-center justify-center rounded-sm border border-line bg-panel2">
+            <span className="stamp px-4 text-center text-xs text-inkfaint">
+              no new species in the last{" "}
+              {windowS === ARRIVALS_48H_S ? "48 hours" : "week"}
+            </span>
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {arrivals.map((e) => {
+              const lifer = liferNumber(entries, e.species_sci);
+              return (
+                <li
+                  key={e.species_sci}
+                  className="overflow-hidden rounded-sm border border-line bg-panel2"
+                >
+                  <Link
+                    href={`/aviary/${encodeURIComponent(e.species_sci)}`}
+                    className="block"
+                  >
+                    <Portrait
+                      sci={e.species_sci}
+                      has={Boolean(e.image_file)}
+                      alt={e.species_common}
+                      glyphClass="h-12 w-12"
+                      w={e.image_w}
+                      h={e.image_h}
+                      boxAspect={4 / 3}
+                      style={{ aspectRatio: "4 / 3" }}
+                      className="w-full border-b border-line bg-panel"
+                    />
+                  </Link>
+                  <div className="flex items-center gap-2.5 px-3 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <Link
+                        href={`/aviary/${encodeURIComponent(e.species_sci)}`}
+                        className="block truncate text-base text-ink transition-colors hover:text-squirrel"
+                        style={{ fontFamily: "var(--font-display)" }}
+                      >
+                        {e.species_common}
+                      </Link>
+                      <p className="truncate text-[11px] italic text-inkdim">
+                        {e.species_sci}
+                      </p>
+                      <div className="stamp mt-0.5 flex flex-wrap gap-x-2 text-[9px] text-inkfaint">
+                        <span>first heard {stampOf(e.first_ts, midnight)}</span>
+                        <span>via {e.first_source}</span>
+                        {lifer && <span>lifer No. {lifer.n}</span>}
+                      </div>
+                    </div>
+                    {/* The first-contact recording, right where the
+                        excitement is (#220's affordance, promoted). */}
+                    <PlaySlot clip={e.first_clip} player={player} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /** The reserved player slot every event row carries (fixed w-12 x h-8, the
  * no-layout-shift rule): a play/stop control when the event has a clip, the
  * quiet "faded" stamp once its file is known pruned, and a dim placeholder
@@ -583,6 +726,9 @@ export function Aviary() {
   const [busUp, setBusUp] = useState(false);
   const [earlStatus, setEarlStatus] = useState<string | null>(null);
   const [midnight, setMidnight] = useState<number | null>(null);
+  // New Arrivals' clock (#224): fixed at mount like the midnight boundary,
+  // so a card never silently ages out of the window mid-session.
+  const [nowTs, setNowTs] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   // Hydrated rows arrive already-read: they get no filed-flash on mount
   // (the broadcast view's openedWith lesson); only live arrivals flare.
@@ -599,6 +745,7 @@ export function Aviary() {
     const mid = Math.floor(d.getTime() / 1000);
     midnightRef.current = mid;
     setMidnight(mid);
+    setNowTs(Math.floor(Date.now() / 1000));
 
     fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { species: [] }))
@@ -935,6 +1082,16 @@ export function Aviary() {
               </div>
             </div>
           </section>
+
+          {/* The newest species, featured (#224) -- between the ticker that
+              mentions them once and the visitors rail that treats them like
+              regulars. */}
+          <NewArrivals
+            roster={roster}
+            now={nowTs}
+            midnight={midnight}
+            player={player}
+          />
 
           <section className="panel rounded-sm border border-line bg-panel">
             <PanelLabel title="Today's Visitors" />
