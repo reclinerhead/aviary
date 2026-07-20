@@ -53,13 +53,19 @@
 #   MERLE_EARL_DB       the bird record (default "earl.db")
 #   MERLE_WEATHER_DB    the weather archive (default "weather.db") -- read
 #                       only; unset/missing simply means no weather block
-#   MERLE_OLLAMA        Ollama "host" or "host:port"; UNSET = no generation
-#                       (the narrator's kill switch, same semantics)
-#   MERLE_OLLAMA_MODEL  model name (default: the narrator's)
+#   MERLE_OLLAMA        Ollama "host[:port]" -- or, since #217, a comma-
+#                       separated preference-ordered list of them; this CLI
+#                       uses the first entry, the enrichment loop probes them
+#                       in order. UNSET = no generation (the narrator's kill
+#                       switch, same semantics)
+#   MERLE_OLLAMA_MODEL  model name (default: the narrator's) -- CLI only;
+#                       the loop picks by MODEL_RANK from what a host holds
+#   MERLE_MODEL_RANK    override MODEL_RANK (comma-separated, best first)
 # =============================================================================
 
 import argparse
 import bisect
+import hashlib
 import json
 import os
 import sqlite3
@@ -88,22 +94,45 @@ MIN_BUCKET_HOURS = 6.0
 # Below this, the weather block says so instead of pretending.
 MIN_VISITS_FOR_WEATHER = 12
 # Regenerate once a species has this many new visits since its last write.
-WATERMARK_STEP = 20
+# Dropped from 20 with issue #217: the fingerprint gate below catches
+# anything this wider net lets through before an LLM call is spent, so the
+# watermark no longer has to be the only thing standing between a rare bird
+# and months of stale notes.
+WATERMARK_STEP = 5
 # Two short paragraphs; the cap is a backstop for a model ignoring the rules.
 NUM_PREDICT = 320
 # Analysis is a long, patient job (one call per species, ~30-90s on CPU), not
 # a live show like the narrator's 30s pacing gate.
 ANALYSIS_TIMEOUT_S = 300
 
+# Bumped BY HAND whenever the prompts or the stats shape change (issue #217).
+# A stored row whose prompt_version differs is due for regeneration on the
+# next tick a model is up -- which is how a prompt edit re-narrates the whole
+# archive with no migration and no manual pass.
+PROMPT_VERSION = 1
+
+# Model preference, best first (issue #217). Two hosts running different
+# models would otherwise thrash -- the basement box narrates everything on a
+# big model, a tick lands on bluejay, and every row "mismatches" back down to
+# gemma3:12b, endlessly. So regeneration only ever triggers UPWARD: a model
+# regenerates a row only when it OUTRANKS the stored one (see outranks()).
+# Unknown models sort last. Override without a deploy via MERLE_MODEL_RANK
+# (comma-separated, best first).
+MODEL_RANK = ("gemma3:27b", "gemma3:12b", "gemma3:4b")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS species_analysis (
-    species_sci      TEXT PRIMARY KEY,
-    rhythm_text      TEXT,
-    weather_text     TEXT,
-    stats_json       TEXT,
-    visits_watermark INTEGER NOT NULL DEFAULT 0,
-    model            TEXT,
-    generated_ts     INTEGER NOT NULL
+    species_sci       TEXT PRIMARY KEY,
+    rhythm_text       TEXT,
+    weather_text      TEXT,
+    stats_json        TEXT,
+    visits_watermark  INTEGER NOT NULL DEFAULT 0,
+    model             TEXT,
+    generated_ts      INTEGER NOT NULL,
+    stats_fingerprint TEXT,
+    prompt_version    INTEGER,
+    host              TEXT,
+    checked_ts        INTEGER
 );
 """
 
@@ -128,8 +157,64 @@ def connect(path):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    # Issue #217's upgrade, the repeatable-pass rule (species_profile's
+    # image_w idiom): a #186-era file lacks the gate columns. Added in place;
+    # fresh files get them from SCHEMA. A row left honestly NULL here is
+    # picked up by the prompt-version arm of the worklist, regenerates once
+    # to fill them, then settles.
+    columns = {r["name"] for r in
+               conn.execute("PRAGMA table_info(species_analysis)")}
+    for col, decl in (("stats_fingerprint", "TEXT"),
+                      ("prompt_version", "INTEGER"),
+                      ("host", "TEXT"),
+                      ("checked_ts", "INTEGER")):
+        if col not in columns:
+            conn.execute(
+                f"ALTER TABLE species_analysis ADD COLUMN {col} {decl}")
     conn.commit()
     return conn
+
+
+def model_rank_list():
+    """MODEL_RANK, overridable via MERLE_MODEL_RANK (comma-separated, best
+    first) so a new basement-box model can be slotted in without a deploy."""
+    raw = os.environ.get("MERLE_MODEL_RANK", "").strip()
+    if not raw:
+        return list(MODEL_RANK)
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def outranks(candidate, stored, rank=None):
+    """True when `candidate` is strictly better-ranked than `stored` -- the
+    only direction a model change may trigger regeneration. Unknown models
+    sort last; two unknowns tie, and a tie never triggers. The consequence
+    that matters: a lower-ranked host can never claw back a row a
+    higher-ranked one wrote, so two hosts holding different models settle
+    instead of thrashing."""
+    if candidate == stored:
+        return False
+    order = model_rank_list() if rank is None else list(rank)
+
+    def idx(model):
+        try:
+            return order.index(model)
+        except ValueError:
+            return len(order)
+
+    return idx(candidate) < idx(stored)
+
+
+def stats_fingerprint(stats, description):
+    """The identity of one species' PROMPT INPUTS (issue #217): the full
+    stats package plus the exact description snippet rhythm_prompt() feeds
+    the model. Identical fingerprint + matching prompt version + a model
+    that doesn't outrank means a regeneration would only rephrase the same
+    facts at temperature 0.7 -- so it doesn't happen. The description rides
+    the hash because it is a real input the stats can't see: the profile
+    pass landing a Wikipedia background later must read as changed inputs."""
+    snippet = description.strip()[:900] if description else ""
+    payload = json.dumps(stats, sort_keys=True) + "\x00" + snippet
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # --- Visit shaping -----------------------------------------------------------
@@ -613,16 +698,43 @@ def weather_prompt(common, stats):
 
 # --- Store --------------------------------------------------------------------
 
-def worklist(conn, step=WATERMARK_STEP):
-    """Species needing an analysis: never written, or grown by `step` visits
-    since the last write. The watermark is a visit COUNT rather than an age --
-    a bird nobody has heard since June has nothing new to say about itself,
-    and regenerating it would just burn a paragraph."""
+def profile_fetch_times(conn):
+    """species_sci -> the profile pass's fetched_ts, or {} on a store where
+    that pass has never run (no table is a normal state, not an error)."""
+    try:
+        return {r["species_sci"]: r["fetched_ts"] for r in conn.execute(
+            "SELECT species_sci, fetched_ts FROM species_profile")}
+    except sqlite3.Error:
+        return {}
+
+
+def worklist(conn, step=WATERMARK_STEP, model=None):
+    """Species needing an analysis. The watermark is a visit COUNT rather
+    than an age -- a bird nobody has heard since June has nothing new to say
+    about itself, and regenerating it would just burn a paragraph.
+
+    This is the CHEAP pre-filter of #217's two-stage gate, so its arms are
+    deliberately over-inclusive -- anything it lets through still has to get
+    past the stats fingerprint in analyze_species() before an LLM call is
+    spent. The arms:
+      (1) never written
+      (2) grown by `step` visits since the last write (the original arm)
+      (3) stored prompt_version differs from PROMPT_VERSION (includes the
+          honest-NULL rows a pre-#217 store carries -- they regenerate once)
+      (4) the model this run would use OUTRANKS the stored one (never the
+          reverse -- see outranks())
+      (5) the profile pass touched this species after the note was last
+          written OR gate-checked -- a description may have landed; the
+          fingerprint decides. checked_ts is what keeps a dimensions-only
+          profile touch from parking the species here forever.
+    """
     rows = conn.execute(
-        "SELECT l.species_sci, l.species_common, a.visits_watermark"
+        "SELECT l.species_sci, l.species_common, a.visits_watermark,"
+        "       a.prompt_version, a.model, a.generated_ts, a.checked_ts"
         " FROM life_list l"
         " LEFT JOIN species_analysis a ON a.species_sci = l.species_sci"
         " ORDER BY l.species_common").fetchall()
+    profile_ts = profile_fetch_times(conn)
     out = []
     for r in rows:
         visits = len(group_visits(
@@ -630,7 +742,13 @@ def worklist(conn, step=WATERMARK_STEP):
                 "SELECT ts FROM sightings WHERE species_sci = ? ORDER BY ts",
                 (r["species_sci"],))]))
         mark = r["visits_watermark"]
-        if mark is None or visits - mark >= step:
+        settled_ts = max(r["generated_ts"] or 0, r["checked_ts"] or 0)
+        due = (mark is None
+               or visits - mark >= step
+               or r["prompt_version"] != PROMPT_VERSION
+               or (model is not None and outranks(model, r["model"]))
+               or profile_ts.get(r["species_sci"], 0) > settled_ts)
+        if due:
             out.append((r["species_sci"], r["species_common"], visits))
     return out
 
@@ -658,12 +776,19 @@ def load_observations(path, since, until):
 
 
 def analyze_species(conn, sci, common, *, ollama, weather_path,
-                    now=None, dry_run=False):
+                    now=None, dry_run=False, force=False, host=None):
     """One species, end to end. Returns a status word:
       'no-visits'  -- nothing on record yet; nothing written
       'stats-only' -- --dry-run, or no LLM configured
+      'current'    -- the fingerprint gate: stats, description, prompt
+                      version and model rank all unchanged, so a generation
+                      would only rephrase the same facts; no LLM call made
       'llm-down'   -- generation failed; any existing row LEFT UNTOUCHED
       'written'    -- both blocks generated and stored
+
+    `force` (--refresh's flag) pushes past the fingerprint gate the same way
+    --refresh already ignores the watermark. `host` is provenance -- which
+    endpoint served the row, useful once two hosts are in play (#217).
     """
     now = now or time.time()
     rows = [r["ts"] for r in conn.execute(
@@ -696,6 +821,29 @@ def analyze_species(conn, sci, common, *, ollama, weather_path,
     except sqlite3.Error:
         description = None
 
+    # The fingerprint gate (issue #217), stage two of the worklist's
+    # two-stage filter and the last thing standing before an LLM call:
+    # identical prompt inputs, same prompt version, and a model that doesn't
+    # outrank the stored one means regeneration would only rephrase. The
+    # skip is recorded (checked_ts) so a species the worklist over-included
+    # settles instead of being re-examined every tick; generated_ts is NOT
+    # touched -- the page's "as of" stamp must never claim freshness that
+    # wasn't earned.
+    fingerprint = stats_fingerprint(stats, description)
+    if not force:
+        row = conn.execute(
+            "SELECT stats_fingerprint, prompt_version, model"
+            " FROM species_analysis WHERE species_sci = ?", (sci,)).fetchone()
+        if (row is not None
+                and row["stats_fingerprint"] == fingerprint
+                and row["prompt_version"] == PROMPT_VERSION
+                and not outranks(ollama.model, row["model"])):
+            conn.execute(
+                "UPDATE species_analysis SET checked_ts = ?"
+                " WHERE species_sci = ?", (int(now), sci))
+            conn.commit()
+            return "current", stats
+
     # The narrator's default ceiling is a live-show pacing number; this is a
     # patient batch job, so it passes its own.
     rhythm = ollama.complete(VOICE, rhythm_prompt(common, description, stats),
@@ -712,10 +860,12 @@ def analyze_species(conn, sci, common, *, ollama, weather_path,
 
     conn.execute(
         "INSERT OR REPLACE INTO species_analysis (species_sci, rhythm_text,"
-        " weather_text, stats_json, visits_watermark, model, generated_ts)"
-        " VALUES (?,?,?,?,?,?,?)",
+        " weather_text, stats_json, visits_watermark, model, generated_ts,"
+        " stats_fingerprint, prompt_version, host)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
         (sci, rhythm.strip(), weather.strip(), json.dumps(stats),
-         len(visits), ollama.model, int(now)))
+         len(visits), ollama.model, int(now),
+         fingerprint, PROMPT_VERSION, host))
     conn.commit()
     return "written", stats
 
@@ -732,14 +882,15 @@ def main():
     path = db_path()
     conn = connect(path)
     ollama = None
+    host = None
     if not args.dry_run:
         addr = ollama_address()
         if addr:
             model = os.environ.get("MERLE_OLLAMA_MODEL", "").strip() \
                 or OLLAMA_DEFAULT_MODEL
             ollama = Ollama(*addr, model)
-            print(f"[analysis] narrating with {model} via "
-                  f"{addr[0]}:{addr[1]}", flush=True)
+            host = f"{addr[0]}:{addr[1]}"
+            print(f"[analysis] narrating with {model} via {host}", flush=True)
         else:
             print("[analysis] MERLE_OLLAMA not set -- stats only", flush=True)
 
@@ -751,7 +902,9 @@ def main():
             todo = [(args.refresh,
                      row["species_common"] if row else args.refresh, 0)]
         else:
-            todo = worklist(conn)
+            # The model rides into the worklist so the outranked-model arm
+            # can fire; None (dry-run / no LLM) simply disables that arm.
+            todo = worklist(conn, model=ollama.model if ollama else None)
         if not todo:
             print("[analysis] nothing to do -- every species is current",
                   flush=True)
@@ -763,7 +916,8 @@ def main():
             try:
                 status, stats = analyze_species(
                     conn, sci, common, ollama=ollama,
-                    weather_path=weather_db_path(), dry_run=args.dry_run)
+                    weather_path=weather_db_path(), dry_run=args.dry_run,
+                    force=bool(args.refresh), host=host)
             except Exception as e:
                 if args.refresh:
                     raise

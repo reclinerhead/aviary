@@ -343,3 +343,46 @@ def test_refresh_overwrites_a_wikipedia_row(conn, tmp_path):
     assert len(rows) == 1               # OR REPLACE, not a second row
     assert rows[0]["description"] == "A better article now."
     assert rows[0]["fetched_ts"] == 2
+
+
+# --- the enrichment loop's retry gate (issue #217) ----------------------------
+
+def test_attempt_due_gates_by_age_never_by_existence():
+    now = 1_000_000
+    # A brand-new lifer has never been attempted: due immediately.
+    assert species_profile.attempt_due(None, now) is True
+    assert species_profile.attempt_due(now - 60, now) is False
+    assert species_profile.attempt_due(
+        now - species_profile.PROFILE_RETRY_S, now) is True
+
+
+def test_record_attempt_upserts_one_row(conn):
+    species_profile.record_attempt(conn, "A sci", 123)
+    species_profile.record_attempt(conn, "A sci", 456)
+    assert species_profile.attempts_map(conn) == {"A sci": 456}
+
+
+def test_worklist_never_consults_attempts(conn):
+    # The do-not-change rule: the retry gate WRAPS the worklist in the loop;
+    # the worklist itself -- and therefore the hand-run CLI -- keeps its
+    # another-look-for-free semantics untouched.
+    life(conn, "A sci", "Robin")
+    species_profile.record_attempt(conn, "A sci", 10**10)   # "just attempted"
+    assert [w[0] for w in species_profile.worklist(conn)] == ["A sci"]
+
+
+def test_connect_adds_the_attempts_table_to_an_existing_file(tmp_path):
+    path = str(tmp_path / "earl.db")
+    # A pre-#217 file: the profile table alone.
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE species_profile (species_sci TEXT PRIMARY KEY,"
+        " description TEXT, image_file TEXT, image_source TEXT,"
+        " image_attribution TEXT, image_w INTEGER, image_h INTEGER,"
+        " fetched_ts INTEGER NOT NULL)")
+    old.commit()
+    old.close()
+    c = species_profile.connect(path)   # same code as a fresh file
+    assert c.execute("SELECT COUNT(*) c FROM profile_attempts"
+                     ).fetchone()["c"] == 0
+    c.close()
