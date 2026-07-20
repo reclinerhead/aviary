@@ -72,6 +72,16 @@ THUMB_PX = 900       # wide enough for the profile page, bounded on disk
 DEFAULT_DB_PATH = "earl.db"
 SPECIES_DIR = "species"
 
+# How long the ENRICHMENT LOOP (issue #217) waits before giving a
+# no-page/failed species another look. The worklist deliberately keeps such
+# a species listed forever ("re-runs get another look for free") -- right
+# for a hand-run pass, but under a 15-minute loop that would be ~100
+# Wikipedia queries a day for a bird with no article. Attempts live in
+# their own table rather than a stub profile row, because "no profile row"
+# is the semantic both the worklist and the roster's LEFT JOIN rely on.
+# The CLI never consults this -- a hand run still gets its look for free.
+PROFILE_RETRY_S = 24 * 3600
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS species_profile (
     species_sci       TEXT PRIMARY KEY,
@@ -82,6 +92,10 @@ CREATE TABLE IF NOT EXISTS species_profile (
     image_w           INTEGER,
     image_h           INTEGER,
     fetched_ts        INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS profile_attempts (
+    species_sci     TEXT PRIMARY KEY,
+    last_attempt_ts INTEGER NOT NULL
 );
 """
 
@@ -260,6 +274,34 @@ def owner_locked(conn, sci):
         "SELECT image_source FROM species_profile WHERE species_sci = ?",
         (sci,)).fetchone()
     return row is not None and row["image_source"] == "owner"
+
+
+# --- The loop's retry gate (issue #217) ---------------------------------------
+#
+# These three exist for listener/enrichment_loop.py, which wraps worklist()
+# with them; worklist() itself is deliberately untouched, and so is the CLI.
+
+def attempt_due(last_ts, now, retry_s=PROFILE_RETRY_S):
+    """Whether a species has earned another Wikipedia look. Never-attempted
+    (a brand-new lifer) is due immediately -- the whole point of the loop."""
+    return last_ts is None or now - last_ts >= retry_s
+
+
+def attempts_map(conn):
+    """species_sci -> last attempt epoch, for filtering a whole worklist in
+    one query instead of one per species."""
+    return {r["species_sci"]: r["last_attempt_ts"] for r in conn.execute(
+        "SELECT species_sci, last_attempt_ts FROM profile_attempts")}
+
+
+def record_attempt(conn, sci, now):
+    """Stamp one attempt, success or failure alike -- a species that gained
+    a row leaves the worklist anyway, so the stamp only ever delays retries
+    of species Wikipedia had nothing (or an error) for."""
+    conn.execute(
+        "INSERT OR REPLACE INTO profile_attempts (species_sci,"
+        " last_attempt_ts) VALUES (?,?)", (sci, int(now)))
+    conn.commit()
 
 
 # --- The wire ----------------------------------------------------------------

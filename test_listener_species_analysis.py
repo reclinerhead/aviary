@@ -12,6 +12,7 @@
 # masquerading as weather, sample gating, and the store's watermark.
 # =============================================================================
 
+import sqlite3
 import time
 
 import pytest
@@ -354,11 +355,13 @@ def test_worklist_is_a_noop_until_the_watermark_is_passed(conn):
     base = at(2026, 7, 1, 7)
     visits = [base + d * 86400 for d in range(10)]
     seed(conn, "A sci", "Robin", visits)
+    # prompt_version rides along since #217 -- a version-less row is due via
+    # its own arm (covered below), and this test is about the watermark.
     conn.execute(
         "INSERT INTO species_analysis (species_sci, rhythm_text,"
-        " weather_text, stats_json, visits_watermark, model, generated_ts)"
-        " VALUES (?,?,?,?,?,?,?)",
-        ("A sci", "t", "w", "{}", 10, "gemma3:12b", 1))
+        " weather_text, stats_json, visits_watermark, model, generated_ts,"
+        " prompt_version) VALUES (?,?,?,?,?,?,?,?)",
+        ("A sci", "t", "w", "{}", 10, "gemma3:12b", 1, sa.PROMPT_VERSION))
     conn.commit()
     assert sa.worklist(conn, step=20) == []          # nothing new to say
 
@@ -438,3 +441,251 @@ def test_a_dead_model_leaves_existing_text_standing(conn):
     row = conn.execute("SELECT * FROM species_analysis").fetchone()
     assert row["rhythm_text"] == "the good prose"    # untouched
     assert row["generated_ts"] == 99
+
+
+# --- the #217 gates: model rank, fingerprint, worklist arms -------------------
+
+def note(conn, sci, *, watermark, version=sa.PROMPT_VERSION,
+         model="gemma3:12b", generated_ts=1000, fingerprint="fp",
+         checked_ts=None):
+    """A stored analysis row with the #217 columns under test's control."""
+    conn.execute(
+        "INSERT OR REPLACE INTO species_analysis (species_sci, rhythm_text,"
+        " weather_text, stats_json, visits_watermark, model, generated_ts,"
+        " stats_fingerprint, prompt_version, host, checked_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (sci, "r", "w", "{}", watermark, model, generated_ts, fingerprint,
+         version, "h:1", checked_ts))
+    conn.commit()
+
+
+def test_model_rank_list_env_override(monkeypatch):
+    monkeypatch.setenv("MERLE_MODEL_RANK", " big , small ")
+    assert sa.model_rank_list() == ["big", "small"]
+    monkeypatch.delenv("MERLE_MODEL_RANK")
+    assert sa.model_rank_list() == list(sa.MODEL_RANK)
+
+
+def test_outranks_only_ever_triggers_upward():
+    rank = ["big", "small"]
+    assert sa.outranks("big", "small", rank) is True
+    # THE thrash case: a lower-ranked host must never claw back a row a
+    # higher-ranked one wrote -- this is what lets two hosts settle.
+    assert sa.outranks("small", "big", rank) is False
+    assert sa.outranks("small", "small", rank) is False   # equal never fires
+    # Unknown models sort last: they never outrank, and anything ranked
+    # outranks them.
+    assert sa.outranks("mystery", "small", rank) is False
+    assert sa.outranks("small", "mystery", rank) is True
+    assert sa.outranks("mystery", "other-mystery", rank) is False
+    # The default order holds without env: 27b sweeps a 12b archive upward.
+    assert sa.outranks("gemma3:27b", "gemma3:12b") is True
+    assert sa.outranks("gemma3:12b", "gemma3:27b") is False
+
+
+def test_stats_fingerprint_is_stable_and_sensitive():
+    base = at(2026, 7, 18, 7)
+    now = at(2026, 7, 19, 12)
+    stats = sa.build_stats([base], [], now)
+    again = sa.build_stats([base], [], now)
+    fp = sa.stats_fingerprint(stats, "A red bird.")
+    assert sa.stats_fingerprint(again, "A red bird.") == fp
+    moved = sa.build_stats([base, base + 86400], [], now)
+    assert sa.stats_fingerprint(moved, "A red bird.") != fp
+
+
+def test_stats_fingerprint_covers_the_description_snippet():
+    stats = sa.build_stats([at(2026, 7, 18, 7)], [], at(2026, 7, 19, 12))
+    none = sa.stats_fingerprint(stats, None)
+    text = sa.stats_fingerprint(stats, "A red bird.")
+    other = sa.stats_fingerprint(stats, "A blue bird.")
+    assert len({none, text, other}) == 3     # None -> text -> edit all differ
+    # Only the first 900 chars ride the prompt (rhythm_prompt's slice), so
+    # only they ride the hash -- a change past the slice is not an input
+    # change and must not trigger a regeneration.
+    long_a = "x" * 900 + "tail A"
+    long_b = "x" * 900 + "tail B"
+    assert (sa.stats_fingerprint(stats, long_a)
+            == sa.stats_fingerprint(stats, long_b))
+
+
+def test_worklist_flags_a_prompt_version_mismatch(conn):
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    note(conn, "A sci", watermark=1, version=sa.PROMPT_VERSION + 1)
+    assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
+    # Including the honest-NULL rows a pre-#217 store carries.
+    note(conn, "A sci", watermark=1, version=None)
+    assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
+
+
+def test_worklist_flags_only_an_outranking_model(conn, monkeypatch):
+    monkeypatch.setenv("MERLE_MODEL_RANK", "big,small")
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    note(conn, "A sci", watermark=1, model="small")
+    assert [w[0] for w in sa.worklist(conn, model="big")] == ["A sci"]
+    # Same model: settled. Lower-ranked host: settled (the no-thrash rule).
+    assert sa.worklist(conn, model="small") == []
+    note(conn, "A sci", watermark=1, model="big")
+    assert sa.worklist(conn, model="small") == []
+    # No model in play (dry-run / no LLM) disables the arm entirely.
+    assert sa.worklist(conn) == []
+
+
+def test_worklist_flags_a_profile_touched_after_the_note(conn):
+    from listener import species_profile
+    conn.executescript(species_profile.SCHEMA)
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    note(conn, "A sci", watermark=1, generated_ts=1000)
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, fetched_ts)"
+        " VALUES (?,?,?)", ("A sci", "A red bird.", 2000))
+    conn.commit()
+    # The profile pass touched this species after the note: due -- the
+    # fingerprint decides whether anything actually changed.
+    assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
+    # A gate-check that found nothing changed settles it (checked_ts) --
+    # without this, a dimensions-only backfill would park the species on
+    # the worklist forever.
+    note(conn, "A sci", watermark=1, generated_ts=1000, checked_ts=3000)
+    assert sa.worklist(conn) == []
+
+
+def test_worklist_leaves_a_settled_species_alone(conn):
+    # The negative case: every arm quiet.
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    note(conn, "A sci", watermark=1)
+    assert sa.worklist(conn, model="gemma3:12b") == []
+
+
+def test_the_gate_skips_generation_when_nothing_changed(conn):
+    base = at(2026, 7, 1, 7)
+    now = at(2026, 7, 20, 12)
+    seed(conn, "A sci", "Robin", [base + d * 86400 for d in range(12)])
+    llm = FakeOllama()
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now)
+    assert status == "written" and len(llm.calls) == 2
+    # Same inputs, same version, same model: verifiably NO LLM call.
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now)
+    assert status == "current"
+    assert len(llm.calls) == 2
+    row = conn.execute("SELECT * FROM species_analysis").fetchone()
+    # The skip is bookkeeping (checked_ts), never a freshness claim.
+    assert row["checked_ts"] == now
+    assert row["generated_ts"] == now    # from the WRITE, untouched by the skip
+
+
+def test_the_gate_regenerates_exactly_once_when_a_description_lands(conn):
+    from listener import species_profile
+    conn.executescript(species_profile.SCHEMA)
+    base = at(2026, 7, 1, 7)
+    now = at(2026, 7, 20, 12)
+    seed(conn, "A sci", "Robin", [base + d * 86400 for d in range(12)])
+    llm = FakeOllama()
+    sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                       weather_path=None, now=now)
+    assert len(llm.calls) == 2                        # written, no background
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, fetched_ts)"
+        " VALUES (?,?,?)", ("A sci", "A very red bird.", now))
+    conn.commit()
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now)
+    assert status == "written"                        # the description flipped it
+    assert len(llm.calls) == 4
+    assert "A very red bird." in llm.calls[2]         # and rode the prompt
+    # Exactly once: the third look settles.
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now)
+    assert status == "current" and len(llm.calls) == 4
+
+
+def test_force_pushes_past_the_gate(conn):
+    now = at(2026, 7, 20, 12)
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    llm = FakeOllama()
+    sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                       weather_path=None, now=now)
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now, force=True)
+    assert status == "written"                        # --refresh's contract
+    assert len(llm.calls) == 4
+
+
+def test_the_gate_defers_to_a_higher_ranked_stored_model(conn, monkeypatch):
+    monkeypatch.setenv("MERLE_MODEL_RANK", "huge,big,small")
+    now = at(2026, 7, 20, 12)
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    big = FakeOllama()
+    big.model = "big"
+    sa.analyze_species(conn, "A sci", "Robin", ollama=big,
+                       weather_path=None, now=now)
+    # A lower-ranked host with identical inputs: skip, never a downgrade.
+    small = FakeOllama()
+    small.model = "small"
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=small,
+                                   weather_path=None, now=now)
+    assert status == "current" and small.calls == []
+    assert conn.execute("SELECT model FROM species_analysis"
+                        ).fetchone()["model"] == "big"
+    # A higher-ranked one sweeps it upward.
+    huge = FakeOllama()
+    huge.model = "huge"
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=huge,
+                                   weather_path=None, now=now)
+    assert status == "written"
+    assert conn.execute("SELECT model FROM species_analysis"
+                        ).fetchone()["model"] == "huge"
+
+
+def test_a_written_row_carries_its_provenance(conn):
+    now = at(2026, 7, 20, 12)
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    sa.analyze_species(conn, "A sci", "Robin", ollama=FakeOllama(),
+                       weather_path=None, now=now, host="bluejay:11434")
+    row = conn.execute("SELECT * FROM species_analysis").fetchone()
+    assert row["host"] == "bluejay:11434"
+    assert row["prompt_version"] == sa.PROMPT_VERSION
+    assert row["stats_fingerprint"]
+
+
+def test_a_pre217_row_regenerates_once_then_settles(conn):
+    now = at(2026, 7, 20, 12)
+    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    # A #186-era row: no fingerprint, no version -- honest NULLs.
+    conn.execute(
+        "INSERT INTO species_analysis (species_sci, rhythm_text,"
+        " weather_text, stats_json, visits_watermark, model, generated_ts)"
+        " VALUES (?,?,?,?,?,?,?)",
+        ("A sci", "old prose", "old weather", "{}", 1, "gemma3:12b", 99))
+    conn.commit()
+    assert [w[0] for w in sa.worklist(conn)] == ["A sci"]   # version arm
+    llm = FakeOllama()
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now)
+    assert status == "written"                # once, to fill the new columns
+    assert sa.worklist(conn, model="gemma3:12b") == []      # then settles
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, now=now)
+    assert status == "current"
+
+
+def test_connect_upgrades_a_pre217_file(tmp_path):
+    path = str(tmp_path / "earl.db")
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE species_analysis (species_sci TEXT PRIMARY KEY,"
+        " rhythm_text TEXT, weather_text TEXT, stats_json TEXT,"
+        " visits_watermark INTEGER NOT NULL DEFAULT 0, model TEXT,"
+        " generated_ts INTEGER NOT NULL)")
+    old.execute("INSERT INTO species_analysis VALUES (?,?,?,?,?,?,?)",
+                ("A sci", "r", "w", "{}", 5, "m", 99))
+    old.commit()
+    old.close()
+    c = sa.connect(path)   # the additive upgrade, same code as a fresh file
+    row = c.execute("SELECT * FROM species_analysis").fetchone()
+    assert row["rhythm_text"] == "r"                  # survived
+    assert row["stats_fingerprint"] is None           # honestly NULL
+    assert row["prompt_version"] is None
+    c.close()
