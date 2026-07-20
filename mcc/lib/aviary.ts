@@ -429,7 +429,9 @@ export function todayVisitors(
 
 // --- The visits-over-time chart (issue #185) ---------------------------------
 
-/** Overview mode's span: ~30 days of daily bars, the chart's opening state.
+/** Overview mode's span: ~30 days of daily bars. No longer the chart's
+ * opening state -- the profile now opens in DETAIL (the 48-hour rhythm),
+ * the standings band above already carrying the "how often" these bars show.
  *
  * This constant once read "fixed forever after -- only the window's POSITION
  * moves." #204 made that half-true and the correction is worth stating: the
