@@ -18,6 +18,7 @@
 
 import mqtt from "mqtt/dist/mqtt.esm";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   type ReactNode,
   useCallback,
@@ -1502,7 +1503,44 @@ export function SpeciesProfile({ sci }: { sci: string }) {
   // toggle -- a two-sentence stub with a "read more" under it would be a
   // control that does nothing visible.
   const [bioOpen, setBioOpen] = useState(false);
+  // Species removal (#216): the confirm overlay's lifecycle. `removing`
+  // freezes the dialog while the DELETE is in flight (no second click, no
+  // Escape-mid-delete); a failure reports in the dialog's reserved line and
+  // leaves everything standing.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeFailed, setRemoveFailed] = useState(false);
+  const router = useRouter();
   const player = useClipPlayer();
+
+  // Escape cancels the confirm -- the overlays' idiom -- but never an
+  // in-flight delete, which has no honest way to be called back.
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !removing) setConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmOpen, removing]);
+
+  const removeSpecies = () => {
+    setRemoving(true);
+    setRemoveFailed(false);
+    fetch(`/aviary/species/${encodeURIComponent(sci)}`, { method: "DELETE" })
+      .then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        // The roster, archive, and ticker hydration all read the tables the
+        // DELETE just emptied -- landing on /aviary refetches them and the
+        // species is simply gone. Ticker rows already in other tabs' memory
+        // linger until their reload (accepted, #216).
+        router.push("/aviary");
+      })
+      .catch(() => {
+        setRemoving(false);
+        setRemoveFailed(true);
+      });
+  };
 
   useEffect(() => {
     const d = new Date();
@@ -1646,13 +1684,35 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               </div>
             )}
             <div className="relative">
-            <h2
-              className="text-2xl text-ink"
-              style={{ fontFamily: "var(--font-display)" }}
-            >
-              {entry?.species_common ?? "…"}
-            </h2>
-            <p className="text-sm italic text-inkdim">{sci}</p>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2
+                  className="text-2xl text-ink"
+                  style={{ fontFamily: "var(--font-display)" }}
+                >
+                  {entry?.species_common ?? "…"}
+                </h2>
+                <p className="text-sm italic text-inkdim">{sci}</p>
+              </div>
+              {/* Species removal (#216): the misidentification eraser, worn
+                  quietly -- the sort control's chrome in the faint ink, and
+                  the destructive weight carried by the confirm step rather
+                  than by color (the palette's only red means "chipmunk",
+                  never "danger"). Always rendered, merely disabled until
+                  the entry lands (the now-button idiom): a control that
+                  appeared with the fetch would nudge the header. */}
+              <button
+                type="button"
+                disabled={!entry}
+                onClick={() => {
+                  setRemoveFailed(false);
+                  setConfirmOpen(true);
+                }}
+                className="stamp mt-1 shrink-0 rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkfaint"
+              >
+                remove species
+              </button>
+            </div>
             <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
@@ -1858,6 +1918,73 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           <VisitsChart sci={sci} />
           <FieldNotes analysis={analysis} />
         </>
+      )}
+      {/* The confirm (#216): an overlay, never in-place expansion (house
+          rule #1 -- nothing on the page may move to make room for a
+          question). Mounted OUTSIDE every `.panel` deliberately: the panel
+          reveal animates a transform, and a transformed ancestor becomes a
+          fixed element's containing block -- inside the hero this dialog
+          would center on the panel, not the viewport. Backdrop click and
+          Escape cancel; nothing is deleted until the explicit confirm. */}
+      {confirmOpen && entry && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Remove the ${entry.species_common} from the record`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+          onClick={() => !removing && setConfirmOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-sm border border-linebright bg-panel p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="stamp text-[9px] text-inkfaint">
+              striking from the record
+            </p>
+            <h3
+              className="mt-1 text-xl text-ink"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Remove the {entry.species_common}?
+            </h3>
+            <p className="mt-3 text-sm leading-relaxed text-inkdim">
+              This deletes the whole record for{" "}
+              <span className="italic">{sci}</span> — all{" "}
+              {entry.visits === 1 ? "1 recorded visit" : `${entry.visits} recorded visits`},
+              every clip including first contact, and the portrait. On the
+              books since {dateOf(entry.first_ts)}. If Earl ever hears it
+              again, it starts over as a brand-new lifer.
+            </p>
+            {/* The failure line reserves its height empty -- an error
+                appearing must not bump the buttons (house rule #1). */}
+            <p className="stamp mt-3 min-h-[14px] text-[10px] text-inkdim">
+              {removeFailed
+                ? "the record refused the delete — nothing was removed"
+                : ""}
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                disabled={removing}
+                onClick={() => setConfirmOpen(false)}
+                className="stamp rounded-sm border border-line px-3 py-1.5 text-[10px] text-inkdim transition-colors hover:border-linebright hover:text-ink disabled:opacity-40"
+              >
+                keep it
+              </button>
+              {/* min-w so "removing …" wears the same footprint as
+                  "remove it" -- the label change resizes nothing. */}
+              <button
+                type="button"
+                disabled={removing}
+                onClick={removeSpecies}
+                className="stamp min-w-[96px] rounded-sm border border-linebright bg-panel2 px-3 py-1.5 text-center text-[10px] text-ink transition-colors hover:bg-panel disabled:opacity-40"
+              >
+                {removing ? "removing …" : "remove it"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
