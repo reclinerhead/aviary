@@ -19,6 +19,7 @@
 import mqtt from "mqtt/dist/mqtt.esm";
 import Link from "next/link";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -36,6 +37,7 @@ import {
   parseAudioEvent,
 } from "@/lib/bus";
 import {
+  AnalysisStats,
   RosterEntry,
   SortDir,
   SortKey,
@@ -47,12 +49,19 @@ import {
   dayAnchor,
   dayGroups,
   dayStart,
+  liferNumber,
   nextBefore,
   parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
+  rhythmStrip,
+  rivalLine,
   rosterOrder,
+  shareOfYard,
+  standingFor,
   todayVisitors,
+  weatherChips,
+  yardRecords,
 } from "@/lib/aviary";
 import { VisitsChart } from "@/components/VisitsChart";
 
@@ -106,6 +115,12 @@ const dayLabelOf = (day: number) => {
       ? {}
       : { year: "numeric" }),
   });
+};
+/** Seconds-into-day -> "5:41 am", the records panel's clock voice (#220). */
+const clockOf = (secs: number) => {
+  const h24 = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${h24 % 12 || 12}:${String(m).padStart(2, "0")} ${h24 < 12 ? "am" : "pm"}`;
 };
 /** A local epoch -> the date input's "yyyy-mm-dd" (dayAnchor's inverse leg:
  * both sides speak the VIEWER's calendar, never UTC's). */
@@ -668,6 +683,8 @@ export function Aviary() {
               ...cur,
               visits: cur.visits + 1,
               today: cur.today + (isToday ? 1 : 0),
+              // A live arrival is inside the trailing week by definition.
+              week: cur.week + 1,
             },
           };
         // A lifer with the page open: the store's INSERT OR IGNORE is
@@ -682,6 +699,7 @@ export function Aviary() {
             first_clip: event.clip,
             visits: 1,
             today: isToday ? 1 : 0,
+            week: 1,
           },
         };
       });
@@ -957,63 +975,342 @@ export function Aviary() {
 
 // --- The /aviary/[species] page ---------------------------------------------
 
-/** The field-naturalist blocks (#186). Prose written by the analysis pass on
- * pearl and merely read here -- nothing generates at render time, ever. The
- * footprint is reserved in every state, so the blocks landing (or being
- * absent on day one) can't shift the page. */
+/** The field-naturalist blocks (#186), set as a journal spread (#220): two
+ * facing pages, each an entry with its own margin figure, dateline, and
+ * signature -- notes in a book, not columns in a panel. Prose written by the
+ * analysis pass on pearl and merely read here -- nothing generates at render
+ * time, ever. The no-notes empty state keeps the pre-#220 panel footprint
+ * exactly, so day one still can't shift the page. */
 function FieldNotes({ analysis }: { analysis: Analysis | null }) {
   const has = analysis?.rhythm || analysis?.weather;
+  if (!has)
+    return (
+      <section className="panel mt-4 rounded-sm border border-line bg-panel">
+        <div className="flex items-baseline justify-between gap-3 px-4 pb-2 pt-3">
+          <h2
+            className="text-lg text-ink"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            Field Notes
+          </h2>
+        </div>
+        <div className="grid min-h-[120px] gap-5 px-4 pb-4">
+          <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
+            <span className="stamp px-6 text-center text-xs text-inkfaint">
+              no field notes yet — they arrive with the analysis pass
+            </span>
+          </div>
+        </div>
+      </section>
+    );
+  const stats = analysis?.stats ?? null;
+  const dateline = analysis?.generated_ts
+    ? `${dayOf(analysis.generated_ts)}${analysis.model ? ` · ${analysis.model}` : ""}`
+    : null;
   return (
-    <section className="panel mt-4 rounded-sm border border-line bg-panel">
-      <div className="flex items-baseline justify-between gap-3 px-4 pb-2 pt-3">
+    <section className="mt-4">
+      <div className="flex items-baseline justify-between gap-3 pb-2">
         <h2
           className="text-lg text-ink"
           style={{ fontFamily: "var(--font-display)" }}
         >
           Field Notes
         </h2>
-        {analysis?.generated_ts && (
-          <span className="stamp text-[10px] text-inkfaint">
-            as of{" "}
-            {new Date(analysis.generated_ts * 1000).toLocaleDateString([], {
-              month: "short",
-              day: "numeric",
-            })}
-            {analysis.model ? ` · ${analysis.model}` : ""}
-          </span>
-        )}
       </div>
-      <div className="grid min-h-[120px] gap-5 px-4 pb-4 md:grid-cols-2">
-        {has ? (
-          <>
-            <Note title="the rhythm" text={analysis?.rhythm ?? null} />
-            <Note title="weather & timing" text={analysis?.weather ?? null} />
-          </>
-        ) : (
-          <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2 md:col-span-2">
-            <span className="stamp px-6 text-center text-xs text-inkfaint">
-              no field notes yet — they arrive with the analysis pass
-            </span>
-          </div>
-        )}
+      <div className="grid items-stretch gap-5 md:grid-cols-2">
+        <JournalPage
+          numeral="I"
+          title="the rhythm"
+          text={analysis?.rhythm ?? null}
+          stamp={
+            stats?.total_visits != null
+              ? `${stats.total_visits} visits`
+              : null
+          }
+          figure={<RhythmStrip stats={stats} />}
+          dateline={dateline}
+        />
+        <JournalPage
+          numeral="II"
+          title="weather & timing"
+          text={analysis?.weather ?? null}
+          stamp={
+            stats?.weather?.visits_matched != null
+              ? `${stats.weather.visits_matched} matched`
+              : null
+          }
+          figure={<WeatherChipsRow stats={stats} />}
+          dateline={dateline}
+        />
       </div>
     </section>
   );
 }
 
-function Note({ title, text }: { title: string; text: string | null }) {
+/** One page of the journal: entry heading over a ruled line, the margin
+ * figure, the prose (drop cap on the opening letter -- the naturalist's
+ * flourish), and a dateline footer signed by the house voice. Fixed
+ * skeleton in every state; only the words change. */
+function JournalPage({
+  numeral,
+  title,
+  text,
+  stamp,
+  figure,
+  dateline,
+}: {
+  numeral: string;
+  title: string;
+  text: string | null;
+  stamp: string | null;
+  figure: ReactNode;
+  dateline: string | null;
+}) {
   return (
-    <div className="min-w-0">
-      <h3 className="stamp mb-1.5 text-[10px] text-inkfaint">{title}</h3>
+    <article className="panel flex min-w-0 flex-col rounded-sm border border-line bg-panel px-5 pb-3 pt-4">
+      <header className="flex items-baseline justify-between gap-3 border-b border-line pb-2">
+        <h3
+          className="text-base text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          Entry {numeral} — {title}
+        </h3>
+        {stamp && (
+          <span className="stamp shrink-0 text-[9px] text-inkfaint">
+            {stamp}
+          </span>
+        )}
+      </header>
+      <div className="mt-3">{figure}</div>
       {text ? (
-        <div className="space-y-2.5 text-sm leading-relaxed text-inkdim">
+        <div className="mt-3 flex-1 space-y-2.5 text-sm leading-relaxed text-inkdim">
           {text.split(/\n+/).map((para, i) => (
-            <p key={i}>{para}</p>
+            <p
+              key={i}
+              className={
+                i === 0
+                  ? "first-letter:float-left first-letter:mr-1.5 first-letter:text-[34px] first-letter:leading-[0.8] first-letter:text-ink first-letter:[font-family:var(--font-display)]"
+                  : undefined
+              }
+            >
+              {para}
+            </p>
           ))}
         </div>
       ) : (
-        <p className="stamp text-[9px] text-inkfaint">not written yet</p>
+        <p className="stamp mt-3 flex-1 text-[9px] text-inkfaint">
+          not written yet
+        </p>
       )}
+      <footer className="mt-4 flex items-baseline justify-between gap-3 border-t border-line pt-2">
+        <span className="stamp text-[9px] text-inkfaint">
+          {dateline ?? "—"}
+        </span>
+        <span
+          className="text-xs italic text-inkfaint"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          — Earl
+        </span>
+      </footer>
+    </article>
+  );
+}
+
+/** The rhythm page's margin figure (#220): the stored 24-hour histogram as
+ * a strip, peak-window hours lit in --wing. STATS_JSON VERBATIM -- the same
+ * numbers the prose beside it was written from, server-local hours and all
+ * (the deliberate split: the chart above speaks viewer-local, the figures
+ * speak the prose's clock). Reserved height in every state. */
+function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
+  const cells = rhythmStrip(stats);
+  return (
+    <div className="h-[52px]">
+      {cells ? (
+        <>
+          <div className="flex h-8 items-end gap-px">
+            {cells.map((c, h) => (
+              <div
+                key={h}
+                className="min-w-0 flex-1 rounded-[1px]"
+                style={{
+                  height: `${Math.max(6, Math.round(c.frac * 100))}%`,
+                  background: "var(--wing)",
+                  opacity: c.peak ? 1 : 0.3,
+                }}
+              />
+            ))}
+          </div>
+          <div className="stamp mt-1 flex justify-between text-[8px] text-inkfaint">
+            <span>12a</span>
+            <span>6a</span>
+            <span>noon</span>
+            <span>6p</span>
+            <span>12a</span>
+          </div>
+        </>
+      ) : (
+        <div className="flex h-full items-center justify-center rounded-sm border border-line bg-panel2">
+          <span className="stamp text-[9px] text-inkfaint">
+            no figures stored yet
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The weather page's margin figure: the pass's exposure-normalised effects
+ * as chips, strongest first. A thin finding keeps its hedge in pixels --
+ * dashed, dimmed, tagged -- the show-with-hedging rule made visible. Only
+ * rendered at all when the pass judged the sample sufficient; a confident
+ * chip over hedged prose would be the figure contradicting the writing. */
+function WeatherChipsRow({ stats }: { stats: AnalysisStats | null }) {
+  const chips = weatherChips(stats);
+  return (
+    <div className="flex min-h-[52px] flex-wrap content-start gap-1.5">
+      {chips.length > 0 ? (
+        chips.map((c) => (
+          <span
+            key={c.label}
+            className={`stamp h-fit rounded-sm border px-2 py-1 text-[9px] ${
+              c.thin
+                ? "border-dashed border-line text-inkfaint"
+                : "border-line text-inkdim"
+            }`}
+          >
+            <span className={c.thin ? undefined : "text-wing"}>
+              {c.pct > 0 ? `+${c.pct}%` : `−${Math.abs(c.pct)}%`}
+            </span>{" "}
+            {c.label}
+            {c.thin ? " · thin" : ""}
+          </span>
+        ))
+      ) : (
+        <div className="flex h-[52px] w-full items-center justify-center rounded-sm border border-line bg-panel2">
+          <span className="stamp px-4 text-center text-[9px] text-inkfaint">
+            no confident weather figures yet
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The standings band (#220): where this bird sits in the yard, computed at
+ * load from payloads the page already holds and NEVER reshuffled by live
+ * events (house rule #1 -- a scoreboard jumping under the reader is the
+ * worst version of a reshuffle). Week and all-time ranks from the roster;
+ * records from the full visit record; every tile reserves its geometry
+ * while data is in flight. */
+function StandingsBand({
+  roster,
+  sci,
+  openings,
+  now,
+}: {
+  roster: RosterEntry[] | null;
+  sci: string;
+  openings: number[] | null;
+  now: number | null;
+}) {
+  const week = roster ? standingFor(roster, sci, (e) => e.week) : null;
+  const allTime = roster ? standingFor(roster, sci, (e) => e.visits) : null;
+  const yardTotal = roster?.reduce((sum, e) => sum + e.visits, 0) ?? 0;
+  const share = allTime ? shareOfYard(yardTotal, allTime.count) : null;
+  const lifer = roster ? liferNumber(roster, sci) : null;
+  const records =
+    openings !== null && now !== null ? yardRecords(openings, now) : null;
+  const dash = "—";
+  return (
+    <section className="mt-4 grid gap-4 md:grid-cols-3">
+      <StandingTile
+        label="standings · this week"
+        value={week && week.count > 0 ? `No. ${week.rank}` : dash}
+        sub={week ? rivalLine(week, "no visits this week") : dash}
+      />
+      <StandingTile
+        label="all time"
+        value={allTime && allTime.count > 0 ? `No. ${allTime.rank}` : dash}
+        sub={allTime ? (share ?? rivalLine(allTime, "no visits yet")) : dash}
+      />
+      <div className="panel rounded-sm border border-line bg-panel p-4">
+        <div className="stamp text-[10px] text-inkfaint">yard records</div>
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+          <RecordRow
+            label="busiest day"
+            value={
+              records?.busiestDay
+                ? `${records.busiestDay.count} ${records.busiestDay.count === 1 ? "visit" : "visits"} · ${dayOf(records.busiestDay.day)}`
+                : dash
+            }
+          />
+          <RecordRow
+            label="streak"
+            value={
+              records
+                ? records.streak > 0
+                  ? `${records.streak} ${records.streak === 1 ? "day" : "days"}`
+                  : "over"
+                : dash
+            }
+          />
+          <RecordRow
+            label="longest silence"
+            value={
+              records
+                ? records.longestSilenceDays > 0
+                  ? `${records.longestSilenceDays} ${records.longestSilenceDays === 1 ? "day" : "days"}`
+                  : "under a day"
+                : dash
+            }
+          />
+          <RecordRow
+            label="earliest heard"
+            value={records?.earliest != null ? clockOf(records.earliest) : dash}
+          />
+          <RecordRow
+            label="latest heard"
+            value={records?.latest != null ? clockOf(records.latest) : dash}
+          />
+          <RecordRow
+            label="lifer"
+            value={lifer ? `No. ${lifer.n} of ${lifer.of}` : dash}
+          />
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+function StandingTile({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="panel rounded-sm border border-line bg-panel p-4">
+      <div className="stamp text-[10px] text-inkfaint">{label}</div>
+      <div
+        className="mt-1 text-3xl text-ink"
+        style={{ fontFamily: "var(--font-display)" }}
+      >
+        {value}
+      </div>
+      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">{sub}</div>
+    </div>
+  );
+}
+
+function RecordRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="stamp text-[9px] text-inkfaint">{label}</dt>
+      <dd className="truncate text-inkdim">{value}</dd>
     </div>
   );
 }
@@ -1021,16 +1318,24 @@ function Note({ title, text }: { title: string; text: string | null }) {
 type Analysis = {
   rhythm: string | null;
   weather: string | null;
+  stats: AnalysisStats | null;
   model: string | null;
   generated_ts: number | null;
 };
 
 export function SpeciesProfile({ sci }: { sci: string }) {
   const [entry, setEntry] = useState<RosterEntry | null>(null);
+  // The whole roster rides along (#220): the standings band ranks this bird
+  // against every other, and the payload is already on the wire for `entry`.
+  const [roster, setRoster] = useState<RosterEntry[] | null>(null);
+  // Every visit opening on record, for the yard-records panel -- fetched
+  // once entry lands (the range needs first_ts), computed client-local.
+  const [openings, setOpenings] = useState<number[] | null>(null);
   const [visits, setVisits] = useState<Visit[] | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [midnight, setMidnight] = useState<number | null>(null);
+  const [now, setNow] = useState<number | null>(null);
   // The description is clamped at rest (#196). Only long leads earn the
   // toggle -- a two-sentence stub with a "read more" under it would be a
   // control that does nothing visible.
@@ -1042,16 +1347,34 @@ export function SpeciesProfile({ sci }: { sci: string }) {
     d.setHours(0, 0, 0, 0);
     const mid = Math.floor(d.getTime() / 1000);
     setMidnight(mid);
+    const nowTs = Math.floor(Date.now() / 1000);
+    setNow(nowTs);
     // The roster carries this species' totals, first-heard, and today count
     // (the same grouped counts the grid shows -- one counting rule
     // everywhere); the per-species recent cut becomes the visits list.
     fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { species: [] }))
       .then((body: { species?: RosterEntry[] }) => {
-        const found = (Array.isArray(body.species) ? body.species : []).find(
-          (e) => e.species_sci === sci,
-        );
+        const list = Array.isArray(body.species) ? body.species : [];
+        setRoster(list);
+        const found = list.find((e) => e.species_sci === sci);
         setEntry(found ?? null);
+        // The full visit record for the yard-records panel (#220): the
+        // chart's own route, asked once from first-heard to now. The route
+        // clamps spans past 400 days at the `to` end -- when the record
+        // outgrows that, these become records of the recent era and the
+        // clamp constant is the thing to revisit, not this call.
+        if (found) {
+          fetch(
+            `/aviary/visits/${encodeURIComponent(sci)}?from=${found.first_ts - 1}&to=${nowTs + 3600}`,
+            { cache: "no-store" },
+          )
+            .then((r) => (r.ok ? r.json() : { visits: [] }))
+            .then((b: { visits?: number[] }) =>
+              setOpenings(Array.isArray(b.visits) ? b.visits : []),
+            )
+            .catch(() => setOpenings([]));
+        }
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -1073,6 +1396,7 @@ export function SpeciesProfile({ sci }: { sci: string }) {
       .then((a: Analysis | null) => setAnalysis(a))
       .catch(() => {});
     setBioOpen(false); // a different bird opens closed
+    setOpenings(null); // a different bird's records are not this bird's
   }, [sci]);
 
   // How much prose to show at rest is set by the PHOTO, not by a constant
@@ -1191,6 +1515,23 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">today</dt>
                 <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
+              </div>
+              {/* First contact (#220): the very first recording Earl ever
+                  made of this bird -- the one clip retention exempts forever
+                  (#175), which until now nothing played. PlaySlot's own
+                  geometry covers every state: a pre-clip-era lifer shows the
+                  reserved no-clip dot, a hand-pruned file the faded stamp. */}
+              <div>
+                <dt className="stamp text-[9px] text-inkfaint">
+                  first contact
+                </dt>
+                <dd className="mt-0.5">
+                  {entry ? (
+                    <PlaySlot clip={entry.first_clip} player={player} />
+                  ) : (
+                    <span className="text-inkdim">—</span>
+                  )}
+                </dd>
               </div>
             </dl>
             {/* The magazine body (#192): the portrait + its CC-BY credit
@@ -1345,12 +1686,14 @@ export function SpeciesProfile({ sci }: { sci: string }) {
         </div>
       )}
       {/* Full-width under both columns, the floor #192's layout cleared:
-          the chart (#185), then the prose written about it (#186). Only for
-          a bird actually in the record -- an unknown species has no rhythm
-          to draw and nothing to say. */}
+          the chart (#185), then the field desk (#220) -- standings first,
+          then the journal spread the standings set up. Only for a bird
+          actually in the record -- an unknown species has no rhythm to draw
+          and nothing to say. */}
       {entry && (
         <>
           <VisitsChart sci={sci} />
+          <StandingsBand roster={roster} sci={sci} openings={openings} now={now} />
           <FieldNotes analysis={analysis} />
         </>
       )}

@@ -4,7 +4,12 @@
 // node:sqlite, read-only per request, quiet empties, no default path.
 //
 // GET /aviary/analysis/<species_sci>
-//   -> { rhythm, weather, generated_ts, model, visits_watermark } | nulls
+//   -> { rhythm, weather, stats, generated_ts, model, visits_watermark } | nulls
+//
+// `stats` (#220) is the pass's stored stats_json, parsed -- the exact
+// numbers the prose was written from, shipped so the margin figures and the
+// writing can never disagree. Parsed here rather than in the browser so a
+// corrupt blob degrades to null once, at the wire, not in a component.
 //
 // Its own route rather than more columns on /aviary/roster: the grid asks
 // for the roster and would carry two paragraphs per species it never
@@ -18,12 +23,13 @@
 import { DatabaseSync } from "node:sqlite";
 
 const SQL =
-  "SELECT rhythm_text, weather_text, model, visits_watermark, generated_ts" +
-  " FROM species_analysis WHERE species_sci = ?";
+  "SELECT rhythm_text, weather_text, stats_json, model, visits_watermark," +
+  " generated_ts FROM species_analysis WHERE species_sci = ?";
 
 type Body = {
   rhythm: string | null;
   weather: string | null;
+  stats: unknown | null;
   model: string | null;
   visits_watermark: number | null;
   generated_ts: number | null;
@@ -32,10 +38,22 @@ type Body = {
 const EMPTY: Body = {
   rhythm: null,
   weather: null,
+  stats: null,
   model: null,
   visits_watermark: null,
   generated_ts: null,
 };
+
+/** The stored blob, or null -- a row predating stats, or a corrupt one,
+ * just has no figures. */
+function parseStats(raw: string | null): unknown | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 function body(b: Body) {
   return Response.json(b, {
@@ -63,6 +81,7 @@ export async function GET(
       | {
           rhythm_text: string | null;
           weather_text: string | null;
+          stats_json: string | null;
           model: string | null;
           visits_watermark: number;
           generated_ts: number;
@@ -72,6 +91,7 @@ export async function GET(
     return body({
       rhythm: row.rhythm_text,
       weather: row.weather_text,
+      stats: parseStats(row.stats_json),
       model: row.model,
       visits_watermark: row.visits_watermark,
       generated_ts: row.generated_ts,
