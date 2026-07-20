@@ -37,7 +37,7 @@ import {
   parseAudioEvent,
 } from "@/lib/bus";
 import {
-  ARRIVALS_48H_S,
+  ARRIVALS_24H_S,
   ARRIVALS_WEEK_S,
   AnalysisStats,
   RosterEntry,
@@ -441,7 +441,7 @@ function ArrivalsToggle({
       <span className="flex overflow-hidden rounded-sm border border-line">
         {(
           [
-            ["48h", ARRIVALS_48H_S],
+            ["24h", ARRIVALS_24H_S],
             ["7d", ARRIVALS_WEEK_S],
           ] as const
         ).map(([label, s]) => (
@@ -451,8 +451,8 @@ function ArrivalsToggle({
             onClick={() => onChange(s)}
             aria-pressed={windowS === s}
             title={
-              s === ARRIVALS_48H_S
-                ? "species first heard in the last 48 hours"
+              s === ARRIVALS_24H_S
+                ? "species first heard in the last 24 hours"
                 : "species first heard in the last week"
             }
             className={`stamp w-8 py-0.5 text-[9px] transition-colors ${
@@ -492,7 +492,7 @@ function NewArrivals({
   midnight: number | null;
   player: ClipPlayer;
 }) {
-  const [windowS, setWindowS] = useState<number>(ARRIVALS_48H_S);
+  const [windowS, setWindowS] = useState<number>(ARRIVALS_24H_S);
   const entries = Object.values(roster);
   const arrivals = now === null ? [] : newArrivals(entries, now - windowS);
   return (
@@ -506,7 +506,7 @@ function NewArrivals({
           <div className="flex min-h-[88px] items-center justify-center rounded-sm border border-line bg-panel2">
             <span className="stamp px-4 text-center text-xs text-inkfaint">
               no new species in the last{" "}
-              {windowS === ARRIVALS_48H_S ? "48 hours" : "week"}
+              {windowS === ARRIVALS_24H_S ? "24 hours" : "week"}
             </span>
           </div>
         ) : (
@@ -963,11 +963,16 @@ export function Aviary() {
                           >
                             {e.species_common}
                           </span>
-                          {/* Two clamped lines of the lead, reserved whether
-                              or not prose has arrived -- enrichment landing
-                              never shifts the grid (#184). */}
-                          <span className="line-clamp-2 min-h-[2.6em] text-[11px] leading-[1.3] text-inkdim">
-                            {e.description ?? ""}
+                          {/* The scientific name, the New Arrivals card's
+                              vocabulary (#226) -- the tile-sized truncated
+                              lead earned nothing. Always present, so the
+                              slot is uniformly one line and enrichment
+                              landing changes nothing in the grid at all
+                              (it only dresses the portrait). The lead still
+                              rides the roster for the profile and the
+                              archive's solo band. */}
+                          <span className="block truncate text-[11px] italic text-inkdim">
+                            {sci}
                           </span>
                           <span className="block text-xs text-inkdim">
                             {e.visits === 1 ? "1 visit" : `${e.visits} visits`}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
-  ARRIVALS_48H_S,
+  ARRIVALS_24H_S,
   ARRIVALS_WEEK_S,
   AnalysisStats,
   DETAIL_SPAN_S,
@@ -1258,7 +1258,7 @@ describe("newArrivals", () => {
     expect(newArrivals(twins, 0).map((e) => e.species_sci)).toEqual(["a", "b"]);
   });
   it("window constants say what they claim", () => {
-    expect(ARRIVALS_48H_S).toBe(2 * 86400);
+    expect(ARRIVALS_24H_S).toBe(86400);
     expect(ARRIVALS_WEEK_S).toBe(7 * 86400);
   });
 });
