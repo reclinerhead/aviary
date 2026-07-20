@@ -965,11 +965,12 @@ export function liferNumber(
   return i === -1 ? null : { n: i + 1, of: order.length };
 }
 
-/** New Arrivals' windows (#224): the last two days by default, the last
- * week on the toggle. Plain trailing spans off a mount-time `now` -- the
- * cards never silently drop out mid-session as the clock advances; the
- * window moves on reload or toggle (the midnight-state rule). */
-export const ARRIVALS_48H_S = 48 * 3600;
+/** New Arrivals' windows (#224; the short one tightened to a day in #226):
+ * the last 24 hours by default, the last week on the toggle. Plain trailing
+ * spans off a mount-time `now` -- the cards never silently drop out
+ * mid-session as the clock advances; the window moves on reload or toggle
+ * (the midnight-state rule). */
+export const ARRIVALS_24H_S = 24 * 3600;
 export const ARRIVALS_WEEK_S = 7 * 86400;
 
 /** The New Arrivals cut (#224): species first heard at or after `sinceTs`,
