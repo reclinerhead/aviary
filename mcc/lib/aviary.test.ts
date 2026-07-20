@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
+  ARRIVALS_48H_S,
+  ARRIVALS_WEEK_S,
   AnalysisStats,
   DETAIL_SPAN_S,
   VISITS_SPAN_S,
@@ -21,6 +23,7 @@ import {
   hourBuckets,
   hourStart,
   liferNumber,
+  newArrivals,
   nearestBar,
   nextBefore,
   parseBefore,
@@ -1226,5 +1229,36 @@ describe("weatherChips", () => {
 describe("weekWindowStart", () => {
   it("is six days before the client's midnight -- seven local days inclusive", () => {
     expect(weekWindowStart(700 * 86400)).toBe(694 * 86400);
+  });
+});
+
+describe("newArrivals", () => {
+  const yard = [
+    entry("old", "Old Timer", 9, 0, 0, 1000),
+    entry("fresh", "Fresh Face", 2, 0, 2, 5000),
+    entry("freshest", "Freshest Face", 1, 0, 1, 6000),
+    entry("edge", "Edge Case", 1, 0, 1, 3000),
+  ];
+  it("cuts at sinceTs inclusive, newest first", () => {
+    expect(newArrivals(yard, 3000).map((e) => e.species_sci)).toEqual([
+      "freshest",
+      "fresh",
+      "edge", // exactly at the boundary: still an arrival
+    ]);
+  });
+  it("is empty when nothing is new -- the panel's normal day", () => {
+    expect(newArrivals(yard, 7000)).toEqual([]);
+    expect(newArrivals([], 0)).toEqual([]);
+  });
+  it("breaks a same-moment tie by name, determinism over drama", () => {
+    const twins = [
+      entry("b", "B Bird", 1, 0, 1, 5000),
+      entry("a", "A Bird", 1, 0, 1, 5000),
+    ];
+    expect(newArrivals(twins, 0).map((e) => e.species_sci)).toEqual(["a", "b"]);
+  });
+  it("window constants say what they claim", () => {
+    expect(ARRIVALS_48H_S).toBe(2 * 86400);
+    expect(ARRIVALS_WEEK_S).toBe(7 * 86400);
   });
 });
