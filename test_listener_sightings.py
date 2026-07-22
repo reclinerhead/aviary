@@ -290,15 +290,34 @@ def test_rtsp_argv_redacts_the_password():
 
 def test_source_commands_default_is_amcrest(monkeypatch):
     monkeypatch.delenv("MERLE_EARL_SOURCES", raising=False)
+    monkeypatch.delenv("MERLE_RTSP_URL", raising=False)
     monkeypatch.setenv("MERLE_RTSP_PASS", "x")
     assert list(earl.source_commands()) == ["amcrest"]
 
 
 def test_source_commands_amcrest_requires_password(monkeypatch):
+    # The fail-loud rule holds for the DIRECT form only -- delenv the #247
+    # restream override so the test means the same thing on a box where the
+    # restream is the ambient default.
     monkeypatch.setenv("MERLE_EARL_SOURCES", "amcrest")
+    monkeypatch.delenv("MERLE_RTSP_URL", raising=False)
     monkeypatch.delenv("MERLE_RTSP_PASS", raising=False)
     with pytest.raises(RuntimeError, match="MERLE_RTSP_PASS"):
         earl.source_commands()
+
+
+def test_source_commands_amcrest_restream_override(monkeypatch):
+    # Issue #247: MERLE_RTSP_URL points Earl's ears at the go2rtc restream.
+    # No camera password needed (the restream carries no credentials), the
+    # URL is used verbatim, and the pull is still audio-only.
+    monkeypatch.setenv("MERLE_EARL_SOURCES", "amcrest")
+    monkeypatch.setenv("MERLE_RTSP_URL", "rtsp://127.0.0.1:8554/driveway")
+    monkeypatch.delenv("MERLE_RTSP_PASS", raising=False)
+    argv, redacted = earl.source_commands()["amcrest"]
+    assert "rtsp://127.0.0.1:8554/driveway" in argv
+    assert "-allowed_media_types" in argv
+    assert "-timeout" in argv                    # the #201 stall bar rides along
+    assert "rtsp://127.0.0.1:8554/driveway" in redacted
 
 
 def test_source_commands_unknown_source_fails_at_startup(monkeypatch):
