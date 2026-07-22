@@ -7,6 +7,7 @@ import {
   DETAIL_SPAN_S,
   VISITS_SPAN_S,
   VISIT_GAP_S,
+  archiveStats,
   clampVisitWindow,
   clipRelPath,
   clipUrl,
@@ -481,6 +482,82 @@ describe("todayVisitors", () => {
       { species_sci: "A", species_common: "American Robin", count: 2 },
       { species_sci: "D", species_common: "Downy Woodpecker", count: 2 },
     ]);
+  });
+});
+
+// --- The archive hero (#260) -------------------------------------------------
+
+describe("archiveStats", () => {
+  // Mid-July local noon: away from any DST transition, so adding exact
+  // multiples of 86400 keeps the local time of day (and CI's UTC has no
+  // transitions at all).
+  const JUL_18_NOON = 1784376000; // 2026-07-18 12:00 UTC
+  it("is all zeros and nulls on an empty archive -- the fresh-aviary values", () => {
+    expect(archiveStats([], JUL_18_NOON)).toEqual({
+      species: 0,
+      visits: 0,
+      week: 0,
+      today: 0,
+      since: null,
+      days: null,
+    });
+  });
+  it("counts distinct species per window and sums visits", () => {
+    const stats = archiveStats(
+      [
+        // entry(sci, common, visits, today, week, first_ts)
+        entry("A", "American Robin", 40, 2, 9, 5000),
+        entry("B", "Blue Jay", 25, 0, 3, 2000),
+        entry("C", "Carolina Wren", 1, 0, 0, 9000),
+      ],
+      JUL_18_NOON,
+    );
+    // A species is one species however many visits it logged.
+    expect(stats.species).toBe(3);
+    expect(stats.visits).toBe(66);
+    // Window membership is week/today > 0, the roster's own tallies.
+    expect(stats.week).toBe(2);
+    expect(stats.today).toBe(1);
+  });
+  it("takes the EARLIEST first_ts as since, wherever it sits in the list", () => {
+    const stats = archiveStats(
+      [
+        entry("A", "American Robin", 1, 0, 0, 5000),
+        entry("B", "Blue Jay", 1, 0, 0, 2000),
+        entry("C", "Carolina Wren", 1, 0, 0, 9000),
+      ],
+      JUL_18_NOON,
+    );
+    expect(stats.since).toBe(2000);
+  });
+  it("counts days on the air inclusively -- first day through today", () => {
+    const roster = (first_ts: number) => [
+      entry("A", "American Robin", 1, 0, 0, first_ts),
+    ];
+    // Same local day: day one reads "1 day", not zero.
+    expect(archiveStats(roster(JUL_18_NOON - 3600), JUL_18_NOON).days).toBe(1);
+    // Four days later (plus an odd hour): five calendar days inclusive.
+    expect(
+      archiveStats(roster(JUL_18_NOON), JUL_18_NOON + 4 * 86400 + 3600).days,
+    ).toBe(5);
+  });
+  it("floors the day count at 1 when since lands past the mount-time now", () => {
+    // A tab open past midnight when the first-ever bird arrives: the mount
+    // clock says yesterday, the record says today. Day one, not day zero.
+    expect(
+      archiveStats(
+        [entry("A", "American Robin", 1, 0, 0, JUL_18_NOON + 86400)],
+        JUL_18_NOON,
+      ).days,
+    ).toBe(1);
+  });
+  it("skips the day count when now is unknown, keeping since", () => {
+    const stats = archiveStats(
+      [entry("A", "American Robin", 1, 0, 0, 5000)],
+      null,
+    );
+    expect(stats.since).toBe(5000);
+    expect(stats.days).toBeNull();
   });
 });
 

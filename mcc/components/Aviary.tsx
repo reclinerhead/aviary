@@ -45,6 +45,7 @@ import {
   SortDir,
   SortKey,
   Visit,
+  archiveStats,
   clipUrl,
   enhancedClipUrl,
   collapseVisits,
@@ -98,6 +99,14 @@ const dateOf = (ts: number) =>
     year: "numeric",
     month: "long",
     day: "numeric",
+  });
+/** The hero's "listening since" value (#260): dayOf plus the year, because
+ * this date is the one place the band speaks about years, not days. */
+const sinceOf = (ts: number) =>
+  new Date(ts * 1000).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
   });
 /** Time alone for today's moments, day + time for older ones. `midnight`
  * comes from state (computed once on mount), never Date.now() in render --
@@ -714,6 +723,121 @@ function AviaryMasthead({
 
 // --- The /aviary page --------------------------------------------------------
 
+/** One hero tile (#260): the StandingTile idiom scaled up for the page hero
+ * -- stamp label, display-font value, sub line. Deliberately its own shape
+ * rather than a StandingTile prop: the standings band (#220) keeps its look
+ * untouched, and the hero's values earn a responsive step up. */
+function HeroTile({
+  label,
+  value,
+  sub,
+  // The date tile's escape hatch: "Jun 20, 2026" is wider than any count
+  // and clips a phone-width column at the default scale, so it alone steps
+  // down one size below sm. Every row keeps a default-scale count tile
+  // beside it, and the grid row is sized by the tallest cell -- so the
+  // band's height (the fresh overlay's footprint) never moves.
+  valueClass = "text-2xl sm:text-3xl xl:text-4xl",
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="panel rounded-sm border border-line bg-panel p-4">
+      <div className="stamp text-[10px] text-inkfaint">{label}</div>
+      <div
+        className={`mt-1 whitespace-nowrap text-ink ${valueClass}`}
+        style={{ fontFamily: "var(--font-display)" }}
+      >
+        {value}
+      </div>
+      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">{sub}</div>
+    </div>
+  );
+}
+
+/** The archive hero (#260): the whole record's numbers above both columns.
+ * Everything derives from the roster state the page already maintains --
+ * zero fetches of its own, so live detections and lifers tick the numbers
+ * in place for free. Three states: dashes while the roster is in flight (a
+ * populated archive must never flash the day-one message during hydration),
+ * the FRESH-AVIARY hero once loaded-and-empty, the four tiles otherwise.
+ * The fresh state is an overlay on the tile grid rendered invisible: the
+ * tiles keep defining the band's height at every breakpoint, so the flip to
+ * a live scoreboard -- this band's whole payoff on day one -- changes
+ * content only and can never shift the page below (house rule #1; the New
+ * Arrivals reserved-footprint move at page scale). */
+function ArchiveHero({
+  roster,
+  loaded,
+  now,
+}: {
+  roster: Record<string, RosterEntry>;
+  loaded: boolean;
+  now: number | null;
+}) {
+  const stats = archiveStats(Object.values(roster), now);
+  const fresh = loaded && stats.species === 0;
+  const dash = "—";
+  return (
+    <section className="relative mb-4">
+      <div
+        aria-hidden={fresh}
+        className={`grid grid-cols-2 gap-4 lg:grid-cols-4 ${fresh ? "invisible" : ""}`}
+      >
+        <HeroTile
+          label="species on record"
+          value={loaded ? String(stats.species) : dash}
+          sub={
+            loaded
+              ? `across ${stats.visits === 1 ? "1 visit" : `${stats.visits} visits`}`
+              : dash
+          }
+        />
+        <HeroTile
+          label="species this week"
+          value={loaded ? String(stats.week) : dash}
+          sub={loaded ? `of ${stats.species} on record` : dash}
+        />
+        <HeroTile
+          label="species today"
+          value={loaded ? String(stats.today) : dash}
+          sub={loaded ? `of ${stats.week} this week` : dash}
+        />
+        <HeroTile
+          label="listening since"
+          valueClass="text-xl sm:text-3xl xl:text-4xl"
+          value={loaded && stats.since !== null ? sinceOf(stats.since) : dash}
+          sub={
+            loaded && stats.days !== null
+              ? stats.days === 1
+                ? "1 day on the air"
+                : `${stats.days} days on the air`
+              : dash
+          }
+        />
+      </div>
+      {fresh && (
+        <div className="panel absolute inset-0 flex flex-col items-center justify-center gap-1 rounded-sm border border-line bg-panel px-4 text-center">
+          <span className="stamp text-[10px] text-inkfaint">
+            a brand new aviary
+          </span>
+          <span
+            className="text-2xl text-ink sm:text-3xl"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            waiting for the first visitor
+          </span>
+          <span className="stamp text-[10px] text-inkdim">
+            the record starts with the next bird
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function Aviary() {
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
@@ -904,6 +1028,8 @@ export function Aviary() {
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
       <AviaryMasthead lamp={{ busUp, status: earlStatus }} />
+      {/* The whole record's numbers, above both columns (#260). */}
+      <ArchiveHero roster={roster} loaded={loaded} now={nowTs} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
         {/* Hero: the aviary grid */}
         <section className="panel self-start rounded-sm border border-line bg-panel">
