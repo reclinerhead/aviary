@@ -506,7 +506,10 @@ function NewArrivals({
   const entries = Object.values(roster);
   const arrivals = now === null ? [] : newArrivals(entries, now - windowS);
   return (
-    <section className="panel rounded-sm border border-line bg-panel">
+    <section
+      id="new-arrivals"
+      className="panel scroll-mt-4 rounded-sm border border-line bg-panel"
+    >
       <PanelLabel
         title="New Arrivals"
         right={<ArrivalsToggle windowS={windowS} onChange={setWindowS} />}
@@ -686,9 +689,15 @@ function EarlLamp({ busUp, status }: { busUp: boolean; status: string | null }) 
 function AviaryMasthead({
   lamp,
   back,
+  jumps,
 }: {
   lamp?: { busUp: boolean; status: string | null };
   back?: { href: string; label: string };
+  /** Small-viewport anchor chips in the tab bar (#265) -- only the main
+   * page has the stacked-columns problem (and the sections) they jump to,
+   * so only it passes them; the lamp precedent. Plain hash anchors on
+   * purpose: instant, pre-hydration, shareable. */
+  jumps?: { href: string; label: string }[];
 }) {
   return (
     <header className="mb-4">
@@ -712,10 +721,23 @@ function AviaryMasthead({
       <p className="stamp mt-1 text-xs text-inkfaint">
         earl with the ears · every bird the yard has announced
       </p>
-      <nav className="mt-3 flex gap-4 border-b border-line">
+      <nav className="mt-3 flex items-baseline gap-4 border-b border-line">
         <span className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink">
           aviary
         </span>
+        {jumps && (
+          <span className="ml-auto flex gap-4 lg:hidden">
+            {jumps.map((j) => (
+              <a
+                key={j.href}
+                href={j.href}
+                className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+              >
+                {j.label}
+              </a>
+            ))}
+          </span>
+        )}
       </nav>
     </header>
   );
@@ -1027,7 +1049,13 @@ export function Aviary() {
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead lamp={{ busUp, status: earlStatus }} />
+      <AviaryMasthead
+        lamp={{ busUp, status: earlStatus }}
+        jumps={[
+          { href: "#latest-events", label: "events ↓" },
+          { href: "#new-arrivals", label: "arrivals ↓" },
+        ]}
+      />
       {/* The whole record's numbers, above both columns (#260). */}
       <ArchiveHero roster={roster} loaded={loaded} now={nowTs} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -1122,7 +1150,10 @@ export function Aviary() {
 
         {/* Right rail */}
         <div className="flex flex-col gap-4">
-          <section className="panel rounded-sm border border-line bg-panel">
+          <section
+            id="latest-events"
+            className="panel scroll-mt-4 rounded-sm border border-line bg-panel"
+          >
             <PanelLabel
               title="Latest Events"
               right={<EnhanceToggle player={player} />}
