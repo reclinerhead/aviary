@@ -81,10 +81,16 @@
 #   MERLE_LATLON          "lat,lon", REQUIRED (gate.parse_latlon raises --
 #                         the D4 mask needs a place to stand)
 #   MERLE_EARL_SOURCES    comma list from {amcrest, rover} (default "amcrest")
-#   MERLE_RTSP_HOST       the Amcrest (default 192.168.1.102)
+#   MERLE_RTSP_URL        full RTSP URL for the amcrest source -- the normal
+#                         posture since Frigate (issue #247): the go2rtc
+#                         restream (rtsp://127.0.0.1:8554/driveway on pearl),
+#                         credential-free, so MERLE_RTSP_* below go unused
+#   MERLE_RTSP_HOST       the Amcrest (default 192.168.1.102) -- the direct
+#                         fallback form, used only when MERLE_RTSP_URL unset
 #   MERLE_RTSP_USER       (default admin)
-#   MERLE_RTSP_PASS       REQUIRED when amcrest is a source (never committed,
-#                         never logged -- rtsp_argv redacts)
+#   MERLE_RTSP_PASS       REQUIRED when amcrest is a source and MERLE_RTSP_URL
+#                         is unset (never committed, never logged --
+#                         rtsp_argv redacts)
 #   MERLE_EARL_ROVER_CMD  full rover capture command (default: the ssh+arecord
 #                         one-liner; pearl->merle ssh keys are a deploy step)
 #   MERLE_EARL_THRESHOLD  BirdNET confidence floor (default
@@ -147,12 +153,16 @@ def birdnet_week(t=None):
     return week_of(lt.tm_mon, lt.tm_mday)
 
 
-def rtsp_argv(host, user, password):
-    """The Amcrest audio-only pull, as argv (no shell -- the password never
+def rtsp_argv(host, user, password, url=None):
+    """The driveway audio-only pull, as argv (no shell -- the password never
     meets a shell). Returns (argv, redacted_string_for_logs) -- the
-    frames.rtsp_url() convention: build once, redact at the same counter."""
-    url = (f"rtsp://{user}:{password}@{host}:554/"
-           "cam/realmonitor?channel=1&subtype=0")
+    frames.rtsp_url() convention: build once, redact at the same counter.
+    `url` overrides the whole construction (issue #247: the Frigate/go2rtc
+    restream carries no credentials, so host/user/password go unused and an
+    empty password redacts nothing)."""
+    if url is None:
+        url = (f"rtsp://{user}:{password}@{host}:554/"
+               "cam/realmonitor?channel=1&subtype=0")
     # -timeout is the RTSP demuxer's socket-I/O bar in MICROseconds (issue
     # #201). It is what makes a dropped-but-unreset session END: the camera
     # going away mid-stream sends no FIN, so without it ffmpeg blocks on a
@@ -165,7 +175,10 @@ def rtsp_argv(host, user, password):
             "-rtsp_transport", "tcp", "-allowed_media_types", "audio",
             "-i", url, "-vn", "-f", "s16le",
             "-ar", str(gate.SAMPLE_RATE), "-ac", "1", "-"]
-    return argv, " ".join(argv).replace(password, "***")
+    redacted = " ".join(argv)
+    if password:
+        redacted = redacted.replace(password, "***")
+    return argv, redacted
 
 
 def source_commands():
@@ -178,11 +191,19 @@ def source_commands():
     commands = {}
     for name in names:
         if name == "amcrest":
+            override = os.environ.get("MERLE_RTSP_URL", "").strip()
+            if override:
+                # Issue #247: the Frigate/go2rtc restream. No credentials in
+                # a restream URL, so no password requirement -- the camera
+                # session is Frigate's to hold, Earl just listens to the copy.
+                commands[name] = rtsp_argv(None, None, "", url=override)
+                continue
             password = os.environ.get("MERLE_RTSP_PASS", "")
             if not password:
                 raise RuntimeError(
                     "MERLE_RTSP_PASS is not set and amcrest is a configured "
-                    "source -- the camera will not open.")
+                    "source (and MERLE_RTSP_URL is unset) -- the camera "
+                    "will not open.")
             commands[name] = rtsp_argv(
                 os.environ.get("MERLE_RTSP_HOST", DEFAULT_RTSP_HOST),
                 os.environ.get("MERLE_RTSP_USER", "admin"), password)
