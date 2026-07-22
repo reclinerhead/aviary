@@ -1324,34 +1324,44 @@ function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
 }
 
 /** The weather page's margin figure: the pass's exposure-normalised effects
- * as chips, strongest first. A thin finding keeps its hedge in pixels --
- * dashed, dimmed, tagged -- the show-with-hedging rule made visible. Only
- * rendered at all when the pass judged the sample sufficient; a confident
- * chip over hedged prose would be the figure contradicting the writing. */
+ * as full-width rows, strongest first (#257 -- was a cluster of 9px chips,
+ * too small to read; the findings are the figure, so they earn real size).
+ * A thin finding keeps its hedge in pixels -- dashed, dimmed, tagged -- the
+ * show-with-hedging rule made visible. Each row spans the column so the label
+ * can never wrap (nowrap + truncate guard); the percentage holds a fixed
+ * gutter so the labels align down the left like a ledger. Only rendered at
+ * all when the pass judged the sample sufficient; a confident row over hedged
+ * prose would be the figure contradicting the writing. */
 function WeatherChipsRow({ stats }: { stats: AnalysisStats | null }) {
   const chips = weatherChips(stats);
   return (
-    <div className="flex min-h-[52px] flex-wrap content-start gap-1.5">
+    <div className="flex min-h-[52px] flex-col gap-1.5">
       {chips.length > 0 ? (
         chips.map((c) => (
           <span
             key={c.label}
-            className={`stamp h-fit rounded-sm border px-2 py-1 text-[9px] ${
+            className={`stamp flex w-full items-baseline gap-3 whitespace-nowrap rounded-sm border px-3 py-2 text-base ${
               c.thin
-                ? "border-dashed border-line text-inkfaint"
-                : "border-line text-inkdim"
+                ? "border-dashed border-line text-inkdim"
+                : "border-line text-ink"
             }`}
           >
-            <span className={c.thin ? undefined : "text-wing"}>
+            <span
+              className={`w-14 shrink-0 tabular-nums ${
+                c.thin ? undefined : "text-wing"
+              }`}
+            >
               {c.pct > 0 ? `+${c.pct}%` : `−${Math.abs(c.pct)}%`}
-            </span>{" "}
-            {c.label}
-            {c.thin ? " · thin" : ""}
+            </span>
+            <span className="truncate">
+              {c.label}
+              {c.thin ? " · thin" : ""}
+            </span>
           </span>
         ))
       ) : (
-        <div className="flex h-[52px] w-full items-center justify-center rounded-sm border border-line bg-panel2">
-          <span className="stamp px-4 text-center text-[9px] text-inkfaint">
+        <div className="flex min-h-[52px] w-full items-center justify-center rounded-sm border border-line bg-panel2">
+          <span className="stamp px-4 text-center text-xs text-inkfaint">
             no confident weather figures yet
           </span>
         </div>
