@@ -1016,7 +1016,7 @@ export function Aviary() {
                     <li
                       key={e.key}
                       className={
-                        hydratedKeys.current.has(e.key) ? "" : "journal-filed"
+                        hydratedKeys.current.has(e.key) ? "" : "event-new"
                       }
                     >
                       {e.kind === "detection" ? (
@@ -2048,7 +2048,22 @@ export function AviaryEvents() {
   const busyRef = useRef(false);
   const exhaustedRef = useRef(false);
   const keysRef = useRef<Set<string>>(new Set());
+  // Keys that arrived LIVE over the bus (not loaded from an archive page):
+  // only these glow. The inverse of the ticker's hydratedKeys -- here the
+  // default is "from the store, no glow", so we mark the new ones instead.
+  const liveKeysRef = useRef<Set<string>>(new Set());
+  // The live bus handler is subscribed once, so it reads the current filter
+  // through refs rather than closing over stale state (the loadPage idiom).
+  const selectedRef = useRef<ReadonlySet<string>>(selected);
+  const anchorDayRef = useRef(anchorDay);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  useEffect(() => {
+    anchorDayRef.current = anchorDay;
+  }, [anchorDay]);
 
   useEffect(() => {
     const d = new Date();
@@ -2127,6 +2142,9 @@ export function AviaryEvents() {
     if (!ready) return;
     const gen = ++genRef.current;
     keysRef.current = new Set();
+    // A refetch re-reads live rows from the store as ordinary history; they
+    // must not glow a second time, so the live set resets with the page.
+    liveKeysRef.current = new Set();
     exhaustedRef.current = false;
     beforeRef.current = anchorDay === "" ? null : dayAnchor(anchorDay);
     const qp = new URLSearchParams();
@@ -2148,6 +2166,41 @@ export function AviaryEvents() {
       search ? `?${search}` : window.location.pathname,
     );
   }, [ready, selected, anchorDay, loadPage]);
+
+  // Live arrivals (issue #259): the archive was fetch-only, so a new event
+  // never showed until reload. Subscribe like the ticker and prepend -- but
+  // ONLY on the live view (no pinned day) and only if the event passes the
+  // active species filter, both read through refs so this subscribes once. A
+  // past-day or filtered-out event must never splice in. The prepended row is
+  // marked live so it (and only it) glows; dayGroups re-buckets it to the top
+  // of today. The same ±1 race the ticker accepts applies here (a bus event
+  // landing during a filter reset), corrected by a reload.
+  useEffect(() => {
+    const url = busUrl(
+      window.location.hostname,
+      process.env.NEXT_PUBLIC_MERLE_MQTT_WS,
+    );
+    const client = mqtt.connect(url, { reconnectPeriod: 3000 });
+    client.on("connect", () => client.subscribe(AUDIO_EVENTS_TOPIC));
+    client.on("error", (err) =>
+      console.debug("[bus] error", err?.message ?? err),
+    );
+    client.on("message", (_topic, payload) => {
+      const event = parseAudioEvent(payload.toString());
+      if (!event || event.kind !== "detection") return;
+      if (anchorDayRef.current !== "") return; // a pinned past day stays put
+      const sel = selectedRef.current;
+      if (sel.size > 0 && !sel.has(event.species_sci)) return;
+      const key = audioEventKey(event);
+      if (keysRef.current.has(key)) return;
+      keysRef.current.add(key);
+      liveKeysRef.current.add(key);
+      setRows((prev) => [{ ...event, key }, ...prev]);
+    });
+    return () => {
+      client.end(true);
+    };
+  }, []);
 
   // The scroll's engine: reaching within 600px of the sentinel asks for the
   // next page. Refs carry the guards; the boolean dep re-subscribes when the
@@ -2371,7 +2424,9 @@ export function AviaryEvents() {
                     {g.rows.map((e) => (
                       <li
                         key={e.key}
-                        className="flex items-center gap-3 rounded-sm border border-line bg-panel2 px-3 py-2.5"
+                        className={`flex items-center gap-3 rounded-sm border border-line bg-panel2 px-3 py-2.5${
+                          liveKeysRef.current.has(e.key) ? " event-new" : ""
+                        }`}
                       >
                         <TickerThumb
                           sci={e.species_sci}
