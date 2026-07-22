@@ -1137,7 +1137,14 @@ export function Aviary() {
                   </span>
                 </div>
               ) : (
-                <ul className="scrollpane flex max-h-[540px] flex-col gap-1.5 overflow-y-auto pr-1">
+                // -m-3/p-3: paint headroom for the #259 glow (#263). The
+                // overflow-y clip cuts everything outside the padding box,
+                // and box-shadow paints outside the row -- so the box grows
+                // 12px past the rows on every side while the rows keep
+                // their exact position and width. max-h rises by the same
+                // 24px (border-box), so the populated panel's height is
+                // unchanged.
+                <ul className="scrollpane -m-3 flex max-h-[564px] flex-col gap-1.5 overflow-y-auto p-3">
                   {events.map((e) => (
                     <li
                       key={e.key}
