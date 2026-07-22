@@ -804,9 +804,14 @@ function ArchiveHero({
   const dash = "—";
   return (
     <section className="relative mb-4">
+      {/* At lg the band adopts the page grid's own tracks -- three fluid
+          columns plus the rail's 340px -- so with the shared gap-4 the
+          fourth tile's left edge IS the rail's and the third tile's right
+          edge IS the Life List's, by construction (#265 addendum). An even
+          grid-cols-4 missed both seams: the rail is fixed-width, not 25%. */}
       <div
         aria-hidden={fresh}
-        className={`grid grid-cols-2 gap-4 lg:grid-cols-4 ${fresh ? "invisible" : ""}`}
+        className={`grid grid-cols-2 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_340px] ${fresh ? "invisible" : ""}`}
       >
         <HeroTile
           label="species on record"
