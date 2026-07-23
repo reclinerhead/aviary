@@ -66,6 +66,7 @@ import {
   standingFor,
   todayVisitors,
   weatherChips,
+  weatherChipExplain,
   yardRecords,
 } from "@/lib/aviary";
 import { VisitsChart } from "@/components/VisitsChart";
@@ -1340,7 +1341,13 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
     ? `${dayOf(analysis.generated_ts)}${analysis.model ? ` · ${analysis.model}` : ""}`
     : null;
   return (
-    <section className="mt-4">
+    // overflow-x-clip is the page-never-scrolls-sideways guard for the weather
+    // pills' hover tooltips (WeatherChipsRow): an absolutely-positioned bubble
+    // centred on a pill in the narrow right column of the md spread would
+    // otherwise extend past the viewport and add a horizontal scroll. Clipping
+    // x here contains it; the tooltip's upward (y) reveal sits deep inside the
+    // section, so it is never clipped by this.
+    <section className="mt-4 overflow-x-clip">
       <div className="flex items-baseline justify-between gap-3 pb-2">
         <h2
           className="text-lg text-ink"
@@ -1493,43 +1500,59 @@ function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
 }
 
 /** The weather page's margin figure: the pass's exposure-normalised effects
- * as full-width rows, strongest first (#257 -- was a cluster of 9px chips,
- * too small to read; the findings are the figure, so they earn real size).
- * A thin finding keeps its hedge in pixels -- dashed, dimmed, tagged -- the
- * show-with-hedging rule made visible. Each row spans the column so the label
- * can never wrap (nowrap + truncate guard); the percentage holds a fixed
- * gutter so the labels align down the left like a ledger. Only rendered at
- * all when the pass judged the sample sufficient; a confident row over hedged
- * prose would be the figure contradicting the writing. */
+ * as one horizontal row of pills, strongest first (#276 -- was a vertical
+ * stack of full-width rows since #257, which grew far taller than the facing
+ * rhythm strip and left the two journal pages' prose starting on different
+ * lines). The row is a fixed h-[52px] box matching RhythmStrip exactly, so
+ * the figure heights agree and the paragraphs beneath both pages align. A
+ * thin finding keeps its hedge in pixels -- dashed and dimmed -- and moves
+ * its "· thin" words into the tooltip (weatherChipExplain), which decodes
+ * each effect on hover; the paragraph beneath carries the interpretation the
+ * tooltip deliberately doesn't. Each pill is nowrap so a label never wraps.
+ * Only rendered at all when the pass judged the sample sufficient; a confident
+ * row over hedged prose would be the figure contradicting the writing. */
 function WeatherChipsRow({ stats }: { stats: AnalysisStats | null }) {
   const chips = weatherChips(stats);
   return (
-    <div className="flex min-h-[52px] flex-col gap-1.5">
+    <div className="min-h-[52px] md:h-[52px]">
       {chips.length > 0 ? (
-        chips.map((c) => (
-          <span
-            key={c.label}
-            className={`stamp flex w-full items-baseline gap-3 whitespace-nowrap rounded-sm border px-3 py-2 text-base ${
-              c.thin
-                ? "border-dashed border-line text-inkdim"
-                : "border-line text-ink"
-            }`}
-          >
+        // One fixed-height row on the md+ spread (where it faces the rhythm
+        // strip and the two pages' prose must start on the same line); wraps
+        // on mobile, where the pages stack and a 4-pill row would otherwise
+        // push the page into a horizontal scroll.
+        <div className="flex min-h-[52px] w-full flex-wrap items-center gap-1.5 md:h-full md:flex-nowrap">
+          {chips.map((c) => (
             <span
-              className={`w-14 shrink-0 tabular-nums ${
-                c.thin ? undefined : "text-wing"
+              key={c.label}
+              className={`stamp group relative flex min-w-0 items-baseline gap-1.5 whitespace-nowrap rounded-sm border px-2 py-1 text-sm ${
+                c.thin
+                  ? "border-dashed border-line text-inkdim"
+                  : "border-line text-ink"
               }`}
             >
-              {c.pct > 0 ? `+${c.pct}%` : `−${Math.abs(c.pct)}%`}
+              <span
+                className={`shrink-0 tabular-nums ${
+                  c.thin ? undefined : "text-wing"
+                }`}
+              >
+                {c.pct > 0 ? `+${c.pct}%` : `−${Math.abs(c.pct)}%`}
+              </span>
+              <span className="truncate">{c.label}</span>
+              {/* Desktop-only: touch devices have no hover, and rendering the
+                  absolutely-positioned bubble on mobile adds its width to the
+                  page's scrollWidth (a horizontal scroll) for a tip that can
+                  never open there. hidden md:block removes it from layout. */}
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden w-max max-w-[15rem] -translate-x-1/2 translate-y-1 whitespace-normal rounded-sm border border-line bg-panel2 px-2.5 py-1.5 text-[11px] normal-case leading-snug tracking-normal text-inkdim opacity-0 shadow-lg transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 md:block"
+              >
+                {weatherChipExplain(c)}
+              </span>
             </span>
-            <span className="truncate">
-              {c.label}
-              {c.thin ? " · thin" : ""}
-            </span>
-          </span>
-        ))
+          ))}
+        </div>
       ) : (
-        <div className="flex min-h-[52px] w-full items-center justify-center rounded-sm border border-line bg-panel2">
+        <div className="flex min-h-[52px] w-full items-center justify-center rounded-sm border border-line bg-panel2 md:h-full">
           <span className="stamp px-4 text-center text-xs text-inkfaint">
             no confident weather figures yet
           </span>
