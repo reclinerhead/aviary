@@ -1157,6 +1157,31 @@ export function weatherChips(stats: AnalysisStats | null, cap = 4): StatChip[] {
     .slice(0, cap);
 }
 
+// Buckets that aren't already usable as "in ___ weather" get a grammar fix.
+// Only `rain` needs it ("in rain weather" reads wrong); every temperature band
+// and the other sky buckets (clear, cloudy) are adjectives already.
+const WEATHER_ADJ: Record<string, string> = { rain: "rainy" };
+
+/** One plain-language sentence decoding a weather chip for its hover tooltip
+ * (issue #276) -- the figure shows "+59% MILD", this says what that means, and
+ * the paragraph beneath carries the interpretation the tooltip deliberately
+ * doesn't. Reads the SAME exposure-normalised effect the chip carries, never a
+ * count (the section's standing rule). A −100% finding (rounded: zero visits in
+ * the bucket) reads "almost never" rather than an unhedged "never"; thin
+ * findings append the caveat the dashed border signals visually. */
+export function weatherChipExplain(chip: StatChip): string {
+  const phrase = WEATHER_ADJ[chip.label] ?? chip.label;
+  let s: string;
+  if (chip.pct <= -100) {
+    s = `Almost never seen in ${phrase} weather.`;
+  } else if (chip.pct > 0) {
+    s = `Seen ${chip.pct}% more often in ${phrase} weather than its overall average.`;
+  } else {
+    s = `Seen ${Math.abs(chip.pct)}% less often in ${phrase} weather than its overall average.`;
+  }
+  return chip.thin ? `${s} Based on thin data — few visits.` : s;
+}
+
 /** A date input's "yyyy-mm-dd" -> the last second of that LOCAL day: the
  * jump-to-date cursor (#211). Parsed by hand because `new Date(string)`
  * reads a bare date as UTC midnight -- off by a whole day for every viewer

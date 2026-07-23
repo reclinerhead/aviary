@@ -50,6 +50,7 @@ import {
   visitTicks,
   visitsCeil,
   weatherChips,
+  weatherChipExplain,
   weekWindowStart,
   yardRecords,
 } from "./aviary";
@@ -1356,6 +1357,34 @@ describe("weatherChips", () => {
       },
     };
     expect(weatherChips(many)).toHaveLength(4);
+  });
+});
+
+describe("weatherChipExplain", () => {
+  it("reads a positive effect as 'more often' against the baseline", () => {
+    expect(weatherChipExplain({ label: "mild", pct: 59, thin: false })).toBe(
+      "Seen 59% more often in mild weather than its overall average.",
+    );
+  });
+  it("reads a negative effect as 'less often'", () => {
+    expect(weatherChipExplain({ label: "warm", pct: -18, thin: false })).toBe(
+      "Seen 18% less often in warm weather than its overall average.",
+    );
+  });
+  it("softens a −100% finding to 'almost never', not an unhedged 'never'", () => {
+    expect(weatherChipExplain({ label: "clear", pct: -100, thin: false })).toBe(
+      "Almost never seen in clear weather.",
+    );
+  });
+  it("fixes 'rain' to read grammatically as 'rainy weather'", () => {
+    expect(weatherChipExplain({ label: "rain", pct: 24, thin: false })).toBe(
+      "Seen 24% more often in rainy weather than its overall average.",
+    );
+  });
+  it("appends the thin-data caveat the dashed border signals", () => {
+    expect(weatherChipExplain({ label: "warm", pct: 18, thin: true })).toBe(
+      "Seen 18% more often in warm weather than its overall average. Based on thin data — few visits.",
+    );
   });
 });
 
