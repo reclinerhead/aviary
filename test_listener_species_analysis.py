@@ -299,15 +299,16 @@ def test_describe_weather_labels_direction_as_a_keyword():
 
 
 def test_describe_stats_characterises_the_microphone_split_itself():
-    """The other desk-tested regression: given "amcrest: 744, rover: 1" the
+    """The other desk-tested regression: given a 744-to-1 source split the
     model called it "slightly more". Anything it can get wrong by describing,
-    we describe for it."""
+    we describe for it. (Source labels are data straight off the sightings
+    rows -- "amcrest" before #270's registry renamed it "house-rear".)"""
     base = at(2026, 7, 18, 7)
     stats = sa.build_stats([base], [], base + 3600,
-                           sources={"amcrest": 744, "rover": 1})
-    assert "Almost all of them came from the amcrest" in sa.describe_stats(stats)
+                           sources={"house-rear": 744, "rover": 1})
+    assert "Almost all of them came from the house-rear" in sa.describe_stats(stats)
     even = sa.build_stats([base], [], base + 3600,
-                          sources={"amcrest": 50, "rover": 45})
+                          sources={"house-rear": 50, "rover": 45})
     assert "broadly similar" in sa.describe_stats(even)
 
 
@@ -337,12 +338,12 @@ def conn():
 
 def seed(conn, sci, common, visit_times):
     conn.execute("INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
-                 (sci, common, min(visit_times), "amcrest", None))
+                 (sci, common, min(visit_times), "house-rear", None))
     for ts in visit_times:
         conn.execute(
             "INSERT INTO sightings (ts, source, species_sci, species_common,"
             " confidence, clip, wind_suspect, rms) VALUES (?,?,?,?,?,?,?,?)",
-            (ts, "amcrest", sci, common, 0.9, None, 0, 0.01))
+            (ts, "house-rear", sci, common, 0.9, None, 0, 0.01))
     conn.commit()
 
 
@@ -380,7 +381,7 @@ def test_worklist_counts_visits_not_rows(conn):
 
 def test_analyze_species_writes_nothing_without_visits(conn):
     conn.execute("INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
-                 ("Ghost sci", "Ghost", 1, "amcrest", None))
+                 ("Ghost sci", "Ghost", 1, "house-rear", None))
     status, stats = sa.analyze_species(conn, "Ghost sci", "Ghost",
                                        ollama=None, weather_path=None)
     assert status == "no-visits" and stats is None

@@ -22,6 +22,7 @@ import time
 
 import pytest
 
+import feeds
 from listener import earl
 
 
@@ -142,14 +143,14 @@ def test_slow_but_alive_is_never_called_stalled(pipe):
     t.join()
 
 
-# --- the two capture commands carry their own timeouts ------------------------
+# --- the capture commands carry their own timeouts ----------------------------
 
 def test_rtsp_argv_carries_the_socket_timeout():
     """Layer 1: without this, a camera that goes away without a FIN leaves
     ffmpeg blocked on a socket that stays ESTAB. It is -timeout (the rtsp
     demuxer's, in microseconds), NOT -rw_timeout, which that demuxer has no
     such option for -- verified against pearl's ffmpeg 8.0.1."""
-    argv, _redacted = earl.rtsp_argv("192.168.1.102", "admin", "sekrit")
+    argv, _redacted = earl.rtsp_argv("rtsp://pearl:8554/house-rear")
     assert "-timeout" in argv
     assert argv[argv.index("-timeout") + 1] == str(earl.SOCKET_TIMEOUT_US)
     assert argv.index("-timeout") < argv.index("-i")    # an INPUT option
@@ -162,12 +163,83 @@ def test_socket_timeout_matches_the_worker_bar():
     assert earl.SOCKET_TIMEOUT_US == earl.STALL_TIMEOUT_S * 1_000_000
 
 
-def test_rover_cmd_carries_ssh_keepalives(monkeypatch):
-    """Layer 2: merle powered off mid-capture half-opens the TCP, and the
-    kernel's own keepalive is ~2 hours away. ServerAlive* makes ssh exit in
-    ~15s, which lands the rover in the same restart path."""
-    monkeypatch.setenv("MERLE_EARL_SOURCES", "rover")
-    monkeypatch.delenv("MERLE_EARL_ROVER_CMD", raising=False)
-    argv, _redacted = earl.source_commands()["rover"]
-    assert "ServerAliveInterval=5" in argv
-    assert "ServerAliveCountMax=3" in argv
+def test_rtsp_argv_redacts_a_credentialed_url():
+    """The break-glass registry (MERLE_FEEDS with a direct camera URL) is
+    the one place credentials can reach this argv -- the redacted twin,
+    which is what every log line carries, must mask them."""
+    argv, redacted = earl.rtsp_argv("rtsp://admin:sekrit@192.168.1.102:554/x")
+    assert "sekrit" in " ".join(argv)       # ffmpeg needs the real thing
+    assert "sekrit" not in redacted
+    assert "admin:***@" in redacted
+
+
+# --- source_commands: registry -> capture, dispatched on kind (issue #270) ----
+
+def test_source_commands_dispatches_on_kind_never_name(monkeypatch, tmp_path):
+    """The point of #270: which sources exist is feeds.yml's business; Earl
+    only turns a KIND into a capture. Feed names here are deliberately ones
+    Earl has never heard of."""
+    registry = tmp_path / "feeds.yml"
+    registry.write_text(
+        "feeds:\n"
+        "  gazebo:\n"
+        "    kind: rtsp\n"
+        "    url: rtsp://pearl:8554/gazebo\n"
+        "    earl: true\n"
+        "  birdbath-mic:\n"
+        "    kind: command\n"
+        "    cmd: arecord -D plughw:1,0 -t raw -q\n"
+        "    earl: true\n"
+        "  spare-cam:\n"
+        "    kind: rtsp\n"
+        "    url: rtsp://pearl:8554/spare-cam\n"
+        "    earl: false\n")
+    monkeypatch.setenv("MERLE_FEEDS", str(registry))
+    commands = earl.source_commands()
+    assert set(commands) == {"gazebo", "birdbath-mic"}   # earl: false excluded
+    gazebo_argv, _ = commands["gazebo"]
+    assert gazebo_argv[0] == "ffmpeg"
+    assert "rtsp://pearl:8554/gazebo" in gazebo_argv
+    assert "-allowed_media_types" in gazebo_argv          # audio-only pull
+    mic_argv, _ = commands["birdbath-mic"]
+    assert mic_argv == ["arecord", "-D", "plughw:1,0", "-t", "raw", "-q"]
+
+
+def test_source_commands_shipped_registry_runs_the_house(monkeypatch):
+    """The default path is the repo's own feeds.yml -- both cameras and the
+    rover, every rtsp pull carrying the stall bar (issue #201's layer 1)."""
+    monkeypatch.delenv("MERLE_FEEDS", raising=False)
+    commands = earl.source_commands()
+    assert set(commands) == {"house-rear", "house-front", "rover"}
+    for name in ("house-rear", "house-front"):
+        argv, _ = commands[name]
+        assert "-timeout" in argv
+    rover_argv, _ = commands["rover"]
+    assert "ServerAliveInterval=5" in rover_argv          # #201's layer 2
+    assert "ServerAliveCountMax=3" in rover_argv
+
+
+def test_source_commands_empty_roster_fails_loud(monkeypatch, tmp_path):
+    """An Earl with nothing to listen to is a misconfiguration, not a
+    healthy-looking daemon that never publishes."""
+    registry = tmp_path / "feeds.yml"
+    registry.write_text(
+        "feeds:\n"
+        "  cam:\n"
+        "    kind: rtsp\n"
+        "    url: rtsp://pearl:8554/cam\n"
+        "    earl: false\n")
+    monkeypatch.setenv("MERLE_FEEDS", str(registry))
+    with pytest.raises(RuntimeError, match="nothing to listen to"):
+        earl.source_commands()
+
+
+def test_source_commands_refuses_a_kind_it_cannot_capture(monkeypatch):
+    """feeds.py may learn kinds Earl can't capture (the rover's MJPEG video,
+    #236) -- those must fail at startup with a name, never run as a
+    mystery source."""
+    fake = feeds.Feed(name="rover-video", kind="mjpeg",
+                      url="http://merle:5000/video_feed", earl=True)
+    monkeypatch.setattr(earl.feeds, "feeds_for", lambda consumer: [fake])
+    with pytest.raises(RuntimeError, match="no capture for"):
+        earl.source_commands()

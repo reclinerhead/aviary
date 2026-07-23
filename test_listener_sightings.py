@@ -279,56 +279,13 @@ def test_week_of_the_48_week_year():
     assert earl.week_of(12, 31) == 48   # the year is exactly 48 weeks
 
 
-def test_rtsp_argv_redacts_the_password():
-    argv, redacted = earl.rtsp_argv("192.168.1.102", "admin", "sekrit")
-    assert any("sekrit" in a for a in argv)      # the real argv works
-    assert "sekrit" not in redacted              # the loggable twin doesn't
-    assert "***" in redacted
+def test_rtsp_argv_is_an_audio_only_pull():
+    argv, _redacted = earl.rtsp_argv("rtsp://pearl:8554/house-rear")
     assert argv[0] == "ffmpeg" and argv[-1] == "-"
     assert "-allowed_media_types" in argv        # audio-only, no 4K bandwidth
 
 
-def test_source_commands_default_is_amcrest(monkeypatch):
-    monkeypatch.delenv("MERLE_EARL_SOURCES", raising=False)
-    monkeypatch.delenv("MERLE_RTSP_URL", raising=False)
-    monkeypatch.setenv("MERLE_RTSP_PASS", "x")
-    assert list(earl.source_commands()) == ["amcrest"]
-
-
-def test_source_commands_amcrest_requires_password(monkeypatch):
-    # The fail-loud rule holds for the DIRECT form only -- delenv the #247
-    # restream override so the test means the same thing on a box where the
-    # restream is the ambient default.
-    monkeypatch.setenv("MERLE_EARL_SOURCES", "amcrest")
-    monkeypatch.delenv("MERLE_RTSP_URL", raising=False)
-    monkeypatch.delenv("MERLE_RTSP_PASS", raising=False)
-    with pytest.raises(RuntimeError, match="MERLE_RTSP_PASS"):
-        earl.source_commands()
-
-
-def test_source_commands_amcrest_restream_override(monkeypatch):
-    # Issue #247: MERLE_RTSP_URL points Earl's ears at the go2rtc restream.
-    # No camera password needed (the restream carries no credentials), the
-    # URL is used verbatim, and the pull is still audio-only.
-    monkeypatch.setenv("MERLE_EARL_SOURCES", "amcrest")
-    monkeypatch.setenv("MERLE_RTSP_URL", "rtsp://127.0.0.1:8554/driveway")
-    monkeypatch.delenv("MERLE_RTSP_PASS", raising=False)
-    argv, redacted = earl.source_commands()["amcrest"]
-    assert "rtsp://127.0.0.1:8554/driveway" in argv
-    assert "-allowed_media_types" in argv
-    assert "-timeout" in argv                    # the #201 stall bar rides along
-    assert "rtsp://127.0.0.1:8554/driveway" in redacted
-
-
-def test_source_commands_unknown_source_fails_at_startup(monkeypatch):
-    monkeypatch.setenv("MERLE_EARL_SOURCES", "amcrest,webcam")
-    monkeypatch.setenv("MERLE_RTSP_PASS", "x")
-    with pytest.raises(RuntimeError, match="webcam"):
-        earl.source_commands()
-
-
-def test_source_commands_rover_is_overridable(monkeypatch):
-    monkeypatch.setenv("MERLE_EARL_SOURCES", "rover")
-    monkeypatch.setenv("MERLE_EARL_ROVER_CMD", "arecord -D hw:1,0 -t raw")
-    argv, redacted = earl.source_commands()["rover"]
-    assert argv == ["arecord", "-D", "hw:1,0", "-t", "raw"]
+# source_commands() and rtsp_argv's redaction moved to test_listener_earl.py
+# with #270: sources come from the feed registry (feeds.yml, covered by
+# test_feeds.py), and the old env-driven source list -- including the
+# MERLE_EARL_ROVER_CMD override, now just the registry's cmd field -- is gone.
