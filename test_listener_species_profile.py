@@ -29,7 +29,7 @@ def conn():
 def life(conn, sci, common):
     conn.execute(
         "INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
-        (sci, common, 100, "amcrest", None))
+        (sci, common, 100, "house-rear", None))
 
 
 def summary_page(**over):

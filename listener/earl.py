@@ -49,14 +49,19 @@
 # session -- exactly the shape Phase 0 proved for hours. Workers talk back
 # over a spawn-context Queue; wind rides a shared Value the other way.
 #
-# Sources produce s16le/48kHz/mono on stdout (gate.WINDOW_BYTES per window):
-#   amcrest  ffmpeg audio-only RTSP pull from the driveway cam's main stream
-#            (-allowed_media_types audio: the 48kHz AAC track alone, none of
-#            the 4K video's bandwidth). Camera-side audio must be enabled in
-#            the cam UI (done 2026-07-18; the Save button is load-bearing).
-#   rover    arecord on merle piped over ssh (the camera's own USB mic --
-#            plughw:0,0; Phase 0 D5: the JMTek dongle is silent). Overridable
-#            whole via MERLE_EARL_ROVER_CMD for the day the rover moves.
+# Sources come from the project feed registry (feeds.yml, issue #270): every
+# feed flagged earl: true becomes a worker, dispatched on its KIND -- never
+# its name, so adding a camera or retiring a mic is a registry edit, not a
+# code change here. All sources produce s16le/48kHz/mono on stdout
+# (gate.WINDOW_BYTES per window):
+#   rtsp     ffmpeg audio-only pull of the feed's url (-allowed_media_types
+#            audio: the 48kHz AAC track alone, none of the 4K video's
+#            bandwidth). Normally Frigate's credential-free go2rtc restream
+#            (#247); camera-side audio must be enabled in the cam's web UI
+#            (the Save button is load-bearing -- learned 2026-07-18).
+#   command  the feed's cmd verbatim (the rover's ssh+arecord pull of its
+#            USB camera mic -- plughw:0,0; Phase 0 D5: the JMTek dongle is
+#            silent).
 # A dead source restarts with backoff forever; a source that can't start is
 # "offline" on audio/sources, never a dead Earl (per-source liveness is the
 # entire point of the sources topic).
@@ -80,19 +85,15 @@
 #   MERLE_MQTT            the broker, REQUIRED (bus.py raises without it)
 #   MERLE_LATLON          "lat,lon", REQUIRED (gate.parse_latlon raises --
 #                         the D4 mask needs a place to stand)
-#   MERLE_EARL_SOURCES    comma list from {amcrest, rover} (default "amcrest")
-#   MERLE_RTSP_URL        full RTSP URL for the amcrest source -- the normal
-#                         posture since Frigate (issue #247): the go2rtc
-#                         restream (rtsp://127.0.0.1:8554/driveway on pearl),
-#                         credential-free, so MERLE_RTSP_* below go unused
-#   MERLE_RTSP_HOST       the Amcrest (default 192.168.1.102) -- the direct
-#                         fallback form, used only when MERLE_RTSP_URL unset
-#   MERLE_RTSP_USER       (default admin)
-#   MERLE_RTSP_PASS       REQUIRED when amcrest is a source and MERLE_RTSP_URL
-#                         is unset (never committed, never logged --
-#                         rtsp_argv redacts)
-#   MERLE_EARL_ROVER_CMD  full rover capture command (default: the ssh+arecord
-#                         one-liner; pearl->merle ssh keys are a deploy step)
+#   MERLE_FEEDS           alternate feed registry path (default: the repo's
+#                         feeds.yml -- see feeds.py). Which sources run, and
+#                         how each is captured, lives THERE, not in env.
+#                         Also the break-glass for a Frigate that's down: a
+#                         local uncommitted registry whose rtsp feed carries
+#                         the direct camera URL, credentials and all --
+#                         rtsp_argv redacts them from every log line.
+#                         (pearl->merle ssh keys for the rover feed remain a
+#                         deploy step.)
 #   MERLE_EARL_THRESHOLD  BirdNET confidence floor (default
 #                         gate.DEFAULT_THRESHOLD)
 #   MERLE_EARL_GATE_FLOOR YAMNet routing floor for bird/notable (default
@@ -116,14 +117,10 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 import bus
+import feeds
 from listener import gate
 
 CLIENT_ID = "earl"
-DEFAULT_RTSP_HOST = "192.168.1.102"
-DEFAULT_ROVER_CMD = ("ssh -o BatchMode=yes -o ConnectTimeout=5 "
-                     "-o ServerAliveInterval=5 -o ServerAliveCountMax=3 "
-                     "todd@merle "
-                     "arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw -q")
 RESTART_BACKOFF_S = (3, 10, 30, 60)   # then stays at 60 forever
 STALL_TIMEOUT_S = 15                  # no bytes at all -> the capture is hung
 SOCKET_TIMEOUT_US = STALL_TIMEOUT_S * 1_000_000   # same bar, ffmpeg's units
@@ -153,16 +150,13 @@ def birdnet_week(t=None):
     return week_of(lt.tm_mon, lt.tm_mday)
 
 
-def rtsp_argv(host, user, password, url=None):
-    """The driveway audio-only pull, as argv (no shell -- the password never
-    meets a shell). Returns (argv, redacted_string_for_logs) -- the
+def rtsp_argv(url):
+    """An audio-only ffmpeg pull of `url`, as argv (no shell -- credentials
+    never meet one). Returns (argv, redacted_string_for_logs) -- the
     frames.rtsp_url() convention: build once, redact at the same counter.
-    `url` overrides the whole construction (issue #247: the Frigate/go2rtc
-    restream carries no credentials, so host/user/password go unused and an
-    empty password redacts nothing)."""
-    if url is None:
-        url = (f"rtsp://{user}:{password}@{host}:554/"
-               "cam/realmonitor?channel=1&subtype=0")
+    Normally `url` is Frigate's credential-free go2rtc restream (#247) and
+    the redaction is a no-op; an alternate registry (MERLE_FEEDS) carrying
+    a direct camera URL gets its password masked, never logged."""
     # -timeout is the RTSP demuxer's socket-I/O bar in MICROseconds (issue
     # #201). It is what makes a dropped-but-unreset session END: the camera
     # going away mid-stream sends no FIN, so without it ffmpeg blocks on a
@@ -175,44 +169,35 @@ def rtsp_argv(host, user, password, url=None):
             "-rtsp_transport", "tcp", "-allowed_media_types", "audio",
             "-i", url, "-vn", "-f", "s16le",
             "-ar", str(gate.SAMPLE_RATE), "-ac", "1", "-"]
-    redacted = " ".join(argv)
-    if password:
-        redacted = redacted.replace(password, "***")
+    redacted = " ".join(feeds.redact_rtsp(a) if a is url else a for a in argv)
     return argv, redacted
 
 
 def source_commands():
-    """MERLE_EARL_SOURCES -> {name: (argv, redacted)}. Unknown names and an
-    amcrest without MERLE_RTSP_PASS fail at startup, not at first window --
-    the env_float ethos: never run half-configured while looking healthy."""
-    names = [s.strip() for s in
-             os.environ.get("MERLE_EARL_SOURCES", "amcrest").split(",")
-             if s.strip()]
+    """The feed registry -> {name: (argv, redacted)} for every feed flagged
+    earl: true (issue #270). Dispatch is on a feed's KIND, never its name --
+    which sources exist, and how each is captured, is feeds.yml's business
+    alone; this function only knows how to turn a kind into a capture. A
+    malformed registry, a kind Earl can't capture, or an empty roster all
+    fail at startup, not at first window -- the env_float ethos: never run
+    half-configured while looking healthy."""
     commands = {}
-    for name in names:
-        if name == "amcrest":
-            override = os.environ.get("MERLE_RTSP_URL", "").strip()
-            if override:
-                # Issue #247: the Frigate/go2rtc restream. No credentials in
-                # a restream URL, so no password requirement -- the camera
-                # session is Frigate's to hold, Earl just listens to the copy.
-                commands[name] = rtsp_argv(None, None, "", url=override)
-                continue
-            password = os.environ.get("MERLE_RTSP_PASS", "")
-            if not password:
-                raise RuntimeError(
-                    "MERLE_RTSP_PASS is not set and amcrest is a configured "
-                    "source (and MERLE_RTSP_URL is unset) -- the camera "
-                    "will not open.")
-            commands[name] = rtsp_argv(
-                os.environ.get("MERLE_RTSP_HOST", DEFAULT_RTSP_HOST),
-                os.environ.get("MERLE_RTSP_USER", "admin"), password)
-        elif name == "rover":
-            cmd = os.environ.get("MERLE_EARL_ROVER_CMD", DEFAULT_ROVER_CMD)
-            commands[name] = (shlex.split(cmd), cmd)
+    for feed in feeds.feeds_for("earl"):
+        if feed.kind == "rtsp":
+            commands[feed.name] = rtsp_argv(feed.url)
+        elif feed.kind == "command":
+            commands[feed.name] = (shlex.split(feed.cmd), feed.cmd)
         else:
-            raise RuntimeError(f"MERLE_EARL_SOURCES: unknown source {name!r} "
-                               "(known: amcrest, rover)")
+            # feeds.py validates kinds, but a future kind it knows and Earl
+            # doesn't (the rover's MJPEG video, #236) must fail here, loudly,
+            # not run as a mystery.
+            raise RuntimeError(
+                f"feeds.yml: feed {feed.name!r} has kind {feed.kind!r}, "
+                "which Earl has no capture for (known: rtsp, command)")
+    if not commands:
+        raise RuntimeError(
+            "no feed is flagged earl: true in the registry "
+            f"({feeds.registry_path()}) -- Earl has nothing to listen to")
     return commands
 
 
