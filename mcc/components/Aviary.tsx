@@ -1780,8 +1780,11 @@ export function SpeciesProfile({ sci }: { sci: string }) {
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
+    // Recent Visits is the last 24 hours only (#276) -- the at-a-glance
+    // "who's been by lately", not the archive; the full per-species history
+    // is one click away via the panel's "browse the full record" link.
     fetch(
-      `/aviary/recent?species=${encodeURIComponent(sci)}&limit=${PROFILE_ROWS}`,
+      `/aviary/recent?species=${encodeURIComponent(sci)}&since=${nowTs - 86400}&limit=${PROFILE_ROWS}`,
       { cache: "no-store" },
     )
       .then((r) => (r.ok ? r.json() : { events: [] }))
@@ -2059,51 +2062,70 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               right={<EnhanceToggle player={player} />}
             />
             <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-              {visits === null ? (
-                <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
-                  <span className="stamp text-xs text-inkfaint">
-                    opening the record …
-                  </span>
-                </div>
-              ) : visits.length === 0 ? (
-                <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
-                  <span className="stamp text-xs text-inkfaint">
-                    no visits on record
-                  </span>
-                </div>
-              ) : (
-                // On lg this fills whatever height the hero set, scrolling
-                // inside it -- a max-height there would fight the stretch
-                // and reopen the very gap this closes. Below lg the panels
-                // stack and there is no hero to match, so the cap stays:
-                // without it the list renders all 200 rows at ~11,000px and
-                // buries the chart under a mile of scrolling.
-                <ul className="scrollpane flex max-h-[560px] min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-1 lg:max-h-none">
-                  {visits.map((v) => (
-                    <li
-                      key={v.ts}
-                      className="flex items-center gap-2.5 rounded-sm border border-line bg-panel2 px-2.5 py-2"
-                    >
-                      <PlaySlot clip={v.clip} player={player} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline justify-between gap-2">
-                          <span className="text-xs text-ink">
-                            {stampOf(v.ts, midnight)}
-                          </span>
-                          <span className="stamp shrink-0 text-[9px] text-inkfaint">
-                            {v.source}
-                          </span>
+              {/* The list region flexes to fill the rail; the archive link
+                  below always renders after it, so it pins to the panel's
+                  bottom in every state (loading / empty / full) and can never
+                  pop in and shift the panel (house rule #1). */}
+              <div className="flex min-h-0 flex-1 flex-col">
+                {visits === null ? (
+                  <div className="flex min-h-[120px] flex-1 items-center justify-center rounded-sm border border-line bg-panel2">
+                    <span className="stamp text-xs text-inkfaint">
+                      opening the record …
+                    </span>
+                  </div>
+                ) : visits.length === 0 ? (
+                  <div className="flex min-h-[120px] flex-1 items-center justify-center rounded-sm border border-line bg-panel2">
+                    <span className="stamp px-4 text-center text-xs text-inkfaint">
+                      no visits in the last 24 hours
+                    </span>
+                  </div>
+                ) : (
+                  // On lg this fills whatever height the hero set, scrolling
+                  // inside it -- a max-height there would fight the stretch
+                  // and reopen the very gap this closes. Below lg the panels
+                  // stack and there is no hero to match, so the cap stays:
+                  // without it a busy day's rows bury the chart under a mile
+                  // of scrolling.
+                  <ul className="scrollpane flex max-h-[560px] min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-1 lg:max-h-none">
+                    {visits.map((v) => (
+                      <li
+                        key={v.ts}
+                        className="flex items-center gap-2.5 rounded-sm border border-line bg-panel2 px-2.5 py-2"
+                      >
+                        <PlaySlot clip={v.clip} player={player} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="text-xs text-ink">
+                              {stampOf(v.ts, midnight)}
+                            </span>
+                            <span className="stamp shrink-0 text-[9px] text-inkfaint">
+                              {v.source}
+                            </span>
+                          </div>
+                          <div className="stamp flex gap-2 text-[9px] text-inkfaint">
+                            <span>best {v.best.toFixed(2)}</span>
+                            {v.windows > 1 && <span>{v.windows} windows</span>}
+                            {v.wind_suspect && <span>wind?</span>}
+                          </div>
                         </div>
-                        <div className="stamp flex gap-2 text-[9px] text-inkfaint">
-                          <span>best {v.best.toFixed(2)}</span>
-                          {v.windows > 1 && <span>{v.windows} windows</span>}
-                          {v.wind_suspect && <span>wind?</span>}
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {/* The full record, this species pre-filtered (#276): the
+                  ticker's "browse the full record" idiom, but the link
+                  carries ?species=<sci> so the archive opens with this bird's
+                  filter pill already lit. Always rendered so it can't shift
+                  the panel. */}
+              <div className="pt-2.5 text-right">
+                <Link
+                  href={`/aviary/events?species=${encodeURIComponent(sci)}`}
+                  className="stamp text-[10px] text-inkdim transition-colors hover:text-squirrel"
+                >
+                  browse the full record →
+                </Link>
+              </div>
             </div>
           </section>
           </div>
