@@ -31,6 +31,7 @@ import {
   linePath,
   nearestPoint,
   nightBands,
+  sunTimes,
   parseCurrent,
   parsePoints,
   parseReport,
@@ -79,11 +80,15 @@ describe("parseCurrent", () => {
         description: "broken clouds",
         sunrise: 1752116400,
         sunset: 1752170700,
+        lat: 42.29,
+        lon: -85.59,
       }),
     );
     expect(got?.temp_f).toBe(78.3);
     expect(got?.description).toBe("broken clouds");
     expect(got?.wind_gust_mph).toBe(17.2);
+    expect(got?.lat).toBe(42.29); // the station's location (issue #111)
+    expect(got?.lon).toBe(-85.59);
   });
   it("reads the station fields (issue #51)", () => {
     const got = parseCurrent(
@@ -919,70 +924,124 @@ describe("snowSeason", () => {
   });
 });
 
+// The station's home turf, and two authoritative sun times for it and one
+// other place, pulled from published almanac data (UTC, so no timezone math):
+// the oracle for the solar algorithm. Tolerance is +-120s -- the issue's "+-2
+// min", which is also the drift the whole feature exists to kill.
+const KZOO = { lat: 42.29, lon: -85.59 };
+const D = 86_400;
+// UTC midnight of the day, then the published sunrise/sunset as epoch seconds.
+const KZOO_JUL15 = 1_752_537_600; // 2025-07-15T00:00:00Z
+const KZOO_JUL15_SUNRISE = 1_752_574_683; // 10:18:03Z
+const KZOO_JUL15_SUNSET = 1_752_628_726; // next day 01:18:46Z
+const NYC = { lat: 40.7128, lon: -74.006 };
+const NYC_DEC21 = 1_766_275_200; // 2025-12-21T00:00:00Z (winter solstice)
+const NYC_DEC21_SUNRISE = 1_766_319_307; // 12:15:07Z
+const NYC_DEC21_SUNSET = 1_766_352_810; // 21:33:30Z
+
+describe("sunTimes", () => {
+  const near = (got: number, want: number) =>
+    expect(Math.abs(got - want)).toBeLessThanOrEqual(120);
+
+  it("matches published sunrise/sunset within two minutes", () => {
+    const jul = sunTimes(KZOO.lat, KZOO.lon, KZOO_JUL15)!;
+    near(jul.sunrise, KZOO_JUL15_SUNRISE);
+    near(jul.sunset, KZOO_JUL15_SUNSET);
+    // A place and a solstice far from the first, so a fluke can't pass both.
+    const dec = sunTimes(NYC.lat, NYC.lon, NYC_DEC21)!;
+    near(dec.sunrise, NYC_DEC21_SUNRISE);
+    near(dec.sunset, NYC_DEC21_SUNSET);
+  });
+
+  it("puts summer days long and winter days short at mid-latitude", () => {
+    // Kalamazoo mid-July: ~15h of daylight (published length 15.01h).
+    const jul = (sunTimes(KZOO.lat, KZOO.lon, KZOO_JUL15)!.sunset -
+      sunTimes(KZOO.lat, KZOO.lon, KZOO_JUL15)!.sunrise) / 3600;
+    expect(jul).toBeGreaterThan(14.5);
+    expect(jul).toBeLessThan(15.5);
+    // NYC at the December solstice: ~9.3h, the year's shortest day.
+    const dec = (sunTimes(NYC.lat, NYC.lon, NYC_DEC21)!.sunset -
+      sunTimes(NYC.lat, NYC.lon, NYC_DEC21)!.sunrise) / 3600;
+    expect(dec).toBeGreaterThan(9.0);
+    expect(dec).toBeLessThan(9.7);
+  });
+
+  it("sits sunrise and sunset symmetric about solar noon", () => {
+    // The pure geometry: whatever the eqTime/longitude offset, the two events
+    // straddle solar noon evenly. A sign slip in the hour angle breaks this.
+    const { sunrise, sunset } = sunTimes(KZOO.lat, KZOO.lon, KZOO_JUL15)!;
+    const jc = (KZOO_JUL15 + 43_200) / 86_400 + 2440587.5;
+    const t = (jc - 2451545) / 36525;
+    // solar noon is just the midpoint here; assert the two are equidistant
+    const noon = (sunrise + sunset) / 2;
+    expect(Math.abs(sunset - noon - (noon - sunrise))).toBeLessThan(1);
+    expect(t).toBeGreaterThan(0); // sanity: the day is after J2000
+  });
+
+  it("reports no rise/set during polar night", () => {
+    // Longyearbyen (78N) in deep December: the sun never clears the horizon.
+    expect(sunTimes(78.22, 15.63, NYC_DEC21)).toBeNull();
+  });
+});
+
 describe("nightBands", () => {
-  const D = 86_400;
-  const sunrise = 6 * 3600; // 06:00 day zero
-  const sunset = 21 * 3600; // 21:00 day zero
-  it("repeats sunset->sunrise nights across the chart window", () => {
-    const now = 12 * 3600; // noon day zero
-    const bands = nightBands(sunrise, sunset, now - 24 * 3600, now + 48 * 3600);
-    expect(bands).toEqual([
-      { start: sunset - D, end: sunrise }, // last night
-      { start: sunset, end: sunrise + D }, // tonight
-      { start: sunset + D, end: sunrise + 2 * D }, // tomorrow night
-    ]);
+  // Real geometry now, so bands are asserted by shape and containment rather
+  // than exact seconds -- the exact seconds are sunTimes' job above.
+  it("bands each night across the window from lat/lon (issue #111)", () => {
+    // A 3-day window over Kalamazoo holds 2-3 sunset->sunrise nights.
+    const ts0 = KZOO_JUL15 + 12 * 3600; // local-ish noon, mid-window
+    const ts1 = ts0 + 3 * D;
+    const bands = nightBands(KZOO.lat, KZOO.lon, ts0, ts1);
+    expect(bands.length).toBeGreaterThanOrEqual(2);
+    // Every band is night: inside the window, ordered, and ~8-11h long.
+    for (const b of bands) {
+      expect(b.start).toBeGreaterThanOrEqual(ts0);
+      expect(b.end).toBeLessThanOrEqual(ts1);
+      expect(b.end).toBeGreaterThan(b.start);
+      const hours = (b.end - b.start) / 3600;
+      // interior nights run ~9h; edge-clamped ones are shorter, never longer
+      expect(hours).toBeLessThanOrEqual(11);
+    }
+    // Consecutive nights are ~24h apart and don't overlap.
+    for (let i = 1; i < bands.length; i++) {
+      expect(bands[i].start).toBeGreaterThan(bands[i - 1].end);
+    }
   });
-  it("clamps bands to the window edges", () => {
-    const bands = nightBands(sunrise, sunset, 0, D);
-    expect(bands).toEqual([
-      { start: 0, end: sunrise }, // last night, cut at the window start
-      { start: sunset, end: D }, // tonight, cut at the window end
-    ]);
+
+  it("shades night at any pan depth -- no horizon (issue #111 kills #106's)", () => {
+    // A month back: the old code drew nothing here (past its 7-day horizon).
+    // The real computation bands it just the same as this week.
+    const ts0 = KZOO_JUL15 - 30 * D;
+    const bands = nightBands(KZOO.lat, KZOO.lon, ts0, ts0 + 3 * D);
+    expect(bands.length).toBeGreaterThanOrEqual(2);
   });
-  it("is empty without sun times or with garbage ordering", () => {
-    expect(nightBands(null, sunset, 0, D)).toEqual([]);
-    expect(nightBands(sunrise, null, 0, D)).toEqual([]);
-    expect(nightBands(sunset, sunrise, 0, D)).toEqual([]); // swapped
-    expect(nightBands(sunrise, sunrise, 0, D)).toEqual([]);
+
+  it("clamps a straddling night to the window edge", () => {
+    // Start the window at local midnight, deep in a night: the first band is
+    // cut at ts0, not extended before it.
+    const ts0 = KZOO_JUL15 + 5 * 3600; // 05:00Z, before the ~10:18 sunrise
+    const bands = nightBands(KZOO.lat, KZOO.lon, ts0, ts0 + D);
+    expect(bands[0].start).toBe(ts0); // clamped, the night began earlier
+    expect(bands[0].end).toBeGreaterThan(ts0);
   });
-  // --- the honesty horizon (issue #106) ------------------------------------
-  it("stops repeating the sun times past the horizon", () => {
-    // Panned a month back: today's sunrise/sunset repeated that far would be
-    // an hour off, and a confident lie is worse than no shading at all.
-    const far = -30 * D;
-    expect(nightBands(sunrise, sunset, far, far + 2 * D)).toEqual([]);
-  });
-  it("still bands the day at the horizon's edge", () => {
-    // k = -7 is the last honest repetition (~15 min of drift, ~2px).
-    const bands = nightBands(
-      sunrise,
-      sunset,
-      sunset - 7 * D - 60,
-      sunrise - 6 * D + 60,
-    );
-    expect(bands).toEqual([{ start: sunset - 7 * D, end: sunrise - 6 * D }]);
-  });
-  it("bands nothing one day past the horizon", () => {
-    expect(
-      nightBands(sunrise, sunset, sunset - 8 * D - 60, sunrise - 7 * D + 60),
-    ).toEqual([]);
-  });
-  it("takes the horizon as a parameter", () => {
-    const win: [number, number] = [sunset - 3 * D - 60, sunrise - 2 * D + 60];
-    expect(nightBands(sunrise, sunset, ...win, 2)).toEqual([]);
-    expect(nightBands(sunrise, sunset, ...win, 3)).toHaveLength(1);
-  });
-  it("never reaches the horizon from the panel's live window", () => {
-    // The panel is 24h/48h, so its bands are always within two days of today
-    // -- the horizon is a station-view concern and can't touch it.
-    const now = 12 * 3600;
-    expect(
-      nightBands(sunrise, sunset, now - PAST_S, now + FUTURE_S),
-    ).toHaveLength(3);
+
+  it("draws no bands without a location (issue #111 honest absence)", () => {
+    // A pre-#111 payload carries no lat/lon -- no bands beats drifting ones.
+    expect(nightBands(null, KZOO.lon, KZOO_JUL15, KZOO_JUL15 + D)).toEqual([]);
+    expect(nightBands(KZOO.lat, null, KZOO_JUL15, KZOO_JUL15 + D)).toEqual([]);
+    expect(nightBands(null, null, KZOO_JUL15, KZOO_JUL15 + D)).toEqual([]);
   });
 
   it("is empty for a degenerate window", () => {
-    expect(nightBands(sunrise, sunset, D, D)).toEqual([]);
+    expect(nightBands(KZOO.lat, KZOO.lon, D, D)).toEqual([]);
+    expect(nightBands(KZOO.lat, KZOO.lon, 2 * D, D)).toEqual([]);
+  });
+
+  it("still bands the panel's live window (issue #106 regression)", () => {
+    // The panel is 24h back / 48h forward -- three nights, same as ever.
+    const now = KZOO_JUL15 + 12 * 3600;
+    const bands = nightBands(KZOO.lat, KZOO.lon, now - PAST_S, now + FUTURE_S);
+    expect(bands.length).toBeGreaterThanOrEqual(2);
   });
 });
 

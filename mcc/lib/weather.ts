@@ -29,6 +29,11 @@ export type CurrentWeather = {
   description: string | null;
   sunrise: number | null;
   sunset: number | null;
+  // The station's location (issue #111), echoed from OWM's `coord`. Null on a
+  // pre-#111 payload (an older weather.py through a deploy) -- the chart then
+  // draws no night bands rather than guessing them at depth.
+  lat: number | null;
+  lon: number | null;
   // The station's own instruments (issue #51). Every field null on a
   // pre-#51 payload -- the panel renders the em-dash placeholder, never NaN.
   dew_point_f: number | null;
@@ -208,6 +213,8 @@ export function parseCurrent(payload: string): CurrentWeather | null {
       description: str(o.description),
       sunrise: num(o.sunrise),
       sunset: num(o.sunset),
+      lat: num(o.lat),
+      lon: num(o.lon),
       dew_point_f: num(o.dew_point_f),
       vpd_inhg: num(o.vpd_inhg),
       wind_max_daily_gust_mph: num(o.wind_max_daily_gust_mph),
@@ -833,46 +840,94 @@ export type NightBand = { start: number; end: number };
 
 const DAY_S = 86_400;
 
-/** How far from today the repeated sun times stay honest (issue #106). The
- * bands are built by repeating TODAY's sunrise/sunset at 24h offsets, and day
- * length drifts ~2 minutes per day: a week out that's ~15 minutes, which at
- * the station window's scale (144h across ~1400px) is about 2px -- genuinely
- * invisible. A month out it's an hour, which is visibly wrong, and
- * wrong-but-confident is the one thing this chart doesn't do.
- *
- * So the bands simply STOP at the horizon rather than drifting into fiction.
- * Panned deep into the archive the chart has no night shading, which is an
- * honest "we don't know the sun times back there" -- the browser is only ever
- * told today's, never the station's lat/lon. Computing them per-day for real
- * needs that location on the bus, which is a backend change and its own
- * issue; this is the honest answer until then. */
-export const NIGHT_BAND_HORIZON_DAYS = 7;
+const DEG = Math.PI / 180;
+const mod360 = (x: number): number => ((x % 360) + 360) % 360;
 
-/** Night intervals (sunset -> next sunrise) intersecting [ts0, ts1], built by
- * repeating today's sun times at 24h offsets, out to the horizon above. Empty
- * when the report has no sun times or they are out of order (garbage in, no
- * bands out).
+/** Sunrise and sunset for one calendar day at a location, as epoch seconds --
+ * the NOAA solar-position algorithm, pure and deterministic (issue #111). This
+ * is what lets the chart shade night at ANY pan depth: the browser used to
+ * know only today's sun times (repeated at 24h offsets out to a horizon,
+ * issue #106), because `weather/current` carried the times but never the
+ * lat/lon needed to recompute them. Now it does.
  *
- * `k` is the repetition index, which IS the band's distance from today in
- * days -- so the horizon needs no clock of its own, and the panel's live
- * window (never more than 2 days from now) can't reach it. */
+ * `dayStart` is UTC midnight of the target day; the returned epochs are the
+ * true instants, so a sunset past midnight UTC (the normal case in the western
+ * hemisphere) correctly lands in the next UTC day. The solar quantities are
+ * evaluated once at the day's noon rather than iterated to each event -- the
+ * declination barely moves across a day, and the result holds well inside the
+ * couple-of-minutes tolerance the night bands care about (verified against
+ * published almanac times in the tests). 90.833 deg is the standard
+ * sunrise/sunset zenith: the sun's disc radius plus atmospheric refraction.
+ *
+ * Null when the sun neither rises nor sets that day (polar day/night, |cosH|
+ * > 1) -- honestly no ordinary sunrise/sunset to report. The driveway never
+ * sees it; nightBands treats such a day as unshaded. */
+export function sunTimes(
+  lat: number,
+  lon: number,
+  dayStart: number,
+): { sunrise: number; sunset: number } | null {
+  const jc = (dayStart + 43_200) / 86_400 + 2440587.5; // Julian day, day-noon
+  const t = (jc - 2451545) / 36525; // Julian century
+  const l0 = mod360(280.46646 + t * (36000.76983 + t * 0.0003032));
+  const m = 357.52911 + t * (35999.05029 - 0.0001537 * t);
+  const e = 0.016708634 - t * (0.000042037 + 0.0000001267 * t);
+  const c =
+    Math.sin(DEG * m) * (1.914602 - t * (0.004817 + 0.000014 * t)) +
+    Math.sin(DEG * 2 * m) * (0.019993 - 0.000101 * t) +
+    Math.sin(DEG * 3 * m) * 0.000289;
+  const omega = 125.04 - 1934.136 * t;
+  const appLong = l0 + c - 0.00569 - 0.00478 * Math.sin(DEG * omega);
+  const obliq =
+    23 + (26 + (21.448 - t * (46.815 + t * (0.00059 - t * 0.001813))) / 60) / 60 +
+    0.00256 * Math.cos(DEG * omega);
+  const decl = Math.asin(Math.sin(DEG * obliq) * Math.sin(DEG * appLong)) / DEG;
+  const y = Math.tan((DEG * obliq) / 2) ** 2;
+  const eqTime =
+    (4 / DEG) *
+    (y * Math.sin(2 * DEG * l0) -
+      2 * e * Math.sin(DEG * m) +
+      4 * e * y * Math.sin(DEG * m) * Math.cos(2 * DEG * l0) -
+      0.5 * y * y * Math.sin(4 * DEG * l0) -
+      1.25 * e * e * Math.sin(2 * DEG * m)); // minutes
+  const cosH =
+    Math.cos(DEG * 90.833) / (Math.cos(DEG * lat) * Math.cos(DEG * decl)) -
+    Math.tan(DEG * lat) * Math.tan(DEG * decl);
+  if (cosH > 1 || cosH < -1) return null; // sun never rises or never sets
+  const ha = Math.acos(cosH) / DEG; // half-day arc, degrees
+  const noonMin = 720 - 4 * lon - eqTime; // solar noon, UTC minutes past dayStart
+  return {
+    sunrise: dayStart + (noonMin - 4 * ha) * 60,
+    sunset: dayStart + (noonMin + 4 * ha) * 60,
+  };
+}
+
+/** Night intervals (sunset -> next sunrise) intersecting [ts0, ts1], with each
+ * day's sun times COMPUTED from the station's lat/lon (issue #111) rather than
+ * repeated from today's -- so the shading is correct at any pan depth, and the
+ * 7-day honesty horizon #106 needed is gone with the guesswork that forced it.
+ *
+ * Empty when lat/lon is unknown (a pre-#111 payload): honest absence stays the
+ * fallback, exactly as the horizon's ethos demanded -- no bands beats drifting
+ * ones. A day the sun never rises or sets is left unshaded (see sunTimes). */
 export function nightBands(
-  sunrise: number | null,
-  sunset: number | null,
+  lat: number | null,
+  lon: number | null,
   ts0: number,
   ts1: number,
-  horizonDays = NIGHT_BAND_HORIZON_DAYS,
 ): NightBand[] {
-  if (sunrise === null || sunset === null) return [];
-  if (sunset <= sunrise || sunset - sunrise >= DAY_S) return [];
+  if (lat === null || lon === null) return [];
   if (ts1 <= ts0) return [];
   const bands: NightBand[] = [];
-  const k0 = Math.floor((ts0 - sunset) / DAY_S) - 1;
-  const k1 = Math.ceil((ts1 - sunset) / DAY_S) + 1;
-  for (let k = k0; k <= k1; k++) {
-    if (Math.abs(k) > horizonDays) continue;
-    const start = Math.max(sunset + k * DAY_S, ts0);
-    const end = Math.min(sunrise + (k + 1) * DAY_S, ts1);
+  // Pair each day's sunset with the NEXT day's sunrise; pad a day each side so
+  // a band straddling either window edge is still generated before clamping.
+  const first = Math.floor(ts0 / DAY_S) * DAY_S - DAY_S;
+  for (let day = first; day <= ts1 + DAY_S; day += DAY_S) {
+    const tonight = sunTimes(lat, lon, day);
+    const tomorrow = sunTimes(lat, lon, day + DAY_S);
+    if (tonight === null || tomorrow === null) continue;
+    const start = Math.max(tonight.sunset, ts0);
+    const end = Math.min(tomorrow.sunrise, ts1);
     if (end > start) bands.push({ start, end });
   }
   return bands;

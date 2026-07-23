@@ -30,6 +30,7 @@ OWM_CURRENT = {
     "wind": {"speed": 8.5, "deg": 240, "gust": 17.2},
     "weather": [{"id": 803, "main": "Clouds",
                  "description": "broken clouds", "icon": "04d"}],
+    "coord": {"lon": -85.59, "lat": 42.29},
     "sys": {"sunrise": 1752116400, "sunset": 1752170700, "country": "US"},
     "name": "Kalamazoo",
 }
@@ -247,6 +248,8 @@ def test_merge_current_station_wins_garnish_rides():
     assert got["description"] == "broken clouds"
     assert got["sunrise"] == 1752116400
     assert got["sunset"] == 1752170700
+    assert got["lat"] == 42.29              # the station's location rides too
+    assert got["lon"] == -85.59
     assert got["station_signal"] == 4
     assert got["ts"] == 1752300000            # fetch time, not OWM's dt
 
@@ -256,6 +259,7 @@ def test_merge_current_before_first_garnish_or_roster():
     got = weather.merge_current(station, None, None)
     assert got["condition"] is None
     assert got["sunrise"] is None
+    assert got["lat"] is None
     assert got["station_signal"] is None
 
 
@@ -275,6 +279,8 @@ def test_parse_current_maps_the_report():
         "description": "broken clouds",
         "sunrise": 1752116400,
         "sunset": 1752170700,
+        "lat": 42.29,
+        "lon": -85.59,
     }
 
 
@@ -284,6 +290,10 @@ def test_parse_current_tolerates_missing_sections():
     assert got["temp_f"] is None
     assert got["wind_gust_mph"] is None
     assert got["condition"] is None
+    # no `coord` in a truncated response -> no location (issue #111): the
+    # dashboard draws no night bands rather than guessing them
+    assert got["lat"] is None
+    assert got["lon"] is None
 
 
 def test_parse_forecast_shapes_chart_points():
