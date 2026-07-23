@@ -149,6 +149,17 @@ def load_feeds(path=None):
     return feeds
 
 
+def feed(name, path=None):
+    """One feed by name, or FeedsError if absent -- for a consumer that wants
+    a specific feed by name (the daemon's house-front eye, #274) rather than
+    by consumer flag."""
+    loaded = load_feeds(path)
+    if name not in loaded:
+        raise FeedsError(f"{registry_path() if path is None else path}: "
+                         f"no feed named {name!r} (have {sorted(loaded)})")
+    return loaded[name]
+
+
 def feeds_for(consumer, path=None):
     """Every feed flagged for `consumer`, in file order. The consumer name
     is checked against CONSUMERS so a typo here fails loud too."""
