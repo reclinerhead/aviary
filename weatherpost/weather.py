@@ -212,9 +212,14 @@ STATION_RAIN_IDS = {
     "0x13": "rain_year_in",
 }
 
-# The four fields the station cannot measure -- OpenWeather's remaining
-# real-time job, merged into the payload as garnish.
-GARNISH_FIELDS = ("condition", "description", "sunrise", "sunset")
+# What the station cannot measure itself, merged into the payload from the
+# demoted OWM /weather call: the sky garnish (condition, sunrise/sunset) plus
+# the station's own lat/lon (issue #111). The coordinates aren't a
+# measurement -- they're the configured location echoed back inside OWM's
+# `coord`, and they resolve the zip form to real degrees, which config alone
+# can't. The browser needs them to compute sunrise/sunset for any day but
+# today (the deep-pan night bands), so they ride the retained current payload.
+GARNISH_FIELDS = ("condition", "description", "sunrise", "sunset", "lat", "lon")
 
 
 def station_num(val):
@@ -298,6 +303,7 @@ def parse_current(raw):
     main = raw.get("main") or {}
     wind = raw.get("wind") or {}
     sys = raw.get("sys") or {}
+    coord = raw.get("coord") or {}
     weather = (raw.get("weather") or [{}])[0]
     return {
         "ts": raw.get("dt"),
@@ -311,6 +317,12 @@ def parse_current(raw):
         "description": weather.get("description"),  # "overcast clouds"
         "sunrise": sys.get("sunrise"),
         "sunset": sys.get("sunset"),
+        # The station's location (issue #111), whatever form MERLE_WEATHER_LOC
+        # took: OWM resolves a zip to `coord` in its response, so this is the
+        # one place the degrees are always known. Absent from a truncated
+        # response -> None, which the dashboard reads as "draw no bands".
+        "lat": coord.get("lat"),
+        "lon": coord.get("lon"),
     }
 
 
