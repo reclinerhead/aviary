@@ -91,6 +91,170 @@ def test_clipless_event_still_records(conn):
     assert conn.execute("SELECT clip FROM sightings").fetchone()["clip"] is None
 
 
+# --- locations & per-place first-heard (issue #232) --------------------------
+
+def _make_pre232_db(path):
+    """A post-#175, pre-Field-Mode earl.db: sightings has rms but no
+    location_id, life_list is single-PK, and there is real data in both. The
+    upgrade path has to carry all of it forward as Home."""
+    raw = sightings.sqlite3.connect(path)
+    raw.executescript("""
+        CREATE TABLE sightings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+            source TEXT NOT NULL, species_sci TEXT NOT NULL,
+            species_common TEXT NOT NULL, confidence REAL NOT NULL,
+            clip TEXT, wind_suspect INTEGER NOT NULL DEFAULT 0, rms REAL);
+        CREATE INDEX sightings_ts ON sightings(ts);
+        CREATE INDEX sightings_species ON sightings(species_sci, ts);
+        CREATE TABLE life_list (
+            species_sci TEXT PRIMARY KEY, species_common TEXT NOT NULL,
+            first_ts INTEGER NOT NULL, first_source TEXT NOT NULL,
+            first_clip TEXT);
+    """)
+    raw.execute("INSERT INTO sightings (ts, source, species_sci,"
+                " species_common, confidence, clip, rms) VALUES"
+                " (100,'amcrest','Poecile atricapillus',"
+                "'Black-capped Chickadee',0.9,'amcrest/100-x.wav',0.02)")
+    raw.execute("INSERT INTO life_list (species_sci, species_common,"
+                " first_ts, first_source, first_clip) VALUES"
+                " ('Poecile atricapillus','Black-capped Chickadee',100,"
+                "'amcrest','amcrest/100-x.wav')")
+    raw.commit()
+    raw.close()
+
+
+def _fingerprint(conn):
+    """Every table's columns (name, type, notnull, default, pk position) --
+    the shape a fresh db and an upgraded old one must land on identically."""
+    fp = {}
+    for t in ("locations", "sightings", "life_list"):
+        fp[t] = [(r["name"], r["type"], r["notnull"], r["dflt_value"], r["pk"])
+                 for r in conn.execute("PRAGMA table_info(%s)" % t)]
+    return fp
+
+
+def test_fresh_db_seeds_home(conn):
+    row = conn.execute("SELECT name FROM locations WHERE id=1").fetchone()
+    assert row["name"] == "Home"
+
+
+def test_home_seeded_from_latlon():
+    conn = sightings.connect(":memory:", home_latlon=(42.96, -85.67))
+    row = conn.execute("SELECT lat, lon FROM locations WHERE id=1").fetchone()
+    assert (row["lat"], row["lon"]) == (42.96, -85.67)
+
+
+def test_home_placeholder_self_heals_when_coords_arrive(tmp_path):
+    # First upgrade with no MERLE_LATLON -> placeholder; a later restart WITH
+    # the env corrects it, so deploy ordering doesn't matter.
+    path = str(tmp_path / "earl.db")
+    sightings.connect(path).close()
+    assert sightings.connect(path).execute(
+        "SELECT lat FROM locations WHERE id=1").fetchone()["lat"] == 0.0
+    conn = sightings.connect(path, home_latlon=(42.96, -85.67))
+    row = conn.execute("SELECT lat, lon FROM locations WHERE id=1").fetchone()
+    assert (row["lat"], row["lon"]) == (42.96, -85.67)
+
+
+def test_sighting_defaults_to_home(conn):
+    sightings.record(conn, sightings.parse_event(event()))
+    assert conn.execute(
+        "SELECT location_id FROM sightings").fetchone()["location_id"] == 1
+
+
+def test_sighting_lands_at_its_location(conn):
+    sightings.record(conn, sightings.parse_event(event(location_id=2)))
+    assert conn.execute(
+        "SELECT location_id FROM sightings").fetchone()["location_id"] == 2
+
+
+def test_per_location_first_heard(conn):
+    # Same species, two places -> two lifers, each with its own first_ts.
+    a = sightings.record(conn, sightings.parse_event(event(ts=100)))
+    b = sightings.record(conn, sightings.parse_event(
+        event(ts=200, location_id=2)))
+    assert a is True and b is True
+    rows = conn.execute("SELECT location_id, first_ts FROM life_list"
+                        " ORDER BY location_id").fetchall()
+    assert [(r["location_id"], r["first_ts"]) for r in rows] == \
+        [(1, 100), (2, 200)]
+
+
+def test_park_lifer_does_not_touch_home(conn):
+    # Acceptance criterion: a park session produces a park lifer without
+    # disturbing Home's roster -- the whole point of the model.
+    sightings.record(conn, sightings.parse_event(event(ts=100)))
+    sightings.record(conn, sightings.parse_event(event(ts=150)))
+    is_lifer = sightings.record(conn, sightings.parse_event(
+        event(ts=900, location_id=2, clip="rover/900-Chickadee.wav")))
+    assert is_lifer is True
+    home = conn.execute("SELECT first_ts, first_clip FROM life_list"
+                        " WHERE location_id=1").fetchone()
+    assert home["first_ts"] == 100                       # unmoved
+    assert home["first_clip"] == "amcrest/1784390000-x.wav"
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM life_list").fetchone()["c"] == 2
+
+
+def test_retention_exemption_is_per_location(conn):
+    # exempt_clips must spare the first clip of each species AT EACH location.
+    sightings.record(conn, sightings.parse_event(
+        event(ts=100, clip="amcrest/home-first.wav")))
+    sightings.record(conn, sightings.parse_event(
+        event(ts=900, location_id=2, clip="rover/park-first.wav")))
+    assert sightings.exempt_clips(conn) == \
+        {"amcrest/home-first.wav", "rover/park-first.wav"}
+
+
+def test_pre232_db_upgrades_in_place(tmp_path):
+    path = str(tmp_path / "old-earl.db")
+    _make_pre232_db(path)
+    for _ in range(2):   # idempotent: the upgrade is a restart, not a script
+        conn = sightings.connect(path)
+        scols = {r["name"] for r in
+                 conn.execute("PRAGMA table_info(sightings)")}
+        assert "location_id" in scols
+        # the pre-existing sighting reads as Home by the column default
+        assert conn.execute(
+            "SELECT location_id FROM sightings").fetchone()["location_id"] == 1
+        # life_list re-keyed, its one row preserved as Home, first-heard intact
+        lcols = {r["name"] for r in
+                 conn.execute("PRAGMA table_info(life_list)")}
+        assert "location_id" in lcols
+        life = conn.execute("SELECT location_id, first_ts, first_clip,"
+                            " first_source FROM life_list").fetchone()
+        assert life["location_id"] == 1
+        assert life["first_ts"] == 100
+        assert life["first_clip"] == "amcrest/100-x.wav"
+        assert life["first_source"] == "amcrest"
+        assert conn.execute(
+            "SELECT name FROM locations WHERE id=1").fetchone()["name"] == "Home"
+        conn.close()
+
+
+def test_fresh_and_upgraded_schema_are_identical(tmp_path):
+    old_path = str(tmp_path / "old-earl.db")
+    _make_pre232_db(old_path)
+    assert _fingerprint(sightings.connect(old_path)) == \
+        _fingerprint(sightings.connect(":memory:"))
+
+
+def test_upgraded_db_still_takes_a_park_session(tmp_path):
+    # End to end: after upgrading a real old file, a park event records
+    # cleanly and stays out of Home's life list.
+    path = str(tmp_path / "old-earl.db")
+    _make_pre232_db(path)
+    conn = sightings.connect(path)
+    is_lifer = sightings.record(conn, sightings.parse_event(
+        event(ts=900, location_id=2, sci="Haemorhous mexicanus",
+              common="House Finch", clip="rover/900-Finch.wav")))
+    assert is_lifer is True
+    assert conn.execute("SELECT COUNT(*) c FROM life_list WHERE location_id=1"
+                        ).fetchone()["c"] == 1   # Home untouched (chickadee)
+    assert conn.execute("SELECT COUNT(*) c FROM life_list WHERE location_id=2"
+                        ).fetchone()["c"] == 1   # the park finch
+
+
 # --- the wire ----------------------------------------------------------------
 
 def test_parse_event_roundtrip():
@@ -100,8 +264,18 @@ def test_parse_event_roundtrip():
         "species_sci": "Poecile atricapillus",
         "species_common": "Black-capped Chickadee",
         "confidence": 0.88, "clip": "amcrest/1784390000-x.wav",
-        "wind_suspect": 1, "rms": 0.0153,
+        "wind_suspect": 1, "rms": 0.0153, "location_id": 1,
     }
+
+
+def test_parse_event_without_location_id_is_home():
+    # Live Earl never sets location_id; those detections are Home (issue #232).
+    assert sightings.parse_event(event())["location_id"] == 1
+
+
+def test_parse_event_carries_an_explicit_location_id():
+    # The import pass (Phase 3) stamps a park's id on replayed events.
+    assert sightings.parse_event(event(location_id=2))["location_id"] == 2
 
 
 def test_parse_event_without_rms_is_null_not_rejected():

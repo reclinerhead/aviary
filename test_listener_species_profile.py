@@ -28,7 +28,7 @@ def conn():
 
 def life(conn, sci, common):
     conn.execute(
-        "INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
+        "INSERT OR IGNORE INTO life_list (species_sci, species_common, first_ts, first_source, first_clip) VALUES (?,?,?,?,?)",
         (sci, common, 100, "house-rear", None))
 
 
