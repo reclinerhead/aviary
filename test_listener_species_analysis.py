@@ -337,7 +337,7 @@ def conn():
 
 
 def seed(conn, sci, common, visit_times):
-    conn.execute("INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
+    conn.execute("INSERT OR IGNORE INTO life_list (species_sci, species_common, first_ts, first_source, first_clip) VALUES (?,?,?,?,?)",
                  (sci, common, min(visit_times), "house-rear", None))
     for ts in visit_times:
         conn.execute(
@@ -380,7 +380,7 @@ def test_worklist_counts_visits_not_rows(conn):
 
 
 def test_analyze_species_writes_nothing_without_visits(conn):
-    conn.execute("INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
+    conn.execute("INSERT OR IGNORE INTO life_list (species_sci, species_common, first_ts, first_source, first_clip) VALUES (?,?,?,?,?)",
                  ("Ghost sci", "Ghost", 1, "house-rear", None))
     status, stats = sa.analyze_species(conn, "Ghost sci", "Ghost",
                                        ollama=None, weather_path=None)

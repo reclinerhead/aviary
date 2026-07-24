@@ -82,7 +82,7 @@ def store(tmp_path, monkeypatch):
 
 
 def seed(conn, sci, common, visit_times):
-    conn.execute("INSERT OR IGNORE INTO life_list VALUES (?,?,?,?,?)",
+    conn.execute("INSERT OR IGNORE INTO life_list (species_sci, species_common, first_ts, first_source, first_clip) VALUES (?,?,?,?,?)",
                  (sci, common, min(visit_times), "amcrest", None))
     for ts in visit_times:
         conn.execute(
