@@ -1208,3 +1208,13 @@ export function dayAnchor(value: string): number | null {
   date.setHours(0, 0, 0, 0); // re-floor: DST days are 23h or 25h
   return Math.floor(date.getTime() / 1000) - 1;
 }
+
+
+/** The masthead's second line, station-aware (#304, epic #212): a remote
+ * station says whose yard it is; at home (no name configured) the line is
+ * byte-for-byte the one the Aviary has always worn. Blank and whitespace
+ * collapse to home -- half-configured is not a third voice. */
+export function mastheadSub(stationName?: string | null): string {
+  const name = (stationName ?? "").trim();
+  return `${name || "earl with the ears"} · every bird the yard has announced`;
+}

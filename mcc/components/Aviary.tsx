@@ -60,6 +60,7 @@ import {
   portraitAspect,
   portraitUrl,
   rhythmStrip,
+  mastheadSub,
   rivalLine,
   rosterOrder,
   shareOfYard,
@@ -691,6 +692,7 @@ function AviaryMasthead({
   lamp,
   back,
   jumps,
+  stationName,
 }: {
   lamp?: { busUp: boolean; status: string | null };
   back?: { href: string; label: string };
@@ -699,6 +701,12 @@ function AviaryMasthead({
    * so only it passes them; the lamp precedent. Plain hash anchors on
    * purpose: instant, pre-hydration, shareable. */
   jumps?: { href: string; label: string }[];
+  /** The station's display name (#304, epic #212) -- a remote station's
+   * masthead says whose yard it is. Server pages read it from env and pass
+   * it down (client components can't read runtime env without a hydration
+   * mismatch); absent means home, and the sub line is exactly what it has
+   * always been. */
+  stationName?: string;
 }) {
   return (
     <header className="mb-4">
@@ -720,7 +728,7 @@ function AviaryMasthead({
         </div>
       </div>
       <p className="stamp mt-1 text-xs text-inkfaint">
-        earl with the ears · every bird the yard has announced
+        {mastheadSub(stationName)}
       </p>
       <nav className="mt-3 flex items-baseline gap-4 border-b border-line">
         <span className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink">
@@ -866,7 +874,7 @@ function ArchiveHero({
   );
 }
 
-export function Aviary() {
+export function Aviary({ stationName }: { stationName?: string } = {}) {
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
   // live count updates land in place and nothing reshuffles on its own.
@@ -1057,6 +1065,7 @@ export function Aviary() {
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
       <AviaryMasthead
         lamp={{ busUp, status: earlStatus }}
+        stationName={stationName}
         jumps={[
           { href: "#latest-events", label: "events ↓" },
           { href: "#new-arrivals", label: "arrivals ↓" },
@@ -1688,7 +1697,13 @@ type Analysis = {
   generated_ts: number | null;
 };
 
-export function SpeciesProfile({ sci }: { sci: string }) {
+export function SpeciesProfile({
+  sci,
+  stationName,
+}: {
+  sci: string;
+  stationName?: string;
+}) {
   const [entry, setEntry] = useState<RosterEntry | null>(null);
   // The whole roster rides along (#220): the standings band ranks this bird
   // against every other, and the payload is already on the wire for `entry`.
@@ -1832,7 +1847,10 @@ export function SpeciesProfile({ sci }: { sci: string }) {
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead back={{ href: "/aviary", label: "← the aviary" }} />
+      <AviaryMasthead
+        back={{ href: "/aviary", label: "← the aviary" }}
+        stationName={stationName}
+      />
       {loaded && !entry ? (
         <section className="panel flex min-h-[200px] items-center justify-center rounded-sm border border-line bg-panel">
           <span className="stamp text-xs text-inkfaint">
@@ -2235,7 +2253,11 @@ export function SpeciesProfile({ sci }: { sci: string }) {
  * a page boundary is a no-op instead of a dropped bird. A short page is the
  * record's true end for the active filter -- the WHERE runs before the
  * LIMIT -- so `exhausted` needs no second opinion. */
-export function AviaryEvents() {
+export function AviaryEvents({
+  stationName,
+}: {
+  stationName?: string;
+} = {}) {
   const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
   // Pill order: most-visited first, computed once at load (rosterOrder --
   // the grid's sort logic, reused). Static thereafter: a filter bar that
@@ -2457,7 +2479,10 @@ export function AviaryEvents() {
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead back={{ href: "/aviary", label: "← the aviary" }} />
+      <AviaryMasthead
+        back={{ href: "/aviary", label: "← the aviary" }}
+        stationName={stationName}
+      />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Full Record"

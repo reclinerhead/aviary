@@ -18,6 +18,7 @@ import {
   cropPosition,
   dayAnchor,
   dayBuckets,
+  mastheadSub,
   dayGroups,
   dayStart,
   detectionFromRow,
@@ -1422,5 +1423,26 @@ describe("newArrivals", () => {
   it("window constants say what they claim", () => {
     expect(ARRIVALS_24H_S).toBe(86400);
     expect(ARRIVALS_WEEK_S).toBe(7 * 86400);
+  });
+});
+
+describe("mastheadSub (#304, the station masthead)", () => {
+  it("home wears the line it always has", () => {
+    expect(mastheadSub()).toBe(
+      "earl with the ears · every bird the yard has announced",
+    );
+    expect(mastheadSub(null)).toBe(
+      "earl with the ears · every bird the yard has announced",
+    );
+  });
+  it("a station says whose yard it is", () => {
+    expect(mastheadSub("Karens Yard")).toBe(
+      "Karens Yard · every bird the yard has announced",
+    );
+  });
+  it("blank collapses to home, never a dangling separator", () => {
+    expect(mastheadSub("   ")).toBe(
+      "earl with the ears · every bird the yard has announced",
+    );
   });
 });
