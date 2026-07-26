@@ -243,3 +243,27 @@ def test_source_commands_refuses_a_kind_it_cannot_capture(monkeypatch):
     monkeypatch.setattr(earl.feeds, "feeds_for", lambda consumer: [fake])
     with pytest.raises(RuntimeError, match="no capture for"):
         earl.source_commands()
+
+
+# --- birdnet_load_kwargs: the station library switch (issue #299) ------------
+#
+# The contract under test is absence, not defaulting: with the var unset the
+# kwarg must not exist at all, so pearl's birdnet.load() calls are invoked
+# exactly as they were before #299 and the package default stays the
+# package's business.
+
+def test_birdnet_library_unset_omits_the_kwarg_entirely(monkeypatch):
+    monkeypatch.delenv("MERLE_BIRDNET_LIBRARY", raising=False)
+    assert earl.birdnet_load_kwargs() == {}
+
+
+def test_birdnet_library_set_becomes_the_library_kwarg(monkeypatch):
+    monkeypatch.setenv("MERLE_BIRDNET_LIBRARY", "litert")
+    assert earl.birdnet_load_kwargs() == {"library": "litert"}
+
+
+def test_birdnet_library_blank_is_unset_not_an_empty_library(monkeypatch):
+    """library="" would be a third behavior nobody asked for -- whitespace
+    and empty collapse to the unset arm."""
+    monkeypatch.setenv("MERLE_BIRDNET_LIBRARY", "   ")
+    assert earl.birdnet_load_kwargs() == {}

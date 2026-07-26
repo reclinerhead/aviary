@@ -102,6 +102,13 @@
 #                         invariant is not configurable)
 #   MERLE_EARL_CLIPS      clip dir (default "clips" under WorkingDirectory;
 #                         the unit points it at /srv/media-cache/earl)
+#   MERLE_BIRDNET_LIBRARY birdnet.load(..., library=...) for BOTH model
+#                         sites (#299). Stations without AVX set "litert" --
+#                         the J5005 class SIGILLs on the default path's full
+#                         TF, and ai-edge-litert runs the same models at the
+#                         same measured speed. Unset omits the kwarg
+#                         entirely, so pearl's calls are byte-for-byte
+#                         untouched.
 # =============================================================================
 
 import json
@@ -243,12 +250,25 @@ def read_exact(stream, n, timeout=None):
     return b"".join(parts)
 
 
+def birdnet_load_kwargs(environ=None):
+    """Extra kwargs for both birdnet.load() sites, from MERLE_BIRDNET_LIBRARY
+    (issue #299). No-AVX stations (#212's birdhouse class) set "litert";
+    unset or blank returns {} so the kwarg is ABSENT, not library=None --
+    pearl's calls stay exactly what they were, and the package default
+    remains the package's business. Reads the env at call time: the load
+    happens in spawned workers, and spawn hands each child the parent's
+    environment."""
+    environ = os.environ if environ is None else environ
+    library = environ.get("MERLE_BIRDNET_LIBRARY", "").strip()
+    return {"library": library} if library else {}
+
+
 def allowed_species_set(lat, lon, week):
     """The D4 mask: geo-model species for here-and-now, as a set of
     scientific names. Raises on any failure -- the caller decides how loud
     to be and runs unmasked (never dead)."""
     import birdnet
-    geo = birdnet.load("geo", "2.4", "tf")
+    geo = birdnet.load("geo", "2.4", "tf", **birdnet_load_kwargs())
     df = geo.predict(lat, lon, week=week,
                      min_confidence=GEO_MIN_CONFIDENCE).to_dataframe()
     return {gate.split_label(label)[0] for label in df["species_name"]}
@@ -310,7 +330,7 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
     log = lambda msg: print(f"[{name}] {msg}", flush=True)
     log(f"worker up: {redacted}")
 
-    model = birdnet.load("acoustic", "2.4", "tf")
+    model = birdnet.load("acoustic", "2.4", "tf", **birdnet_load_kwargs())
     classify = load_yamnet(np, log)
 
     week = birdnet_week()
