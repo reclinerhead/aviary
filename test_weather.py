@@ -143,10 +143,14 @@ def test_owm_url_carries_key_units_and_location():
     assert "units=imperial" in url
 
 
-def test_ecowitt_base_missing_raises(monkeypatch):
+def test_ecowitt_base_missing_is_station_mode_not_an_error(monkeypatch):
+    """Contract change with #301: no gateway is a MODE (the epic #212
+    stations run OWM-only), not a startup failure. main() announces it
+    loudly instead."""
     monkeypatch.delenv("MERLE_ECOWITT", raising=False)
-    with pytest.raises(RuntimeError, match="MERLE_ECOWITT"):
-        weather.ecowitt_base()
+    assert weather.ecowitt_base() is None
+    monkeypatch.setenv("MERLE_ECOWITT", "   ")
+    assert weather.ecowitt_base() is None
 
 
 def test_ecowitt_base_host_and_port(monkeypatch):
@@ -294,6 +298,29 @@ def test_parse_current_tolerates_missing_sections():
     # dashboard draws no night bands rather than guessing them
     assert got["lat"] is None
     assert got["lon"] is None
+
+
+# --- station mode (issue #301): the OWM report IS the observation ------------
+
+def test_station_mode_payload_carries_wind_for_earls_gate():
+    """The point of station mode: Earl's wind rule gets a real number on a
+    box with no anemometer. parse_current's payload is published verbatim,
+    so wind_mph must survive the OWM mapping."""
+    current = weather.parse_current(OWM_CURRENT)
+    assert current["wind_mph"] is not None
+
+
+def test_station_mode_payload_feeds_the_history_window_honestly():
+    """history_point() over an OWM-only payload: every HISTORY_FIELDS key
+    present, instrument-only fields honestly None (the pre-#51 posture),
+    no KeyError anywhere -- rain, solar and company chart as gaps, never
+    as zeros."""
+    point = weather.history_point(weather.parse_current(OWM_CURRENT))
+    assert set(point) == set(weather.HISTORY_FIELDS)
+    assert point["temp_f"] is not None and point["wind_mph"] is not None
+    for absent in ("rain_rate_inhr", "rain_day_in", "solar_wm2", "uv_index",
+                   "dew_point_f", "pressure_rel_inhg"):
+        assert point[absent] is None
 
 
 def test_parse_forecast_shapes_chart_points():
