@@ -14,5 +14,5 @@ export const metadata: Metadata = {
 };
 
 export default function AviaryEventsPage() {
-  return <AviaryEvents />;
+  return <AviaryEvents stationName={process.env.MERLE_STATION_NAME} />;
 }
