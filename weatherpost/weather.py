@@ -52,6 +52,14 @@
 #
 # Config (env, following the MERLE_MQTT conventions):
 #   MERLE_ECOWITT          the GW2000B gateway, "host" or "host:port".
+#                          UNSET selects OWM-only station mode (#301, the
+#                          remote stations of epic #212): /weather is
+#                          promoted from garnish back to the current source
+#                          -- temp, wind, humidity, sky, sun -- at the
+#                          garnish cadence; fields only a real instrument
+#                          can measure (rain, solar, pressure, indoor) are
+#                          honestly absent, the pre-#51 payload posture
+#                          every consumer already tolerates.
 #                          REQUIRED, no default -- the station is the system
 #                          of truth now, and a weather service that can't
 #                          reach it has no job (the MERLE_MQTT philosophy).
@@ -173,17 +181,15 @@ def owm_url(endpoint, loc_params, key):
 # stops sending simply parses to None, same posture as a missing OWM section.
 
 def ecowitt_base():
-    """Gateway base URL from MERLE_ECOWITT ("host" or "host:port").
-    REQUIRED -- the station is the system of truth, so a service that can't
-    name it fails at startup (the MERLE_MQTT philosophy)."""
+    """Gateway base URL from MERLE_ECOWITT ("host" or "host:port"), or None
+    -- and None is a MODE, not an error (issue #301): a remote station (epic
+    #212) has no gateway, so its Willard runs OWM-only, with the /weather
+    call promoted from garnish back to the current source. At home the
+    gateway stays the system of truth; unsetting the var here would silently
+    thin the payload to OWM fields, which is why main() announces the mode
+    on its on-duty line rather than leaving it to be noticed."""
     raw = os.environ.get("MERLE_ECOWITT", "").strip()
-    if not raw:
-        raise RuntimeError(
-            "MERLE_ECOWITT is not set. Point it at the Ecowitt gateway "
-            "(\"host\" or \"host:port\", e.g. 192.168.1.210) before starting "
-            "the weather service."
-        )
-    return f"http://{raw}"
+    return f"http://{raw}" if raw else None
 
 
 # common_list ids -> bus field names (units ride in the names, the house rule)
@@ -694,14 +700,40 @@ def fetch(url):
         return None
 
 
+def record_observation(publisher, archive, window, history_path, current):
+    """One observed report onto the bus, into the rolling window, and into
+    the archive -- the shared tail of both modes' observation arms (#301).
+    Returns the (possibly rolled) window."""
+    publisher.publish(bus.WEATHER_CURRENT_TOPIC, current, retain=True)
+    point = history_point(current)
+    if should_record(window, point):
+        window = roll_history(window, point)
+        save_history(history_path, window)
+        publisher.publish(bus.WEATHER_HISTORY_TOPIC,
+                          {"points": window}, retain=True)
+        # The same tick, kept forever (issue #105). A failed write is one
+        # missing point -- a gap, which the chart draws honestly -- and
+        # never worth killing a service whose job is the bus above. The
+        # window and the topic have already happened either way.
+        try:
+            weather_archive.record(archive, point)
+        except sqlite3.Error as e:
+            print(f"[weather] archive write failed for "
+                  f"ts={point['ts']}: {e}")
+    return window
+
+
 def main():
     station_base = ecowitt_base()
+    station_mode = station_base is None   # no gateway -> OWM-only (#301)
     key = owm_key()
     loc = location_params(os.environ.get("MERLE_WEATHER_LOC"))
     history_path = os.environ.get("MERLE_WEATHER_HISTORY", "").strip() \
         or DEFAULT_HISTORY_PATH
-    livedata_url = f"{station_base}/get_livedata_info"
-    sensors_url = f"{station_base}/get_sensors_info?page=1"
+    livedata_url = f"{station_base}/get_livedata_info" \
+        if not station_mode else None
+    sensors_url = f"{station_base}/get_sensors_info?page=1" \
+        if not station_mode else None
     garnish_url = owm_url("weather", loc, key)
     forecast_url = owm_url("forecast", loc, key)
 
@@ -735,9 +767,17 @@ def main():
     # of waiting out the 30-minute staleness window.
     publisher = bus.EventPublisher(
         "weather", status_topic=bus.WEATHER_STATUS_TOPIC).start()
-    print(f"[weather] on duty: station={station_base}, loc={loc}, "
-          f"{len(window)} points of history, "
-          f"polling every {STATION_INTERVAL_S} s")
+    if station_mode:
+        # Loud on purpose: at home this line appearing means someone lost
+        # MERLE_ECOWITT, not that a station was born.
+        print(f"[weather] on duty in STATION MODE (no Ecowitt gateway): "
+              f"OWM /weather is the current source, loc={loc}, "
+              f"{len(window)} points of history, observations every "
+              f"{GARNISH_INTERVAL_S} s")
+    else:
+        print(f"[weather] on duty: station={station_base}, loc={loc}, "
+              f"{len(window)} points of history, "
+              f"polling every {STATION_INTERVAL_S} s")
     print(f"[weather] archiving to {weather_archive.db_path()} "
           f"({filed} points backfilled from the window)")
 
@@ -757,40 +797,39 @@ def main():
             # stays put and the next 60s pass retries (the forecast pattern).
             if time.time() >= next_garnish_at:
                 raw = fetch(garnish_url)
-                raw_sensors = fetch(sensors_url)
-                if raw_sensors is not None:
-                    signal = parse_sensors(raw_sensors)
+                if not station_mode:
+                    raw_sensors = fetch(sensors_url)
+                    if raw_sensors is not None:
+                        signal = parse_sensors(raw_sensors)
                 if raw is not None:
                     garnish = parse_current(raw)
                     next_garnish_at = time.time() + GARNISH_INTERVAL_S
+                    if station_mode:
+                        # OWM-only (#301): the /weather report IS the
+                        # observation -- parse_current's payload published
+                        # verbatim, instrument-only fields honestly absent.
+                        # ts is OWM's own observation time, so the 5-min
+                        # history step records each genuinely fresh report
+                        # and dedupes a re-served one.
+                        current = garnish
+                        window = record_observation(
+                            publisher, archive, window, history_path, current)
+                        print(f"[weather] {current['temp_f']}F, "
+                              f"wind {current['wind_mph']} mph (OWM, "
+                              f"{len(window)} points in the window)")
 
-            raw = fetch(livedata_url)
-            station = parse_station(raw, int(time.time())) \
-                if raw is not None else None
-            if station is not None:
-                current = merge_current(station, garnish, signal)
-                publisher.publish(bus.WEATHER_CURRENT_TOPIC, current,
-                                  retain=True)
-                point = history_point(current)
-                if should_record(window, point):
-                    window = roll_history(window, point)
-                    save_history(history_path, window)
-                    publisher.publish(bus.WEATHER_HISTORY_TOPIC,
-                                      {"points": window}, retain=True)
-                    # The same tick, kept forever (issue #105). A failed write
-                    # is one missing point -- a gap, which the chart draws
-                    # honestly -- and never worth killing a service whose job
-                    # is the bus above. The window and the topic have already
-                    # happened either way.
-                    try:
-                        weather_archive.record(archive, point)
-                    except sqlite3.Error as e:
-                        print(f"[weather] archive write failed for "
-                              f"ts={point['ts']}: {e}")
-                print(f"[weather] {current['temp_f']}F, "
-                      f"wind {current['wind_mph']} mph, "
-                      f"rain today {current['rain_day_in']} in "
-                      f"({len(window)} points in the window)")
+            if not station_mode:
+                raw = fetch(livedata_url)
+                station = parse_station(raw, int(time.time())) \
+                    if raw is not None else None
+                if station is not None:
+                    current = merge_current(station, garnish, signal)
+                    window = record_observation(
+                        publisher, archive, window, history_path, current)
+                    print(f"[weather] {current['temp_f']}F, "
+                          f"wind {current['wind_mph']} mph, "
+                          f"rain today {current['rain_day_in']} in "
+                          f"({len(window)} points in the window)")
 
             if time.time() >= next_forecast_at:
                 raw = fetch(forecast_url)
