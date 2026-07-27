@@ -18,11 +18,19 @@
 # itself is this one file everywhere; two forks of it is the outcome #303
 # exists to avoid.
 #
-# Pull-based on purpose: the repo is public, which rules out self-hosted
-# GitHub Actions runners (GitHub advises against them on public repos), and a
-# webhook receiver would need an inbound hole through the gateway -- this LAN
-# has never had one. A 60s poll is invisible traffic and merge-to-live in
-# under a minute.
+# Pull-based on purpose: a webhook receiver would need an inbound hole
+# through the gateway -- no LAN this runs on has ever had one, and a station
+# on someone else's network never will. A 60s poll is invisible traffic and
+# merge-to-live in under a minute.
+#
+# The repo is PRIVATE (it was public when this shipped; discovered the hard
+# way 2026-07-27 when pearl sat silently unfetchable at #295 for days).
+# Every box authenticates its pull with a per-box READ-ONLY deploy key --
+# an ed25519 keypair generated on the box, its public half added at
+# github.com/<repo>/settings/keys with write access OFF, and origin set to
+# the ssh URL (git@github.com:...). Repo-scoped, revocable in one click,
+# and no account credential ever lives on a remote box -- the guest posture
+# a station demands, applied to the whole fleet.
 #
 # A LOOP SERVICE, not a systemd timer: a timer firing a oneshot every minute
 # writes start/finish journal lines forever -- thousands of lines a day
