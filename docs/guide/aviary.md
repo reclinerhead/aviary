@@ -3,6 +3,8 @@
 > Spoke of the [Merle Technical Guide](../../TechnicalGuide.md) — read the hub first for the machine roster, quick start, and cross-cutting conventions.
 >
 > **Covers:** Earl's GUI — `/aviary` + `components/Aviary.tsx` in `mcc/`, its read routes over `earl.db`, the visits chart, field notes, and the `listener/` enrichment passes behind them (`species_profile.py`, `species_analysis.py`, `enrichment_loop.py`)
+>
+> **On stations (epic #212):** the same loop runs **profile-only** (#312) — Wikipedia portraits and descriptions, no field notes, because `MERLE_OLLAMA` is absent from the station env and `run_analysis_pass()` short-circuits on an empty candidate list. No code arm, no profile flag: the kill switch that already existed *is* the station mode. The hosted-model notes are the epic's post-birthday addition.
 > **Runs on:** pearl (MCC production + enrichment loop)
 > **Related:** epic #182; issues #183–#186, #196, #204, #211, #216, #217, #220, #224
 
