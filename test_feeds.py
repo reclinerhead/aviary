@@ -183,6 +183,25 @@ def test_shipped_registry_is_valid_and_names_the_house():
         assert feed.url.endswith(f"/{name}")
 
 
+def test_shipped_station_registry_is_a_working_ear():
+    """The station registry (feeds.station.yml, issue #302): one local mic,
+    Earl's only source on a box with no cameras and no rover. The capture
+    contract is data now, so the guard lives here -- s16le/48kHz/mono on
+    stdout is what earl.py's workers assume of every `command` feed."""
+    station_path = feeds.DEFAULT_PATH.parent / "feeds.station.yml"
+    station = feeds.load_feeds(station_path)
+    assert [f.name for f in feeds.feeds_for("earl", station_path)] == \
+        ["window-mic"]
+    # A station runs no vision daemon; a naturalist flag here would send
+    # feed_for("naturalist") looking for a camera that doesn't exist.
+    assert not any(f.naturalist for f in station.values())
+    argv = shlex.split(station["window-mic"].cmd)
+    assert argv[0] == "arecord"
+    assert "S16_LE" in argv and "48000" in argv
+    assert "raw" in argv          # raw stream, not WAV-headered
+    assert argv.count("1") >= 1   # mono (-c 1)
+
+
 def test_shipped_rover_cmd_carries_ssh_keepalives():
     """Layer 2 of the stall defenses (issue #201), now data: merle powered
     off mid-capture half-opens the TCP, and the kernel's own keepalive is

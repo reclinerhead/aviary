@@ -175,17 +175,18 @@ def frame_topic_parts(topic):
 
 def broker_address():
     """Broker host/port from MERLE_MQTT ("host" or "host:port"). REQUIRED --
-    no localhost default. The broker lives on pearl, not on the machine
-    running this code, so a silent localhost fallback meant a process that
-    looked healthy while publishing into the void. Missing config fails at
-    startup; a broker that's merely down is still tolerated (see
-    EventPublisher)."""
+    no localhost default. The broker may live on another machine entirely
+    (bluejay's daemon publishes to pearl; a station's is loopback), so a
+    silent localhost fallback meant a process that looked healthy while
+    publishing into the void. Missing config fails at startup; a broker
+    that's merely down is still tolerated (see EventPublisher)."""
     raw = os.environ.get("MERLE_MQTT", "").strip()
     if not raw:
         raise RuntimeError(
-            "MERLE_MQTT is not set. The MQTT broker does not run on this "
-            "machine -- set MERLE_MQTT=192.168.1.64:1883 (pearl) or the "
-            "host:port of wherever the broker lives."
+            "MERLE_MQTT is not set. There is deliberately no default -- set "
+            "it to the host:port of this deployment's broker "
+            "(localhost:1883 where the broker is local; the hub's address "
+            "from a satellite box)."
         )
     host, _, port = raw.partition(":")
     return host, int(port) if port else 1883

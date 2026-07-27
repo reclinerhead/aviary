@@ -1,0 +1,29 @@
+# =============================================================================
+# project-squirrel -- feeds.station.yml (issue #302, epic #212)
+#
+# The STATION feed registry: what a standalone Aviary station's Earl listens
+# to. A station's env file points MERLE_FEEDS at this file (see
+# station.env.example), so the committed feeds.yml -- the HOME registry, full
+# of this house's cameras and rover -- is bypassed entirely, never edited.
+#
+# One feed: the station's own microphone, captured locally with arecord (the
+# rover's `command` kind minus the ssh -- same s16le/48kHz/mono contract on
+# stdout). The SABRENT USB sound card + Movo lavalier enumerate as a C-Media
+# device doing native 48 kHz mono S16_LE (verified on birdhouse 2026-07-26),
+# normally card 1 behind the box's onboard HDA audio. If a station's card
+# order differs, `arecord -l` names the right device -- and that edit happens
+# in the DEPLOYED copy's env-pointed file only if it must; prefer fixing card
+# order via udev so this one committed file keeps serving every station
+# (the tiles.station.json principle: Phase 5 is a copy, not an edit).
+#
+# The feed name is its published source label, its clip directory under
+# MERLE_EARL_CLIPS, and the bird record's `source` column -- renaming it is a
+# data migration (#270's runbook). `window-mic` is named for what it will
+# stay: the mic in the window facing the feeder.
+# =============================================================================
+
+feeds:
+  window-mic:
+    kind: command
+    cmd: arecord -D plughw:1,0 -f S16_LE -r 48000 -c 1 -t raw -q
+    earl: true
