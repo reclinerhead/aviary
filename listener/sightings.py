@@ -377,8 +377,9 @@ def home_latlon_from_env():
     raw = os.environ.get("MERLE_LATLON", "").strip()
     if not raw:
         print("[sightings] MERLE_LATLON not set -- location 1 (Home) seeded "
-              "with placeholder coords; set it on this unit (Servers/Pearl.md) "
-              "so the import pass can mask Home correctly", flush=True)
+              "with placeholder coords; set it on this unit (this box's "
+              "runbook under Servers/) so the import pass can mask Home "
+              "correctly", flush=True)
         return None
     try:
         return gate.parse_latlon(raw)
