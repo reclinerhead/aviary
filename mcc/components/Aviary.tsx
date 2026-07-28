@@ -66,6 +66,7 @@ import {
   shareOfYard,
   standingFor,
   todayVisitors,
+  voiceCredit,
   weatherChips,
   weatherChipExplain,
   yardRecords,
@@ -1420,7 +1421,13 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
 // there is no portrait beside this one to match a height to.
 const VOICE_CLAMP_LINES = 12;
 
-function VoiceEntry({ voice }: { voice?: string | null }) {
+function VoiceEntry({
+  voice,
+  source,
+}: {
+  voice?: string | null;
+  source?: string | null;
+}) {
   const [open, setOpen] = useState(false);
   const [long, setLong] = useState(false);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -1445,9 +1452,11 @@ function VoiceEntry({ voice }: { voice?: string | null }) {
           What It Sounds Like
         </h2>
         {/* CC BY-SA wants the credit and honesty is house style: this is
-            quoted, not ours. */}
+            quoted, not ours -- and since #317 the stamp also says WHICH
+            reader found it, so gathered lines are never mistaken for the
+            article's own considered paragraph. */}
         <span className="stamp shrink-0 text-[9px] text-inkfaint">
-          via Wikipedia
+          {voiceCredit(source)}
         </span>
       </header>
       {/* Capped measure: reference prose runs long (2,300 characters on the
@@ -2252,7 +2261,7 @@ export function SpeciesProfile({
           draw and nothing to say. */}
       {entry && (
         <>
-          <VoiceEntry voice={entry.voice} />
+          <VoiceEntry voice={entry.voice} source={entry.voice_source} />
           <StandingsBand roster={roster} sci={sci} openings={openings} now={now} />
           <VisitsChart sci={sci} />
           <FieldNotes analysis={analysis} />

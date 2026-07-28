@@ -348,10 +348,33 @@ export type RosterEntry = {
   image_w?: number | null;
   image_h?: number | null;
   // What it sounds like (#315): the article's vocalization section, or NULL
-  // for the ~27% of species whose article has no such section -- an honest
-  // blank, never a guess assembled from loose paragraphs.
+  // for the species whose article has no such section -- an honest blank,
+  // never a guess assembled from loose paragraphs.
   voice?: string | null;
+  // Which reader produced it (#317): "section" quoted from a dedicated
+  // vocalization section, "sentences" gathered from an article that has
+  // none. NULL on a pre-#317 row, which reads as the section case.
+  voice_source?: string | null;
 };
+
+/** The credit line under the "What It Sounds Like" panel (#317).
+ *
+ * Both readers take CC BY-SA prose from the same article, so the licence
+ * credit is identical -- what differs is the claim we are making about the
+ * text. A dedicated section is the article's own account of the bird, quoted
+ * whole; the fallback is lines gathered from across an article that never
+ * set out to describe a sound. Saying so is the same honesty the portrait
+ * attribution already practises, and it is what stops a reader taking
+ * assembled sentences for an encyclopedia's considered paragraph.
+ *
+ * An unknown or missing source reads as the section case: pre-#317 rows are
+ * all sections by construction, and over-claiming "gathered" about a genuine
+ * section would be its own small lie. */
+export function voiceCredit(source?: string | null): string {
+  return source === "sentences"
+    ? "gathered from the article · via Wikipedia"
+    : "via Wikipedia";
+}
 
 /** life_list rows + raw sighting (species, ts) pairs -> the roster the grid
  * renders. Species-common order for determinism; the client owns the sort

@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS species_profile (
     image_w           INTEGER,
     image_h           INTEGER,
     voice             TEXT,
+    voice_source      TEXT,
+    voice_version     INTEGER,
     voice_checked_ts  INTEGER,
     fetched_ts        INTEGER NOT NULL
 );
@@ -154,6 +156,79 @@ _VOICE_HEADING = re.compile(
     r"\b(?:vocali[sz]ations?|vocals?|voice|songs?|calls?|sounds?"
     r"|drumming|singing)\b", re.I)
 
+# --- The sentence-level fallback (issue #317) ---------------------------------
+#
+# #315 shipped at 32/70 species. Checking ten of the failures showed the gap
+# is two different problems: seven articles say nothing about sound anywhere
+# (the Semipalmated Plover's whole article is 2,749 characters), but THREE
+# carry real vocalization prose stranded in a Description or Similar species
+# section, invisible to a heading-scoped reader:
+#
+#   Veery                  "a harsh, descending vee-er, which gave the bird
+#                           its name"
+#   Rose-breasted Grosbeak "The call is a sharp pink or pick"
+#   Eastern Wood-Pewee     "The songs (fee-bee, fee-bee) and calls (chip) are
+#                           quite different" -- a sound comparison against the
+#                           very species it gets confused with
+#
+# THIS IS NOT THE PARAGRAPH SCAN #315 REJECTED, and the difference is the
+# whole design. Density scored the Wood-Pewee's PLUMAGE paragraph at four
+# "vocal" words and would have served it as a sound description. A sentence
+# only survives here if it makes a CLAIM ABOUT SOUND -- which a sentence
+# about wingbars cannot do however many times it says "similar".
+#
+# Measured before it was written: recall 3/3, precision 7/7 (silent on every
+# article that genuinely says nothing), no-harm 3/3 (a real section still
+# wins). A real section ALWAYS wins -- this runs only when voice_section()
+# comes back empty, so good CC BY-SA prose is never traded for scraps.
+
+# "the song is", "its call consists of", "their vocalizations include" -- a
+# vocal noun as the subject of an assertion. Up to two words may sit between
+# the article and the noun ("the most common call is").
+_VOCAL_SUBJECT = re.compile(
+    r"\b(?:the|its|their|his|her|a|an)\s+(?:\w+\s+){0,2}"
+    r"(?:songs?|calls?|voice|vocali[sz]ations?|notes?|whistles?|trills?"
+    r"|drumming|chatter)\b\s+"
+    r"(?:is|are|was|were|consists?|consisted|includes?|included|has|have"
+    r"|resembles?|sounds?|begins?|varies|can\s+be|may\s+be|is\s+a|are\s+a"
+    r"|is\s+described|was\s+described)\b", re.I)
+
+# The looser route: something audibly VERBING, but only when the sentence
+# also carries a transcription. Either signal alone is far too loose.
+_VOCAL_VERB = re.compile(
+    r"\b(?:sings?|singing|calls?|calling|whistles?|trills?|drums?"
+    r"|vocali[sz]es?|utters?|gives?\s+a\s+(?:harsh|sharp|soft|loud))\b", re.I)
+
+# A written-down bird sound. "chick-a-dee", "fitz-bew", "cooOOoo", "vee-er".
+# Loose on its own, which is exactly why it is never used on its own.
+_ONOMATOPOEIA = re.compile(
+    r"\b(?:[a-z]{2,}-){1,}[a-z]{2,}\b"
+    r"|\b\w*(?:eee|ooo|urr|eer|ick|eep)\w*\b", re.I)
+
+# The veto that makes this safe. Plumage vocabulary means the sentence is
+# about what the bird LOOKS like, and no amount of "similar" or "differs"
+# makes that a sound description. This single rule is what separates a
+# sentence reader from the density scan that got rejected.
+_PLUMAGE = re.compile(
+    r"\b(?:plumage|wingbars?|feathers?|bill|breast|belly|underparts"
+    r"|upperparts|tail\s+(?:is|are)|colou?r(?:ed|ing|ation)?|streaked"
+    r"|spotted\s+with|iridescen\w+)\b", re.I)
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'])")
+
+# One qualifying sentence is a mention, not a description. Two is the floor
+# that keeps this quiet on thin articles -- and thin articles are most of
+# what it will be pointed at.
+VOICE_MIN_SENTENCES = 2
+
+# Bumping this is what puts every species back on the worklist for one more
+# look (the PROMPT_VERSION idiom from species_analysis). Without it #317
+# would only ever reach a species via a hand `--refresh-all`: after #315 ran,
+# every row already has a voice_checked_ts, so nothing would call the new
+# reader on a deployed box. 1 = #315, heading sections only. 2 = #317, the
+# sentence fallback behind them.
+VOICE_VERSION = 2
+
 
 def db_path():
     return os.environ.get("MERLE_EARL_DB", "").strip() or DEFAULT_DB_PATH
@@ -182,7 +257,8 @@ def connect(path):
     columns = {r["name"] for r in
                conn.execute("PRAGMA table_info(species_profile)")}
     for col, decl in (("image_w", "INTEGER"), ("image_h", "INTEGER"),
-                      ("voice", "TEXT"), ("voice_checked_ts", "INTEGER")):
+                      ("voice", "TEXT"), ("voice_checked_ts", "INTEGER"),
+                      ("voice_source", "TEXT"), ("voice_version", "INTEGER")):
         if col not in columns:
             conn.execute(f"ALTER TABLE species_profile ADD COLUMN {col} {decl}")
     conn.commit()
@@ -282,6 +358,55 @@ def voice_section(text):
     return None
 
 
+def voice_sentences(text, minimum=VOICE_MIN_SENTENCES):
+    """Sentences anywhere in the article that make a claim about SOUND, in
+    article order -- the #317 fallback for prose Wikipedia buries under a
+    Description heading. None unless at least `minimum` sentences qualify.
+
+    Never called while voice_section() has an answer; see read_voice()."""
+    if not text:
+        return None
+    body = _HEADING.sub("\n", html.unescape(text))
+    keep, seen = [], set()
+    for para in body.split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        for s in _SENTENCE_SPLIT.split(para):
+            s = s.strip()
+            # Fragments carry no claim and 400+ characters is a paragraph
+            # that lost its full stops, not a sentence.
+            if not (40 <= len(s) <= 400) or s in seen:
+                continue
+            if _PLUMAGE.search(s):
+                continue
+            if (_VOCAL_SUBJECT.search(s)
+                    or (_VOCAL_VERB.search(s) and _ONOMATOPOEIA.search(s))):
+                seen.add(s)
+                keep.append(s)
+    return " ".join(keep) if len(keep) >= minimum else None
+
+
+def read_voice(text):
+    """The whole voice-reading policy in one place -> (prose, source).
+
+    Precedence is absolute and deliberately not a comparison: a dedicated
+    section always wins, even when the fallback would return more words.
+    Measured on the Carolina Wren -- 2,308 characters of real section
+    against 1,069 the sentence reader would assemble -- and the section is
+    the better read every time, being the article's own account of the bird
+    rather than lines gathered from wherever they fell.
+
+    ('...', 'section') | ('...', 'sentences') | (None, None)"""
+    section = voice_section(text)
+    if section:
+        return section, "section"
+    gathered = voice_sentences(text)
+    if gathered:
+        return gathered, "sentences"
+    return None, None
+
+
 def parse_summary(d):
     """The summary query -> {description, image_url, image_name}, all
     honestly None when the wiki has nothing usable. A missing page and a
@@ -289,17 +414,22 @@ def parse_summary(d):
     listing three species is not a portrait of anybody."""
     pages = ((d or {}).get("query") or {}).get("pages") or []
     page = pages[0] if pages else None
-    empty = {"description": None, "voice": None, "image_url": None,
-             "image_name": None, "image_w": None, "image_h": None}
+    empty = {"description": None, "voice": None, "voice_source": None,
+             "image_url": None, "image_name": None,
+             "image_w": None, "image_h": None}
     if not page or page.get("missing"):
         return empty
     if "disambiguation" in (page.get("pageprops") or {}):
         return empty
     thumb = page.get("thumbnail") or {}
+    # What it sounds like (#315), from the same response -- now via the
+    # section-then-sentences policy (#317), which also reports which reader
+    # answered so the page can credit it honestly.
+    voice, voice_source = read_voice(page.get("extract"))
     return {
         "description": clean_extract(page.get("extract")),
-        # What it sounds like (#315), from the same response.
-        "voice": voice_section(page.get("extract")),
+        "voice": voice,
+        "voice_source": voice_source,
         "image_url": thumb.get("source"),
         "image_name": page.get("pageimage"),
         # The thumbnail's real dimensions (issue #185). Already in this
@@ -350,13 +480,17 @@ def worklist(conn):
         dimensions, i.e. everything #184 wrote before the columns existed.
         One ordinary re-run heals the whole life list -- an upgrade is a
         re-run, never a migration script.
-    (3) BACKFILL (issue #315): rows never yet asked about a vocalization
-        section, i.e. everything written before `voice` existed. Keyed on
-        voice_checked_ts being NULL rather than on `voice` being NULL,
-        because a bird whose article HAS no such section must settle: the
-        stamp is written either way, so this arm empties permanently after
-        one pass instead of re-asking Wikipedia forever about the ~27% that
-        will never have an answer.
+    (3) BACKFILL (issues #315, #317): rows whose voice was read by an older
+        reader generation -- `voice_version` below VOICE_VERSION, which a
+        never-read row satisfies too (NULL coalesces to 0). This replaced
+        #315's `voice_checked_ts IS NULL` test, which could only ever fire
+        once: after #315 ran, every row had a stamp, so #317's new reader
+        would never have been called on a deployed box without a hand
+        `--refresh-all`. Keying on the VERSION keeps the same termination
+        guarantee -- one pass lifts every row to the current generation and
+        the arm empties permanently -- while making the next improvement a
+        one-line bump instead of a migration. `voice_checked_ts` is still
+        written, now purely as "when did we last look" for humans.
 
     Owner rows are never in any arm: `image_source = 'owner'` is excluded
     outright, so the pass cannot even spend a fetch on one."""
@@ -366,9 +500,9 @@ def worklist(conn):
         " WHERE (p.species_sci IS NULL"
         "        OR (p.image_source = 'wikipedia' AND p.image_file IS NOT NULL"
         "            AND p.image_w IS NULL)"
-        "        OR (p.voice_checked_ts IS NULL"
+        "        OR (COALESCE(p.voice_version, 0) < ?"
         "            AND COALESCE(p.image_source, '') <> 'owner'))"
-        " ORDER BY l.species_common")]
+        " ORDER BY l.species_common", (VOICE_VERSION,))]
 
 
 def all_species(conn):
@@ -486,13 +620,18 @@ def enrich_species(conn, media_dir, sci, *, fetch_json=get_json,
     conn.execute(
         "INSERT OR REPLACE INTO species_profile (species_sci, description,"
         " image_file, image_source, image_attribution, image_w, image_h,"
-        " voice, voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " voice, voice_source, voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (sci, summary["description"], image_file, image_source, credit,
          # Dimensions belong to the file we actually wrote: no file, no
          # claim about its shape (the honest-NULL rule).
          summary["image_w"] if image_file else None,
          summary["image_h"] if image_file else None,
-         summary["voice"],
+         summary["voice"], summary["voice_source"],
+         # The reader generation that produced this row (#317). Recorded
+         # even when nothing was found, because "version 2 looked and found
+         # nothing" is exactly what version 3 needs to know to try again.
+         VOICE_VERSION,
          # Stamped even when voice is None -- "we looked and there was
          # nothing" is what keeps this species off the backfill arm (#315).
          stamp,
@@ -553,11 +692,19 @@ def main():
             # CLI is not worth changing a contract two callers share.
             if status in ("no-image", "enriched"):
                 row = conn.execute(
-                    "SELECT voice FROM species_profile WHERE species_sci = ?",
-                    (sci,)).fetchone()
-                got = bool(row and row["voice"])
-                label += " · voice" if got else " · no voice section"
-                counts["voice"] = counts.get("voice", 0) + (1 if got else 0)
+                    "SELECT voice, voice_source FROM species_profile"
+                    " WHERE species_sci = ?", (sci,)).fetchone()
+                source = row["voice_source"] if row else None
+                # Which reader answered is worth seeing in a bulk run: it is
+                # the difference between the article having a section and us
+                # having gathered lines out of one that didn't (#317).
+                label += {
+                    "section": " · voice (section)",
+                    "sentences": " · voice (gathered)",
+                }.get(source, " · no voice found")
+                if source:
+                    counts["voice"] = counts.get("voice", 0) + 1
+                    counts[f"via-{source}"] = counts.get(f"via-{source}", 0) + 1
             print(f"[species] {common}: {label}", flush=True)
         print(f"[species] done: " + ", ".join(
             f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
