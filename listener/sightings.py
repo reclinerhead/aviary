@@ -42,11 +42,21 @@
 # store does the pruning. Hourly, the frame_archiver pattern (pure selection,
 # injected clock), with one sacred exemption: every clip named in
 # life_list.first_clip survives FOREVER -- a lifer's first recording is part
-# of the permanent record. Day one measured ~0.70 GB/day pre-debounce (the
-# LV full in ~62 days); with the visit debounce and a 90-day horizon the
-# steady state is ~20 GB, comfortable beside the media-cache's other tenants.
-# Pruned rows keep their clip path -- append-only store, and a missing file
-# is an honest gap (the Field Journal's pruned-thumbnail precedent).
+# of the permanent record. Pruned rows keep their clip path -- append-only
+# store, and a missing file is an honest gap (the Field Journal's
+# pruned-thumbnail precedent).
+#
+# TWO ARMS, IN ORDER: the age horizon, then the DISK BUDGET (#330). The
+# horizon alone was never enough, and the numbers that once said otherwise
+# were wrong: this header used to promise "~20 GB steady state" against a
+# measured 2026-07-28 reality of ~1 GB/day (668 clips/day x 831 KB, doubled
+# by #325's automatic siblings) on a 47 GB LV shared with the music cache --
+# the volume fills in about a month and never reaches day 90. Every clip on
+# pearl was younger than 30 days, so the age sweep had never once fired in
+# production. budget_selection() evicts oldest-first until the tree fits,
+# and the lifer exemption is absolute under it: if the sacred set alone
+# busts the cap, the pass takes what it may and main() says so out loud
+# rather than deleting first-heard evidence to satisfy a disk number.
 #
 # Config (env):
 #   MERLE_MQTT                 the broker, REQUIRED (bus.py raises without it)
@@ -57,6 +67,12 @@
 #   MERLE_EARL_CLIPS           Earl's clip dir (same value as the earl unit's;
 #                              default "clips"). Missing dir = nothing pruned.
 #   MERLE_EARL_CLIPS_KEEP_DAYS retention horizon (default 90)
+#   MERLE_EARL_CLIPS_CAP_GB    the disk budget (#330). UNSET = no cap, the
+#                              pre-#330 behavior exactly, so no box changes
+#                              retention until someone picks a number.
+#                              Malformed fails LOUD (the env_float ethos): a
+#                              typo'd cap reading as "no cap" is how a
+#                              volume fills while the config claims safety.
 #   MERLE_LATLON               "lat,lon" -- used ONLY to seed location 1 (Home)
 #                              at first upgrade (issue #232). Unlike earl.py,
 #                              sightings does NOT require it: a consumer that
