@@ -138,6 +138,35 @@ def test_fresh_db_seeds_home(conn):
     assert row["name"] == "Home"
 
 
+def test_file_store_syncs_every_commit(tmp_path):
+    """Issue #322: the life list is the file a power cut must not eat.
+    synchronous=FULL (2) fsyncs each commit; NORMAL (1) defers durability to
+    the next checkpoint, which a yard writing a few rows a day can go days
+    without -- measured, on birdhouse's first cold power-off, as an empty
+    store. This is the guard against someone "optimizing" it back."""
+    conn = sightings.connect(str(tmp_path / "earl.db"))
+    assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_connect_folds_the_wal_into_the_store(tmp_path):
+    """Issue #322's second half: a restart leaves nothing pending in the WAL,
+    so an unclean shutdown can't strand committed rows outside the main file
+    (and the recovery an unclean boot leaves pending happens at startup, not
+    mid-write). A row written, then re-connected, is in the store proper."""
+    path = str(tmp_path / "earl.db")
+    conn = sightings.connect(path)
+    sightings.record(conn, sightings.parse_event(event(ts=100)))
+    conn.close()
+
+    wal = tmp_path / "earl.db-wal"
+    before = wal.stat().st_size if wal.exists() else 0
+    conn = sightings.connect(path)
+    after = wal.stat().st_size if wal.exists() else 0
+    assert after < before or after == 0     # truncated, not merely appended
+    assert conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0] == 1
+
+
 def test_home_seeded_from_latlon():
     conn = sightings.connect(":memory:", home_latlon=(42.96, -85.67))
     row = conn.execute("SELECT lat, lon FROM locations WHERE id=1").fetchone()

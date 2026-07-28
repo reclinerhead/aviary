@@ -132,9 +132,29 @@ def db_path():
 
 
 def connect(path, home_latlon=None):
-    """weather_archive.connect(), same reasons: WAL so a future reader never
-    sees "database is locked", idempotent schema so a fresh pearl and an old
-    file take the same path. ":memory:" for tests.
+    """weather_archive.connect()'s shape, with one deliberate divergence:
+    WAL so a future reader never sees "database is locked", idempotent schema
+    so a fresh pearl and an old file take the same path -- but
+    **synchronous=FULL, not NORMAL** (issue #322). ":memory:" for tests.
+
+    Why this store syncs and the weather archive doesn't. Under NORMAL, a WAL
+    commit is not fsynced; durability arrives whenever a checkpoint does, and
+    auto-checkpoint waits for ~1000 pages. A yard writing a handful of tiny
+    rows a day can go DAYS between checkpoints, and a power cut in that window
+    discards every committed-but-unsynced frame. Losing minutes of weather to
+    that is a shrug -- the next poll refills the trail. Losing a first-heard
+    date is losing the one fact this file exists to hold and no API sells
+    back, and on a remote station (epic #212) a power cut isn't the exotic
+    failure, it's the expected one. Measured on birdhouse 2026-07-28: a cold
+    power-off took the whole day-one record with it.
+
+    Checkpointing at connect time is the second half. It bounds how old the
+    un-folded tail can get (every unit restart folds it into the main file),
+    and it forces the WAL-index recovery that an unclean shutdown leaves
+    pending -- the state that had a live writer and every reader disagreeing
+    about the store's contents for ten real minutes. Best-effort on purpose:
+    with no busy timeout set, a checkpoint blocked by a live reader returns
+    busy rather than waiting, so a slow prune sweep can never delay startup.
 
     `home_latlon` (a (lat, lon) tuple, or None) seeds location 1's coords the
     first time this runs against a store -- main() passes MERLE_LATLON; tests
@@ -145,10 +165,12 @@ def connect(path, home_latlon=None):
     conn.row_factory = sqlite3.Row
     if path != ":memory:":
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA synchronous=FULL")
     conn.executescript(SCHEMA)
     _upgrade(conn, home_latlon)
     conn.commit()
+    if path != ":memory:":
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return conn
 
 
