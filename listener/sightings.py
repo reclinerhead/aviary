@@ -325,6 +325,28 @@ def record(conn, row):
 ENH_SUFFIX = "-enh.wav"
 
 
+def clips_cap_bytes():
+    """MERLE_EARL_CLIPS_CAP_GB -> bytes, or None when unset (no size cap:
+    the pre-#330 behavior, age horizon only -- so an existing box keeps its
+    exact current retention until someone chooses a number).
+
+    Fail-loud on garbage, the env_float ethos: a typo'd cap that quietly
+    read as "no cap" is precisely how a volume fills while the config
+    claims it is protected."""
+    raw = os.environ.get("MERLE_EARL_CLIPS_CAP_GB", "").strip()
+    if not raw:
+        return None
+    try:
+        gb = float(raw)
+    except ValueError:
+        raise RuntimeError("MERLE_EARL_CLIPS_CAP_GB is not a number: "
+                           f"{raw!r}")
+    if gb <= 0:
+        raise RuntimeError("MERLE_EARL_CLIPS_CAP_GB must be positive, got "
+                           f"{gb}")
+    return int(gb * 1e9)
+
+
 def prune_selection(files, now_ts, keep_days, exempt):
     """Which clips to delete: older than the horizon AND not a lifer's first
     recording. `files` is [(relpath, mtime_ts)]; pure with an injected clock
@@ -363,16 +385,88 @@ def prune_selection(files, now_ts, keep_days, exempt):
     return doomed
 
 
+def budget_selection(files, exempt, cap_bytes, already_doomed=()):
+    """Which FURTHER clips to delete so the tree fits `cap_bytes` (issue
+    #330). `files` is [(relpath, mtime, size)]; pure, the prune_selection
+    precedent one measurement over. Returns [] when the tree already fits.
+
+    Age cannot protect a volume it does not measure, which is the whole
+    reason this exists: pearl writes ~1 GB/day of clips-plus-siblings onto a
+    47 GB LV shared with the music cache, so it would fill the disk in about
+    a month and never reach the 90-day horizon -- measured 2026-07-28, with
+    every clip on the box younger than 30 days and the age sweep therefore
+    never once having fired in production.
+
+    Eviction is OLDEST FIRST, and three rules hold whatever the pressure:
+
+    * A lifer's first recording is NEVER evicted -- the exemption is
+      absolute under the budget exactly as it is under the horizon. If the
+      sacred set alone exceeds the cap, this returns everything it may take
+      and still leaves the tree over budget; the CALLER says so out loud.
+      Deleting first-heard evidence to satisfy a disk number would trade the
+      one irreplaceable thing here for the one cheapest thing.
+    * The species/ portrait shelf is never evicted either (permanent
+      collection, #184) -- but it DOES count toward usage, as do the exempt
+      clips. Measuring only the evictable half would make the cap a lie the
+      moment the permanent half grew.
+    * An enhanced sibling shares its original's fate (#190), evicted as one
+      unit and freeing both files' bytes -- the age arm's rule, restated
+      where the arithmetic happens."""
+    if not cap_bytes:
+        return []
+    doomed = set(already_doomed)
+    size = {relpath: nbytes for relpath, _, nbytes in files}
+    present = set(size)
+    total = sum(nbytes for relpath, _, nbytes in files if relpath not in doomed)
+    if total <= cap_bytes:
+        return []
+
+    candidates = []            # (mtime, [relpath, ...]) -- a clip and sibling
+    for relpath, mtime, _ in files:
+        if relpath in doomed or relpath in exempt:
+            continue
+        if relpath.startswith("species/"):
+            continue           # counted above, never evicted
+        if relpath.endswith(ENH_SUFFIX):
+            original = relpath[:-len(ENH_SUFFIX)] + ".wav"
+            if original in present:
+                continue       # rides with its original, below
+            candidates.append((mtime, [relpath]))      # orphan, on its own
+            continue
+        if not relpath.endswith(".wav"):
+            continue
+        sibling = relpath[:-len(".wav")] + ENH_SUFFIX
+        group = [relpath] + ([sibling] if sibling in present else [])
+        candidates.append((mtime, group))
+
+    evicted = []
+    for _, group in sorted(candidates, key=lambda c: c[0]):
+        if total <= cap_bytes:
+            break
+        for relpath in group:
+            if relpath in doomed:
+                continue
+            doomed.add(relpath)
+            evicted.append(relpath)
+            total -= size.get(relpath, 0)
+    return evicted
+
+
 def list_clips(clips_dir):
-    """Every file under the clips dir as (posix relpath, mtime). A missing
-    dir is an empty list -- a box that never wrote a clip has nothing to
-    prune, not an error."""
+    """Every file under the clips dir as (posix relpath, mtime, size). A
+    missing dir is an empty list -- a box that never wrote a clip has
+    nothing to prune, not an error. One stat() per file serves both arms:
+    the age sweep reads the mtime, the budget sweep the size."""
     out = []
     for root, _, names in os.walk(clips_dir):
         for f in names:
             full = os.path.join(root, f)
             rel = os.path.relpath(full, clips_dir).replace(os.sep, "/")
-            out.append((rel, os.path.getmtime(full)))
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue       # vanished under us; next pass sees the truth
+            out.append((rel, st.st_mtime, st.st_size))
     return out
 
 
@@ -387,24 +481,37 @@ def exempt_clips(conn):
             if r["first_clip"]}
 
 
-def prune_clips(clips_dir, store_path, keep_days, now_ts=None):
-    """One retention pass. Own short-lived read connection -- the paho
-    callback thread owns the writer, and two threads on one sqlite handle
-    is a fight not worth having. Returns how many files went."""
+def prune_clips(clips_dir, store_path, keep_days, now_ts=None,
+                cap_bytes=None):
+    """One retention pass: the age horizon first, then the disk budget on
+    whatever survived it (#330). Own short-lived read connection -- the paho
+    callback thread owns the writer, and two threads on one sqlite handle is
+    a fight not worth having.
+
+    Returns (aged, over_budget, still_over) -- the two counts the caller
+    logs separately (they mean different things: one is policy working, the
+    other is the yard outrunning the disk), and whether the tree is STILL
+    over cap after taking everything it was allowed to take."""
     conn = connect(store_path)
     try:
         exempt = exempt_clips(conn)
     finally:
         conn.close()
-    doomed = prune_selection(list_clips(clips_dir),
-                             now_ts if now_ts is not None else time.time(),
-                             keep_days, exempt)
-    for relpath in doomed:
+    sized = list_clips(clips_dir)
+    aged = prune_selection([(relpath, mtime) for relpath, mtime, _ in sized],
+                           now_ts if now_ts is not None else time.time(),
+                           keep_days, exempt)
+    over = budget_selection(sized, exempt, cap_bytes, aged)
+    gone = set(aged) | set(over)
+    for relpath in aged + over:
         try:
             os.remove(os.path.join(clips_dir, relpath))
         except OSError:
             pass   # already gone or busy; next hour's pass will retry
-    return len(doomed)
+    still_over = bool(cap_bytes) and sum(
+        nbytes for relpath, _, nbytes in sized if relpath not in gone
+    ) > cap_bytes
+    return len(aged), len(over), still_over
 
 
 def home_latlon_from_env():
@@ -434,8 +541,12 @@ def main():
     clips_dir = os.environ.get("MERLE_EARL_CLIPS", "").strip() or "clips"
     keep_days = float(os.environ.get("MERLE_EARL_CLIPS_KEEP_DAYS",
                                      DEFAULT_KEEP_DAYS))
+    cap_bytes = clips_cap_bytes()
+    cap_note = (f", cap {cap_bytes / 1e9:.0f} GB" if cap_bytes
+                else ", no size cap")
     print(f"[sightings] recording to {path}; pruning {clips_dir} past "
-          f"{keep_days:.0f} days (lifer first-clips exempt)", flush=True)
+          f"{keep_days:.0f} days{cap_note} (lifer first-clips exempt)",
+          flush=True)
 
     def on_connect(client, userdata, flags, reason_code, properties):
         client.subscribe(bus.AUDIO_EVENTS_TOPIC)
@@ -479,10 +590,25 @@ def main():
                 continue
             next_prune = time.time() + PRUNE_INTERVAL_S
             try:
-                pruned = prune_clips(clips_dir, path, keep_days)
-                if pruned:
-                    print(f"[sightings] pruned {pruned} clips past the "
+                aged, over, still_over = prune_clips(
+                    clips_dir, path, keep_days, cap_bytes=cap_bytes)
+                if aged:
+                    print(f"[sightings] pruned {aged} clips past the "
                           f"{keep_days:.0f}-day horizon", flush=True)
+                # Budget evictions are logged SEPARATELY and always: an age
+                # prune is policy working as designed, a budget prune means
+                # the yard is outrunning the disk and someone should know
+                # (the no-silent-caps rule -- this tree holds evidence).
+                if over:
+                    print(f"[sightings] evicted {over} more clips to fit the "
+                          f"{cap_bytes / 1e9:.0f} GB cap -- oldest first, "
+                          "lifer first-clips untouched", flush=True)
+                if still_over:
+                    print("[sightings] STILL over the clip cap after "
+                          "evicting everything evictable -- the exempt "
+                          "lifer clips and species portraits alone exceed "
+                          "it. Raise MERLE_EARL_CLIPS_CAP_GB or grow the "
+                          "volume; nothing sacred was deleted.", flush=True)
             except Exception as e:
                 print(f"[sightings] prune failed ({e}) -- retrying next "
                       "hour", flush=True)
