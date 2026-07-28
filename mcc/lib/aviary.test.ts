@@ -8,6 +8,7 @@ import {
   VISITS_SPAN_S,
   VISIT_GAP_S,
   archiveStats,
+  bestClips,
   clampVisitWindow,
   clipRelPath,
   clipUrl,
@@ -382,6 +383,57 @@ describe("parseSince", () => {
   });
 });
 
+describe("bestClips (#333)", () => {
+  const row = (
+    ts: number,
+    confidence: number,
+    clip: string | null,
+    sci = "Cardinalis cardinalis",
+  ) => ({ species_sci: sci, ts, confidence, clip });
+
+  it("picks the highest-confidence recording per species", () => {
+    expect(
+      bestClips([row(100, 0.7, "a.wav"), row(200, 0.95, "b.wav"), row(300, 0.8, "c.wav")]),
+    ).toEqual({
+      "Cardinalis cardinalis": { clip: "b.wav", confidence: 0.95, ts: 200 },
+    });
+  });
+
+  it("never crowns a clip-less sighting", () => {
+    // A failed clip write is an honest gap; a confident number attached to
+    // silence would be the page's worst possible offer.
+    expect(bestClips([row(100, 0.99, null), row(200, 0.6, "b.wav")])).toEqual({
+      "Cardinalis cardinalis": { clip: "b.wav", confidence: 0.6, ts: 200 },
+    });
+    expect(bestClips([row(100, 0.99, null)])).toEqual({});
+  });
+
+  it("keeps the earlier take on a tie", () => {
+    // Two equally good recordings: the older one has already survived a
+    // retention sweep the newer one hasn't faced.
+    expect(
+      bestClips([row(100, 0.9, "old.wav"), row(200, 0.9, "new.wav")]),
+    ).toMatchObject({
+      "Cardinalis cardinalis": { clip: "old.wav", ts: 100 },
+    });
+  });
+
+  it("keeps species independent", () => {
+    const out = bestClips([
+      row(100, 0.9, "card.wav"),
+      row(200, 0.5, "robin.wav", "Turdus migratorius"),
+    ]);
+    expect(out["Cardinalis cardinalis"].clip).toBe("card.wav");
+    expect(out["Turdus migratorius"].clip).toBe("robin.wav");
+  });
+
+  it("ignores rows with no confidence (the tally's narrow shape)", () => {
+    expect(bestClips([{ species_sci: "Cardinalis cardinalis", ts: 100 }])).toEqual(
+      {},
+    );
+  });
+});
+
 describe("shapeRoster", () => {
   const life = [
     {
@@ -419,6 +471,42 @@ describe("shapeRoster", () => {
   it("tallies a lifer with no sighting rows honestly at zero", () => {
     const roster = shapeRoster(life.slice(0, 1), [], null);
     expect(roster[0]).toMatchObject({ visits: 0, today: 0 });
+  });
+  it("carries the best recording onto the entry (#333)", () => {
+    const roster = shapeRoster(
+      life.slice(0, 1),
+      [
+        {
+          species_sci: "Cardinalis cardinalis",
+          ts: 100,
+          confidence: 0.7,
+          clip: "amcrest/100-Northern_Cardinal.wav",
+        },
+        {
+          species_sci: "Cardinalis cardinalis",
+          ts: 500,
+          confidence: 0.95,
+          clip: "amcrest/500-Northern_Cardinal.wav",
+        },
+      ],
+      null,
+    );
+    expect(roster[0]).toMatchObject({
+      best_clip: "amcrest/500-Northern_Cardinal.wav",
+      best_confidence: 0.95,
+      best_ts: 500,
+      // First contact is untouched -- the historical record keeps its place.
+      first_clip: "amcrest/100-Northern_Cardinal.wav",
+    });
+  });
+  it("leaves the best null when no sighting carries a clip", () => {
+    const roster = shapeRoster(
+      life.slice(0, 1),
+      [{ species_sci: "Cardinalis cardinalis", ts: 100, confidence: 0.9 }],
+      null,
+    );
+    expect(roster[0].best_clip).toBeNull();
+    expect(roster[0].best_confidence).toBeNull();
   });
   it("passes the enrichment columns (#184) through untouched", () => {
     const enriched = [

@@ -282,6 +282,9 @@ function TickerThumb({
 type ClipPlayer = {
   playing: string | null;
   faded: ReadonlySet<string>;
+  // Clips proven to have no `-enh` sibling (#331), learned the only way the
+  // pass allows: by asking for one and being 404'd. See `rawOnly` in the hook.
+  rawOnly: ReadonlySet<string>;
   enhanced: boolean;
   setEnhanced: (on: boolean) => void;
   toggle: (clip: string) => void;
@@ -314,6 +317,14 @@ function useClipPlayer(): ClipPlayer {
   const enhancedRef = useRef(true);
   const [playing, setPlaying] = useState<string | null>(null);
   const [faded, setFaded] = useState<ReadonlySet<string>>(new Set());
+  // Issue #331: the fallback below already discovers that a clip has no
+  // enhanced sibling -- it just used to throw that away, so the control kept
+  // saying ENH while raw audio played. For weeks that made a completely idle
+  // enhancement pipeline look like a working feature (pearl had siblings for
+  // 3.3% of its clips and nobody could tell by listening). Remembering the
+  // answer is the whole fix; a control that reports a state the system is not
+  // in is worse than one that admits it doesn't have the goods.
+  const [rawOnly, setRawOnly] = useState<ReadonlySet<string>>(new Set());
   // Default ON: a faint bird under a plane is the case that motivated the
   // pass, and the raw clip is one click away for the A/B.
   const [enhanced, setEnhancedState] = useState(true);
@@ -350,7 +361,14 @@ function useClipPlayer(): ClipPlayer {
         if (enh !== null) {
           // No sibling for this one. Fall back quietly -- an un-enhanced clip
           // is not an error, it's a clip the pass hasn't reached yet. This
-          // silent retry IS the existence check (see the hook's note).
+          // silent retry IS the existence check (see the hook's note), and
+          // #331 is simply that we now REMEMBER the answer instead of
+          // discarding it: the audio stays uninterrupted, the label stops
+          // lying. Since #325 enhances on a 5-15 minute tick, a clip lands
+          // here mostly in the window before its first pass -- a normal,
+          // recurring state, which is exactly why it deserves honest chrome
+          // rather than an error.
+          setRawOnly((prev) => new Set(prev).add(clip));
           start(a, clip, false);
           return;
         }
@@ -400,13 +418,18 @@ function useClipPlayer(): ClipPlayer {
     [],
   );
 
-  return { playing, faded, enhanced, setEnhanced, toggle };
+  return { playing, faded, rawOnly, enhanced, setEnhanced, toggle };
 }
 
 /** The raw/enhanced switch, in a panel's label row. Two states, both always
  * rendered at a fixed width -- it reads as one instrument nameplate rather
  * than a control that resizes as you use it (house rule #1). */
 function EnhanceToggle({ player }: { player: ClipPlayer }) {
+  // ENH is selected but what's actually sounding is the raw file (#331).
+  const fellBack =
+    player.enhanced &&
+    player.playing !== null &&
+    player.rawOnly.has(player.playing);
   return (
     <span className="flex items-center gap-1">
       <span className="stamp text-[9px] text-inkfaint">audio</span>
@@ -422,12 +445,20 @@ function EnhanceToggle({ player }: { player: ClipPlayer }) {
             aria-pressed={player.enhanced === on}
             title={
               on
-                ? "play the enhanced clip — band-limited, denoised, normalized"
+                ? fellBack
+                  ? "enhanced selected — but this recording has no enhanced version yet, so you are hearing it raw"
+                  : "play the enhanced clip — band-limited, denoised, normalized"
                 : "play the clip exactly as Earl recorded it"
             }
             className={`stamp w-8 py-0.5 text-[9px] transition-colors ${
               player.enhanced === on
-                ? "bg-panel2 text-squirrel"
+                ? // Selected-but-not-delivered wears the faint ink instead of
+                  // the squirrel accent (#331): the nameplate stops asserting
+                  // a treatment the audio isn't getting. Same box, same
+                  // weight -- only the colour tells the truth.
+                  on && fellBack
+                  ? "bg-panel2 text-inkfaint"
+                  : "bg-panel2 text-squirrel"
                 : "text-inkfaint hover:text-inkdim"
             }`}
           >
@@ -587,9 +618,23 @@ function NewArrivals({
  * quiet "faded" stamp once its file is known pruned, and a dim placeholder
  * dot when the clip write failed -- never a missing element, never a broken
  * player. Playing wears --led: green means live. */
-function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer }) {
-  const box =
-    "flex h-8 w-12 shrink-0 items-center justify-center rounded-sm border";
+function PlaySlot({
+  clip,
+  player,
+  big = false,
+}: {
+  clip: string | null;
+  player: ClipPlayer;
+  big?: boolean;
+}) {
+  // `big` is the species page's best-recording slot (#333) -- the same
+  // instrument at a size that reads as the page's main offer. Every state
+  // (no clip, faded, idle, playing) uses the same box, so the two variants
+  // are one component and can't drift apart.
+  const box = `flex shrink-0 items-center justify-center rounded-sm border ${
+    big ? "h-11 w-16" : "h-8 w-12"
+  }`;
+  const glyph = big ? "h-4 w-4" : "h-3 w-3";
   if (!clip)
     return (
       <span className={`${box} border-line text-inkfaint`} title="no clip">
@@ -606,28 +651,125 @@ function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer })
       </span>
     );
   const on = player.playing === clip;
+  // Issue #331: this recording is known to have no enhanced sibling while the
+  // panel says ENH -- so the slot says so too. A hairline notch in the corner,
+  // not a badge: it must read at a glance without competing with the play
+  // control, and it occupies geometry the box already reserved, so nothing
+  // moves when the answer arrives mid-session (house rule #1).
+  const raw = player.enhanced && player.rawOnly.has(clip);
   return (
     <button
       type="button"
       onClick={() => player.toggle(clip)}
       aria-label={on ? "Stop the clip" : "Play the clip"}
-      title={on ? "stop" : "play the recording"}
-      className={`${box} transition-colors ${
+      title={
+        raw
+          ? "play the recording — raw: the enhancement pass hasn't reached this clip yet"
+          : on
+            ? "stop"
+            : "play the recording"
+      }
+      className={`${box} relative transition-colors ${
         on
           ? "border-led text-led"
           : "border-linebright text-inkdim hover:border-squirrel hover:text-squirrel"
       }`}
     >
       {on ? (
-        <svg viewBox="0 0 16 16" className="lamp h-3 w-3" aria-hidden="true">
+        <svg viewBox="0 0 16 16" className={`lamp ${glyph}`} aria-hidden="true">
           <rect x="3.5" y="3.5" width="9" height="9" fill="currentColor" />
         </svg>
       ) : (
-        <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
+        <svg viewBox="0 0 16 16" className={glyph} aria-hidden="true">
           <path d="M4.5 2.8v10.4L13 8Z" fill="currentColor" />
         </svg>
       )}
+      {raw && (
+        <span
+          aria-hidden="true"
+          className="stamp absolute right-0.5 top-0 text-[7px] leading-none text-inkfaint"
+        >
+          r
+        </span>
+      )}
     </button>
+  );
+}
+
+/** The species page's two recordings (#333): the BEST one, and first contact.
+ *
+ * Earl has curated best-of-visit clips since #175 -- a window that beats its
+ * visit's best rewrites that visit's clip in place -- and until now the page
+ * played only `first_clip`, which measurement showed is frequently a mediocre
+ * take: for every top species on pearl the best-confidence visit is not the
+ * first (American Goldfinch 0.65-0.98 across 636 visits). So the good take
+ * leads, and first contact keeps its place as the historical record rather
+ * than the thing you are invited to listen to.
+ *
+ * The best slot is deliberately the louder instrument -- a wider control, the
+ * confidence set in the display face rather than a stamp -- because "hear this
+ * bird at its best" is the page's most delightful offer and it should look
+ * like one. First contact sits under it in the same faint chrome the metadata
+ * row uses.
+ *
+ * GEOMETRY IS FIXED ACROSS EVERY STATE (house rule #1). Both rows always
+ * render at the same heights whether the entry has landed, has one clip, has
+ * two, or has none -- so nothing reflows when the fetch resolves, when a
+ * best clip turns out to BE first contact, or when a file proves pruned. */
+function Recordings({
+  entry,
+  player,
+}: {
+  entry: RosterEntry | null;
+  player: ClipPlayer;
+}) {
+  const best = entry?.best_clip ?? null;
+  const first = entry?.first_clip ?? null;
+  // One recording wearing both hats -- the common case for a single-visit
+  // species, and for any bird whose first encounter was simply its clearest.
+  // Two identical players stacked would be silly; saying so is better.
+  const same = best !== null && best === first;
+  const conf = entry?.best_confidence ?? null;
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <div className="flex items-center gap-3">
+        <PlaySlot clip={best} player={player} big />
+        <div className="min-w-0">
+          <p className="stamp text-[9px] text-inkfaint">
+            {same ? "the recording" : "best recording"}
+          </p>
+          <p
+            className="text-sm leading-tight text-ink"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            {conf !== null ? conf.toFixed(2) : "—"}
+            {entry?.best_ts != null && (
+              <span className="text-inkfaint"> · {dateOf(entry.best_ts)}</span>
+            )}
+          </p>
+        </div>
+      </div>
+      {/* The second line always occupies its row: when best IS first contact
+          it carries the sentence instead of a duplicate player, which keeps
+          the block one height in every state and tells the nicer story. */}
+      <div className="mt-2 flex h-8 items-center gap-3">
+        {same ? (
+          <p className="stamp text-[9px] text-inkfaint">
+            first contact · still unbeaten
+          </p>
+        ) : (
+          <>
+            <PlaySlot clip={first} player={player} />
+            <p className="stamp text-[9px] text-inkfaint">
+              first contact
+              {entry ? (
+                <span className="text-inkfaint"> · {dateOf(entry.first_ts)}</span>
+              ) : null}
+            </p>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2066,24 +2208,14 @@ export function SpeciesProfile({
                 <dt className="stamp text-[9px] text-inkfaint">today</dt>
                 <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
               </div>
-              {/* First contact (#220): the very first recording Earl ever
-                  made of this bird -- the one clip retention exempts forever
-                  (#175), which until now nothing played. PlaySlot's own
-                  geometry covers every state: a pre-clip-era lifer shows the
-                  reserved no-clip dot, a hand-pruned file the faded stamp. */}
-              <div>
-                <dt className="stamp text-[9px] text-inkfaint">
-                  first contact
-                </dt>
-                <dd className="mt-0.5">
-                  {entry ? (
-                    <PlaySlot clip={entry.first_clip} player={player} />
-                  ) : (
-                    <span className="text-inkdim">—</span>
-                  )}
-                </dd>
-              </div>
             </dl>
+            {/* The recordings (#333): the best take leads, first contact
+                (#220) keeps its place beneath as the historical record.
+                Both slots inherit PlaySlot's state coverage -- a
+                pre-clip-era lifer shows the reserved no-clip dot, a pruned
+                file the faded stamp, and an un-enhanced one its raw notch
+                (#331). */}
+            <Recordings entry={entry ?? null} player={player} />
             {/* The magazine body (#192): the portrait + its CC-BY credit
                 float left in the description's text flow -- the Field
                 Journal's magazine-wrap precedent, and flow-root so a short
