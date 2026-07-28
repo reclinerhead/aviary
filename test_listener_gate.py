@@ -232,6 +232,36 @@ def test_unmapped_and_faint_windows_still_listen():
     assert gate.route([("Dog", 0.29)])[0] == "listen"   # under the floor
 
 
+def test_a_sound_event_carries_no_clip():
+    """#327: sound events are bus-only (sightings.py never persists
+    kind:"sound"), so a clip written for one is unreachable the moment the
+    live ticker moves on -- 43% of birdhouse's tree was orphaned cricket
+    WAVs. The event keeps every observation; only the bytes stop."""
+    payload = gate.shape_sound_event(
+        source="window-mic", ts=100, klass="Cricket", confidence=0.55,
+        clip_relpath=None, windy=False, rms=0.004)
+    assert payload["clip"] is None
+    # Everything the ticker and the future training loop (#278) read is
+    # untouched -- this is a bytes decision, not an observation one.
+    assert payload["kind"] == "sound"
+    assert payload["class"] == "Cricket"
+    assert payload["confidence"] == 0.55
+    assert payload["rms"] == 0.004
+
+
+def test_a_sound_visit_tracks_without_a_clip():
+    """The tracker still debounces sound visits (one cricket chorus is one
+    visit) and still reports the visit's best for the journal -- it simply
+    carries None where a bird visit carries a path."""
+    t = gate.VisitTracker()
+    assert t.observe("Cricket", 100, 0.4, None) == ("open", None)
+    assert t.observe("Cricket", 110, 0.9, None) == ("best", None)
+    assert t.observe("Cricket", 120, 0.2, None) == ("extend", None)
+    closed = t.expire(100 + gate.VISIT_GAP_S + 121)
+    assert closed[0]["windows"] == 3
+    assert closed[0]["best_conf"] == 0.9
+
+
 def test_floor_only_governs_sound_events():
     assert gate.route([("Dog", 0.35)], floor=0.5)[0] == "listen"
     assert gate.route([("Speech", 0.15)], floor=0.5)[0] == "speech"

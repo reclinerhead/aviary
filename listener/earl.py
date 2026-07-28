@@ -547,23 +547,31 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                 # bird is singing.
                 if verdict == "notable":
                     for klass, score in hits:
-                        action, relpath = sound_visits.observe(
-                            klass, ts, score,
-                            gate.clip_relpath(name, ts, klass))
-                        if action == "extend":
+                        # A sound visit writes NO clip (#327). The tracker
+                        # still debounces and tracks the visit's best for
+                        # the "visit closed" line, but the candidate path is
+                        # None because nothing would ever read the file:
+                        # sightings.py never persists kind:"sound" (the #174
+                        # two-tier design), so once the live ticker moves on,
+                        # no route, table, or query can reach it. Measured on
+                        # birdhouse's first outdoor evening: crickets alone
+                        # were 43% of the clip tree, all of it unreachable.
+                        # The EVENT still flows -- class, confidence, rms --
+                        # so the ticker, gate stats, and the future training
+                        # loop (#278) keep every observation. Only the orphan
+                        # bytes stop. Clips return if sound events ever gain
+                        # a persistent consumer.
+                        action, _ = sound_visits.observe(
+                            klass, ts, score, None)
+                        if action != "open":
                             continue
-                        pending.append((relpath, list(context)))
-                        if action == "open":
-                            payload = gate.shape_sound_event(
-                                source=name, ts=ts, klass=klass,
-                                confidence=score, clip_relpath=relpath,
-                                windy=windy, rms=rms)
-                            queue.put(("event", name, payload))
-                            log(f"sound: {klass} {score:.2f}"
-                                f"{' (wind-suspect)' if windy else ''}")
-                        else:
-                            log(f"sound: {klass} {score:.2f} -- visit best, "
-                                f"clip upgraded")
+                        payload = gate.shape_sound_event(
+                            source=name, ts=ts, klass=klass,
+                            confidence=score, clip_relpath=None,
+                            windy=windy, rms=rms)
+                        queue.put(("event", name, payload))
+                        log(f"sound: {klass} {score:.2f}"
+                            f"{' (wind-suspect)' if windy else ''}")
 
                 # Every non-speech window reaches BirdNET -- the Phase 1
                 # path, byte-identical from here (including its own human
