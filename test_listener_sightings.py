@@ -361,6 +361,35 @@ def test_parse_event_rejects_malformed(payload):
     assert sightings.parse_event(payload) is None
 
 
+# --- what earns a journal line (issue #324) ----------------------------------
+
+def test_sound_events_are_ours_to_ignore_silently():
+    """#174's coarse tier is bus-only by design, so a cricket must not be
+    announced as a malformed message -- a summer yard produces them all
+    night and the noise buries the lines that matter."""
+    payload = json.dumps({"ts": 1, "source": "window-mic", "kind": "sound",
+                          "class": "Cricket", "confidence": 0.34})
+    assert sightings.parse_event(payload) is None    # not persisted
+    assert sightings.is_other_kind(payload) is True  # ...and not an incident
+
+
+def test_an_unknown_future_kind_is_also_ignored_silently():
+    # Ignoring unknown kinds IS the two-tier schema's forward-compatibility
+    # guard (#172): a kind invented after this code shipped must flow past
+    # without a word, exactly like "sound" does.
+    assert sightings.is_other_kind(json.dumps({"kind": "seismic"})) is True
+
+
+def test_real_garbage_still_earns_its_loud_line():
+    # The cases that mean something is actually wrong stay loud: bytes that
+    # aren't JSON, and a DETECTION missing the fields a detection must have.
+    assert sightings.is_other_kind(b"not json at all") is False
+    assert sightings.is_other_kind(json.dumps([1, 2, 3])) is False
+    broken = json.dumps({"kind": "detection", "ts": "yesterday"})
+    assert sightings.parse_event(broken) is None
+    assert sightings.is_other_kind(broken) is False
+
+
 # --- clip retention (issue #175) ---------------------------------------------
 
 DAY = 86400
