@@ -16,6 +16,7 @@
 #      ssh waits on the kernel's 2-hour keepalive (issue #201).
 # =============================================================================
 
+import re
 import shlex
 
 import pytest
@@ -200,6 +201,13 @@ def test_shipped_station_registry_is_a_working_ear():
     assert "S16_LE" in argv and "48000" in argv
     assert "raw" in argv          # raw stream, not WAV-headered
     assert argv.count("1") >= 1   # mono (-c 1)
+    # The device is addressed BY NAME, never by index (#320): ALSA card
+    # numbers are a boot-time race, and a station that loses it captures a
+    # healthy-looking nothing from the onboard jack. birdhouse's first cold
+    # boot in the field proved it.
+    device = argv[argv.index("-D") + 1]
+    assert "CARD=" in device, device
+    assert not re.search(r"plughw:\d", device), device
 
 
 def test_shipped_rover_cmd_carries_ssh_keepalives():
