@@ -457,8 +457,9 @@ def test_prune_clips_end_to_end(tmp_path):
     conn.close()
 
     now = old + 200 * DAY
-    pruned = sightings.prune_clips(str(clips), store, 90, now_ts=now)
-    assert pruned == 1
+    aged, over, still_over = sightings.prune_clips(
+        str(clips), store, 90, now_ts=now)
+    assert (aged, over, still_over) == (1, 0, False)
     assert (clips / "amcrest" / "1-Lifer.wav").exists()
     assert not (clips / "amcrest" / "2-Common.wav").exists()
     assert (clips / "amcrest" / "3-Young.wav").exists()
@@ -467,7 +468,122 @@ def test_prune_clips_end_to_end(tmp_path):
 def test_prune_clips_missing_dir_is_zero_not_error(tmp_path):
     store = str(tmp_path / "earl.db")
     sightings.connect(store).close()
-    assert sightings.prune_clips(str(tmp_path / "nope"), store, 90) == 0
+    assert sightings.prune_clips(str(tmp_path / "nope"), store, 90) == \
+        (0, 0, False)
+
+
+# --- the disk budget (issue #330) --------------------------------------------
+
+def sized(*rows):
+    """(relpath, mtime, size) triples, the budget arm's input shape."""
+    return list(rows)
+
+
+def test_budget_evicts_oldest_first_until_it_fits():
+    files = sized(("a/1-old.wav", 100, 40), ("a/2-mid.wav", 200, 40),
+                  ("a/3-new.wav", 300, 40))
+    # 120 bytes on disk, cap 100: the oldest single file closes the gap.
+    assert sightings.budget_selection(files, set(), 100) == ["a/1-old.wav"]
+    # Cap 50 needs two of them, still oldest-first.
+    assert sightings.budget_selection(files, set(), 50) == \
+        ["a/1-old.wav", "a/2-mid.wav"]
+
+
+def test_budget_does_nothing_when_the_tree_fits():
+    files = sized(("a/1.wav", 100, 10), ("a/2.wav", 200, 10))
+    assert sightings.budget_selection(files, set(), 1000) == []
+
+
+def test_no_cap_means_no_budget_arm():
+    # Unset cap is the pre-#330 behavior: age horizon only, whatever the size.
+    files = sized(("a/1.wav", 100, 10 ** 9))
+    assert sightings.budget_selection(files, set(), None) == []
+    assert sightings.budget_selection(files, set(), 0) == []
+
+
+def test_budget_never_evicts_a_lifer_first_clip():
+    """The exemption is absolute under pressure -- the whole point. A disk
+    number must never cost a first-heard recording."""
+    files = sized(("a/1-lifer.wav", 100, 60), ("a/2-common.wav", 200, 60))
+    assert sightings.budget_selection(files, {"a/1-lifer.wav"}, 50) == \
+        ["a/2-common.wav"]
+
+
+def test_budget_reports_what_it_can_and_leaves_the_sacred_set():
+    """When the exempt clips ALONE exceed the cap, take everything allowed
+    and stop -- the caller logs that the tree is still over. Never a
+    delete-the-evidence-to-hit-a-number path."""
+    files = sized(("a/1-lifer.wav", 100, 500), ("a/2-common.wav", 200, 10))
+    assert sightings.budget_selection(files, {"a/1-lifer.wav"}, 50) == \
+        ["a/2-common.wav"]
+
+
+def test_budget_takes_the_enhanced_sibling_with_its_original():
+    files = sized(("a/1.wav", 100, 30), ("a/1-enh.wav", 150, 30),
+                  ("a/2.wav", 200, 30))
+    # Evicting the pair frees 60 of the 90 on disk, landing under a 40 cap.
+    assert sightings.budget_selection(files, set(), 40) == \
+        ["a/1.wav", "a/1-enh.wav"]
+
+
+def test_budget_counts_but_never_evicts_portraits():
+    """The species/ shelf is permanent (#184) -- yet it occupies the volume,
+    so it must COUNT. Measuring only the evictable half would make the cap a
+    lie the moment the permanent half grew."""
+    files = sized(("species/Cardinalis_cardinalis.jpg", 50, 80),
+                  ("a/1.wav", 100, 30))
+    # 110 on disk against a 100 cap: the portrait is untouchable, so the
+    # clip goes even though the clips alone would have fit.
+    assert sightings.budget_selection(files, set(), 100) == ["a/1.wav"]
+
+
+def test_budget_skips_what_the_age_sweep_already_doomed():
+    """The two arms compose: whatever the horizon claimed is already gone
+    from the budget's arithmetic, so it can't be double-counted or
+    double-deleted."""
+    files = sized(("a/1-old.wav", 100, 60), ("a/2-new.wav", 300, 30))
+    assert sightings.budget_selection(files, set(), 50,
+                                      already_doomed=["a/1-old.wav"]) == []
+
+
+def test_budget_and_age_arms_compose_end_to_end(tmp_path):
+    clips = tmp_path / "clips"
+    (clips / "amcrest").mkdir(parents=True)
+    for name in ("1-Lifer.wav", "2-Old.wav", "3-New.wav"):
+        (clips / "amcrest" / name).write_bytes(b"x" * 40)
+    old = 1000.0
+    for name in ("1-Lifer.wav", "2-Old.wav"):
+        os.utime(clips / "amcrest" / name, (old, old))
+
+    store = str(tmp_path / "earl.db")
+    conn = sightings.connect(store)
+    sightings.record(conn, sightings.parse_event(
+        event(clip="amcrest/1-Lifer.wav")))
+    conn.close()
+
+    now = old + 200 * DAY
+    # Cap 30 against a 40-byte lifer: even after taking everything it is
+    # allowed to take, the sacred set alone busts the budget.
+    aged, over, still_over = sightings.prune_clips(
+        str(clips), store, 90, now_ts=now, cap_bytes=30)
+    # Age took the old commoner; the budget then took the young one; the
+    # lifer survived both arms and the tree is honestly still over cap.
+    assert (aged, over) == (1, 1)
+    assert still_over is True
+    assert (clips / "amcrest" / "1-Lifer.wav").exists()
+    assert not (clips / "amcrest" / "2-Old.wav").exists()
+    assert not (clips / "amcrest" / "3-New.wav").exists()
+
+
+def test_clips_cap_env_parses_and_fails_loud(monkeypatch):
+    monkeypatch.delenv("MERLE_EARL_CLIPS_CAP_GB", raising=False)
+    assert sightings.clips_cap_bytes() is None      # unset = no cap
+    monkeypatch.setenv("MERLE_EARL_CLIPS_CAP_GB", "40")
+    assert sightings.clips_cap_bytes() == 40_000_000_000
+    for bad in ("banana", "-5", "0"):
+        monkeypatch.setenv("MERLE_EARL_CLIPS_CAP_GB", bad)
+        with pytest.raises(RuntimeError, match="CLIPS_CAP_GB"):
+            sightings.clips_cap_bytes()
 
 
 # --- earl.py's pure helpers --------------------------------------------------
