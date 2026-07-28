@@ -259,11 +259,37 @@ def _ensure_home(conn, home_latlon):
             (lat, lon, HOME_LOCATION_ID))
 
 
+def is_other_kind(payload):
+    """True when this is a well-formed event of a kind this consumer simply
+    doesn't persist (issue #324).
+
+    `parse_event` answers None for two very different things -- "not ours"
+    and "garbage" -- and the caller could not tell them apart, so every
+    #174 sound event was announced as a "dropped malformed message". A
+    summer yard produces those all night (crickets, frogs, a passing
+    engine), which is the #35 journal-spam disease: the noise buries the
+    lines that matter, and the wording actively lies about a mechanism that
+    is working exactly as designed -- ignoring unknown kinds IS the two-tier
+    schema's forward-compatibility guard (#172).
+
+    So: anything that parses as a JSON object whose `kind` is not
+    "detection" is deliberately ours to ignore, silently, including kinds
+    invented after this code was written. Real garbage -- unparseable
+    bytes, or a "detection" missing the fields a detection must have --
+    still gets its loud line, because that one means something is wrong."""
+    try:
+        event = json.loads(payload)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(event, dict) and event.get("kind") != "detection"
+
+
 def parse_event(payload):
     """One audio/events message -> the row dict, or None for anything that
     isn't a well-formed detection (never trust the wire -- the frame_archiver
     rule; a malformed message is logged by the caller and dropped, never a
-    dead consumer)."""
+    dead consumer). The caller asks `is_other_kind` first, so only genuine
+    malformations reach that log line (#324)."""
     try:
         event = json.loads(payload)
         if event.get("kind") != "detection":
@@ -556,8 +582,12 @@ def main():
     def on_message(client, userdata, message):
         row = parse_event(message.payload)
         if row is None:
-            print(f"[sightings] dropped malformed message "
-                  f"({message.payload[:80]!r})", flush=True)
+            # A kind we don't persist is the designed common case, not an
+            # incident -- it leaves no trace here, exactly as the two-tier
+            # schema intends (#324). Only real malformations get ink.
+            if not is_other_kind(message.payload):
+                print(f"[sightings] dropped malformed message "
+                      f"({message.payload[:80]!r})", flush=True)
             return
         try:
             is_lifer = record(conn, row)
