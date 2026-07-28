@@ -96,7 +96,7 @@ def test_parse_summary_missing_page_and_disambiguation_are_nothing():
     disambig = summary_page(pageprops={"disambiguation": ""})
     for d in (missing, disambig, None, {}):
         got = species_profile.parse_summary(d)
-        assert got == {"description": None, "image_url": None,
+        assert got == {"description": None, "voice": None, "image_url": None,
                        "image_name": None, "image_w": None, "image_h": None}
 
 
@@ -115,6 +115,178 @@ def test_parse_summary_survives_missing_pieces():
 def test_clean_extract_drops_section_stubs_and_collapses_blanks():
     raw = "One.\n\n\n\nTwo &amp; three.\n== See also ==\njunk"
     assert species_profile.clean_extract(raw) == "One.\n\nTwo & three."
+
+
+# --- what it sounds like (issue #315) ----------------------------------------
+
+# A bird article shaped like the real ones: lead, some sections, a nested
+# subsection inside the voice section, and a sibling section after it.
+ARTICLE = """The northern cardinal is a bird in the genus Cardinalis.
+It is a mid-sized songbird.
+
+== Description ==
+The male is red.
+
+== Songs ==
+Both sexes sing clear, whistled phrases &amp; repeat them.
+
+=== Duetting ===
+Mated pairs may share song phrases.
+
+== Diet ==
+Mostly seeds.
+"""
+
+
+def test_dropping_exintro_leaves_the_description_byte_identical():
+    """The entire justification for asking Wikipedia for the whole article:
+    clean_extract already cut at the first heading, so the lead it returns
+    from a full extract equals what exintro=1 used to hand back."""
+    intro_only = ("The northern cardinal is a bird in the genus Cardinalis.\n"
+                  "It is a mid-sized songbird.")
+    assert species_profile.clean_extract(ARTICLE) == intro_only
+    assert species_profile.summary_url("X").find("exintro") == -1
+
+
+def test_voice_section_reads_the_vocalization_prose():
+    got = species_profile.voice_section(ARTICLE)
+    # Entities unescaped like any other prose we store...
+    assert got.startswith("Both sexes sing clear, whistled phrases & repeat")
+    # ...the subsection's prose kept, its heading scaffolding dropped...
+    assert "Mated pairs may share song phrases." in got
+    assert "Duetting" not in got
+    # ...and the next same-level section is somebody else's business.
+    assert "seeds" not in got
+
+
+def test_voice_section_finds_a_nested_heading_without_swallowing_siblings():
+    """The Common Grackle case: its section is 'Vocals', nested under
+    'Ecology and behavior' -- so a bare-'Vocals' spelling must match, and the
+    section must end at its SIBLING, not at its parent's next sibling."""
+    nested = ("Lead.\n\n== Ecology and behavior ==\nFlocks in winter.\n\n"
+              "=== Vocals ===\nThe song is particularly harsh.\n\n"
+              "=== Foraging ===\nEats waste corn.\n\n== Breeding ==\nNests.\n")
+    got = species_profile.voice_section(nested)
+    assert got == "The song is particularly harsh."
+
+
+def test_voice_section_matches_every_observed_heading_spelling():
+    # Measured across 30 yard species; all of these are real headings.
+    for heading in ("Vocalization", "Vocalizations", "Vocalisation", "Vocals",
+                    "Voice", "Song", "Songs", "Song and calls",
+                    "Call and flight", "Sounds", "Drumming"):
+        art = f"Lead.\n\n== {heading} ==\nIt goes cheer-cheer.\n"
+        assert species_profile.voice_section(art) == "It goes cheer-cheer.", \
+            heading
+
+
+def test_voice_section_is_none_when_the_article_has_no_such_section():
+    """The honest blank. Note 'Description' contains the letters c-r-i and
+    'Discovery' contains 'cove' -- word boundaries are what keep an
+    unanchored substring from claiming a hit on an ordinary section."""
+    plain = ("Lead.\n\n== Description ==\nA small grey bird.\n\n"
+             "== Distribution and habitat ==\nWoodland edges.\n")
+    assert species_profile.voice_section(plain) is None
+    assert species_profile.voice_section("") is None
+    assert species_profile.voice_section(None) is None
+
+
+def test_voice_section_ignores_the_in_culture_trap():
+    """Measured on the real Eastern Bluebird article: its only 'song' words
+    live in an 'In culture' paragraph about The Wizard of Oz. A heading-scoped
+    reader must not surface that -- wrong prose on a false-positive check is
+    worse than none."""
+    art = ("Lead.\n\n== In culture ==\nBluebirds appear in the "
+           "\"Over the Rainbow\" song from The Wizard of Oz.\n")
+    assert species_profile.voice_section(art) is None
+
+
+def test_parse_summary_carries_the_voice():
+    got = species_profile.parse_summary(summary_page(extract=ARTICLE))
+    assert got["voice"].startswith("Both sexes sing")
+    assert got["description"].startswith("The northern cardinal is a bird")
+    # An article with no vocalization section is an honest NULL, not a guess.
+    assert species_profile.parse_summary(summary_page())["voice"] is None
+
+
+def test_enrich_stamps_voice_checked_even_when_there_is_no_section(conn,
+                                                                   tmp_path):
+    """The termination guarantee. Without the stamp, the ~27% of species
+    whose article has no vocalization section would sit on the backfill arm
+    and be re-asked forever."""
+    fake_json, fake_bytes, _ = fetchers()          # summary_page(): no section
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes,
+                                   now=lambda: 4242)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice"] is None                    # honestly nothing found
+    assert row["voice_checked_ts"] == 4242         # but we did look
+
+
+def test_enrich_stores_the_voice(conn, tmp_path):
+    fake_json, fake_bytes, _ = fetchers(summary=summary_page(extract=ARTICLE))
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice"].startswith("Both sexes sing")
+    assert row["voice_checked_ts"] is not None
+
+
+def test_worklist_backfills_unchecked_rows_exactly_once(conn, tmp_path):
+    """The #315 backfill arm: a pre-voice row comes back for one look, and
+    then -- section or no section -- settles permanently."""
+    life(conn, "A sci", "Robin")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        ("A sci", "prose", "A_sci.jpg", "wikipedia", "cc", 900, 600, 1))
+    assert species_profile.worklist(conn) == [("A sci", "Robin")]
+
+    fake_json, fake_bytes, _ = fetchers()          # a page with no section
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    assert species_profile.worklist(conn) == []    # and stays empty
+
+
+def test_all_species_ignores_every_gate(conn):
+    """--refresh-all is the recreate-the-lot path: fully enriched rows and
+    all. It must not consult the worklist, or it could never re-fetch a
+    species that is already settled."""
+    life(conn, "A sci", "Robin")
+    life(conn, "B sci", "Cardinal")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h,"
+        " voice, voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("A sci", "prose", "A_sci.jpg", "wikipedia", "cc", 900, 600,
+         "it sings", 1, 1))
+    assert species_profile.worklist(conn) == [("B sci", "Cardinal")]
+    assert species_profile.all_species(conn) == [
+        ("B sci", "Cardinal"), ("A sci", "Robin")]   # common-name order
+
+
+def test_refresh_all_still_refuses_an_owner_row(conn, tmp_path):
+    """all_species() lists it -- the guard lives one layer down, so the
+    provenance rule holds on the recreate path too."""
+    life(conn, "A sci", "Robin")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, fetched_ts) VALUES (?,?,?,?,?,?)",
+        ("A sci", "todd's", "A_sci.jpg", "owner", "photo: Todd", 1))
+    assert species_profile.all_species(conn) == [("A sci", "Robin")]
+
+    fake_json, fake_bytes, calls = fetchers()
+    status = species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                            fetch_json=fake_json,
+                                            fetch_bytes=fake_bytes)
+    assert status == "owner"
+    assert calls == []                             # not even one request
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["description"] == "todd's"          # untouched
 
 
 def test_parse_imageinfo_strips_credit_html():
@@ -199,22 +371,26 @@ def test_worklist_backfills_dimensionless_rows(conn):
     # the whole life list.
     life(conn, "A sci", "Robin")
     life(conn, "B sci", "Cardinal")
+    # Both rows are settled for voice (#315), so this asserts the DIMENSION
+    # arm alone rather than accidentally riding the voice backfill.
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
-        " image_source, image_attribution, image_w, image_h, fetched_ts)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        ("A sci", "t", "A_sci.jpg", "wikipedia", "cc", None, None, 1))
+        " image_source, image_attribution, image_w, image_h,"
+        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("A sci", "t", "A_sci.jpg", "wikipedia", "cc", None, None, 1, 1))
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
-        " image_source, image_attribution, image_w, image_h, fetched_ts)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        ("B sci", "t", "B_sci.jpg", "wikipedia", "cc", 900, 600, 1))
+        " image_source, image_attribution, image_w, image_h,"
+        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("B sci", "t", "B_sci.jpg", "wikipedia", "cc", 900, 600, 1, 1))
     assert species_profile.worklist(conn) == [("A sci", "Robin")]
 
 
 def test_worklist_never_backfills_an_owner_row(conn):
     # An owner photo has no Wikipedia dimensions to fetch and must never be
     # spent a request on -- the provenance rule, enforced in the SQL.
+    # Deliberately left with NO voice_checked_ts: the owner guard has to hold
+    # on the #315 arm too, or an owner row would be re-fetched forever.
     life(conn, "A sci", "Robin")
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
@@ -230,9 +406,9 @@ def test_worklist_leaves_prose_only_rows_alone(conn):
     life(conn, "A sci", "Robin")
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
-        " image_source, image_attribution, image_w, image_h, fetched_ts)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        ("A sci", "prose", None, None, None, None, None, 1))
+        " image_source, image_attribution, image_w, image_h,"
+        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("A sci", "prose", None, None, None, None, None, 1, 1))
     assert species_profile.worklist(conn) == []
 
 
@@ -242,9 +418,9 @@ def test_worklist_is_the_unprofiled_life_list(conn):
     life(conn, "C sci", "Jay")
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
-        " image_source, image_attribution, image_w, image_h, fetched_ts)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        ("B sci", "text", None, None, None, None, None, 1))
+        " image_source, image_attribution, image_w, image_h,"
+        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("B sci", "text", None, None, None, None, None, 1, 1))
     assert species_profile.worklist(conn) == [
         ("C sci", "Jay"), ("A sci", "Robin")]   # common-name order
 

@@ -124,10 +124,13 @@ def profile_writer(description="A very red bird."):
 
     def fake(conn, media, sci):
         calls.append(sci)
+        # voice_checked_ts mirrors the real pass: stamped whether or not a
+        # vocalization section was found (#315), which is what takes the
+        # species off the worklist for good.
         conn.execute(
             "INSERT OR REPLACE INTO species_profile (species_sci,"
-            " description, fetched_ts) VALUES (?,?,?)",
-            (sci, description, NOW))
+            " description, voice_checked_ts, fetched_ts) VALUES (?,?,?,?)",
+            (sci, description, NOW, NOW))
         conn.commit()
         return "no-image"
 
@@ -186,12 +189,15 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
                                        ("B sci", "Bunting"),
                                        ("C sci", "Cardinal")]):
         seed(store, sci, common, [at(2026, 7, 18, 7 + i)])
-        # Pre-filled profiles keep the Wikipedia half off the wire entirely.
+        # Pre-filled profiles keep the Wikipedia half off the wire entirely
+        # -- which now requires voice_checked_ts as well (#315), or the voice
+        # backfill arm would put these three straight back on the worklist
+        # and this test would make real HTTP calls.
         store.execute(
             "INSERT INTO species_profile (species_sci, description,"
-            " image_file, image_source, image_w, image_h, fetched_ts)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (sci, "prose", "x.jpg", "wikipedia", 900, 600, 1))
+            " image_file, image_source, image_w, image_h, voice_checked_ts,"
+            " fetched_ts) VALUES (?,?,?,?,?,?,?,?)",
+            (sci, "prose", "x.jpg", "wikipedia", 900, 600, 1, 1))
     store.commit()
     monkeypatch.setenv("MERLE_OLLAMA", "fakehost")
     monkeypatch.setenv("MERLE_ENRICH_CAP", "1")

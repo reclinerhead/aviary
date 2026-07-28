@@ -43,13 +43,22 @@ const LIFE_COLS =
   "SELECT l.species_sci, l.species_common, l.first_ts, l.first_source," +
   " l.first_clip, p.description, p.image_file, p.image_source," +
   " p.image_attribution";
-const LIFE_JOINED_SQL = `${LIFE_COLS}, p.image_w, p.image_h${JOIN_TAIL}`;
-// The #184-era store: species_profile exists but predates the dimension
-// columns. Selecting them would throw and drop us to the bare life list,
-// silently losing every description and portrait -- a real regression during
-// the window between deploying this code and re-running the pass (which is
-// what adds the columns). So the fallback is a CASCADE, not a single catch:
-// full join, then the #184 shape, then the bare list.
+const LIFE_JOINED_SQL =
+  `${LIFE_COLS}, p.image_w, p.image_h, p.voice${JOIN_TAIL}`;
+// Older store shapes: species_profile exists but predates a column this
+// route selects. Selecting it would throw and drop us straight to the bare
+// life list, silently losing every description and portrait -- a real
+// regression during the window between deploying this code and the
+// enrichment loop's next open (which is what adds the columns; the MCC
+// opens read-only and never runs the pass's connect()).
+//
+// So the fallback is a CASCADE, and it grows a STEP PER COLUMN GENERATION
+// rather than widening -- #315 added `voice`, and without its own step a
+// store that already had dimensions would fall all the way to the #184
+// shape and lose them. Newest shape first, each rung losing only what it
+// genuinely lacks: voice+dimensions, then dimensions, then the #184 join,
+// then the bare list.
+const LIFE_JOINED_PRE315_SQL = `${LIFE_COLS}, p.image_w, p.image_h${JOIN_TAIL}`;
 const LIFE_JOINED_PRE185_SQL = `${LIFE_COLS}${JOIN_TAIL}`;
 // Every (species, ts) pair -- the tally walks them all so the visit grouping
 // sees real gaps, not a LIMIT's arbitrary edge. Post-debounce this table
@@ -89,16 +98,24 @@ export async function GET(req: NextRequest) {
     // file keeps its prose and photos (just no dimensions), and a pre-#184
     // file still lists every bird. Never blank the aviary because a pass
     // hasn't run yet.
-    let life: Parameters<typeof shapeRoster>[0];
-    try {
-      life = db.prepare(LIFE_JOINED_SQL).all() as typeof life;
-    } catch {
+    type LifeRows = Parameters<typeof shapeRoster>[0];
+    let life: LifeRows | null = null;
+    for (const sql of [
+      LIFE_JOINED_SQL,
+      LIFE_JOINED_PRE315_SQL,
+      LIFE_JOINED_PRE185_SQL,
+    ]) {
       try {
-        life = db.prepare(LIFE_JOINED_PRE185_SQL).all() as typeof life;
+        life = db.prepare(sql).all() as LifeRows;
+        break;
       } catch {
-        life = db.prepare(LIFE_SQL).all() as typeof life;
+        // this store predates that column generation; try the next rung
       }
     }
+    // The bare list is the floor and is deliberately NOT caught here: a
+    // store without life_list at all is "no birds yet", which the outer
+    // catch already answers quietly.
+    if (life === null) life = db.prepare(LIFE_SQL).all() as LifeRows;
     const rows = db.prepare(SIGHTINGS_SQL).all() as Parameters<
       typeof shapeRoster
     >[1];

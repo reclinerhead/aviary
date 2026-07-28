@@ -1395,6 +1395,102 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
   );
 }
 
+/** What It Sounds Like (#315): the article's vocalization section, sitting
+ * directly under the hero -- above the standings and the chart, because this
+ * is the panel someone reads with a clip playing, deciding whether BirdNET
+ * was right. The prose is full of the mnemonics that actually settle it
+ * ("teakettle-teakettle-teakettle", a rattle "similar to a bouncing ball"),
+ * and it usually compares the bird to the very species it gets confused with.
+ *
+ * DELIBERATELY NOT A JOURNAL PAGE. The spread below is Earl's own writing --
+ * numbered entries, drop caps, signed. This is somebody else's field guide
+ * quoted on our page, so it wears the plain panel and says where it came
+ * from. Two voices should not dress alike.
+ *
+ * No section, no panel -- and no empty state either. The honest blank is the
+ * whole posture of the pass (~27% of species have no such section), and a
+ * reserved footprint would be reserving room for something that is never
+ * coming. Nothing below it moves, because everything below it is a sibling
+ * in the same full-width stack that only renders once `entry` has landed. */
+// Twelve lines of text-sm/leading-relaxed (~273px). Sized off the real
+// articles rather than picked round: a species' opening paragraph runs
+// ~700 characters, which is about ten lines at this measure, so the
+// paragraph carrying the mnemonics reads whole before anyone clicks. A
+// constant is right here where the hero's clamp is computed per species --
+// there is no portrait beside this one to match a height to.
+const VOICE_CLAMP_LINES = 12;
+
+function VoiceEntry({ voice }: { voice?: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // #196's measurement, verbatim in shape: pre-paint so the control never
+  // arrives a frame late, and ONLY while collapsed -- open, scrollHeight
+  // equals clientHeight, and re-measuring there would delete the "read
+  // less" control out from under someone mid-read.
+  useLayoutEffect(() => {
+    if (open) return;
+    const el = bodyRef.current;
+    if (el) setLong(el.scrollHeight > el.clientHeight + 1);
+  }, [voice, open]);
+
+  if (!voice) return null;
+  return (
+    <section className="panel mt-4 rounded-sm border border-line bg-panel px-5 pb-4 pt-4">
+      <header className="flex items-baseline justify-between gap-3 border-b border-line pb-2">
+        <h2
+          className="text-lg text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          What It Sounds Like
+        </h2>
+        {/* CC BY-SA wants the credit and honesty is house style: this is
+            quoted, not ours. */}
+        <span className="stamp shrink-0 text-[9px] text-inkfaint">
+          via Wikipedia
+        </span>
+      </header>
+      {/* Capped measure: reference prose runs long (2,300 characters on the
+          Carolina Wren) and full-bleed lines at this width are a slog. The
+          cap is on the text, not the panel, so the band keeps the page's
+          full width like every other full-width section. */}
+      <div
+        ref={bodyRef}
+        className="mt-3 max-w-[70ch] space-y-2.5 text-sm leading-relaxed text-inkdim"
+        // Clamped at rest for the same reason the hero's description is
+        // (#196): unclamped, the Carolina Wren's section alone runs 965px
+        // and buries the chart and the field desk under it. VOICE_CLAMP_LINES
+        // is set so a species' opening paragraph -- where the mnemonics
+        // almost always are -- reads whole before anyone clicks. Everything
+        // below is a sibling section, so expanding pushes but never reflows.
+        style={
+          open
+            ? undefined
+            : {
+                display: "-webkit-box",
+                WebkitBoxOrient: "vertical",
+                WebkitLineClamp: VOICE_CLAMP_LINES,
+                overflow: "hidden",
+              }
+        }
+      >
+        {voice.split(/\n+/).map((para, i) => (
+          <p key={i}>{para}</p>
+        ))}
+      </div>
+      {long && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="mt-2 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright"
+        >
+          {open ? "read less" : "read more"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 /** One page of the journal: entry heading over a ruled line, the margin
  * figure, the prose (drop cap on the opening letter -- the naturalist's
  * flourish), and a dateline footer signed by the house voice. Fixed
@@ -2156,6 +2252,7 @@ export function SpeciesProfile({
           draw and nothing to say. */}
       {entry && (
         <>
+          <VoiceEntry voice={entry.voice} />
           <StandingsBand roster={roster} sci={sci} openings={openings} now={now} />
           <VisitsChart sci={sci} />
           <FieldNotes analysis={analysis} />
