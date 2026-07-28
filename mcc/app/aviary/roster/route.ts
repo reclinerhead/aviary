@@ -64,10 +64,16 @@ const LIFE_JOINED_PRE317_SQL =
 // then the bare list.
 const LIFE_JOINED_PRE315_SQL = `${LIFE_COLS}, p.image_w, p.image_h${JOIN_TAIL}`;
 const LIFE_JOINED_PRE185_SQL = `${LIFE_COLS}${JOIN_TAIL}`;
-// Every (species, ts) pair -- the tally walks them all so the visit grouping
-// sees real gaps, not a LIMIT's arbitrary edge. Post-debounce this table
-// grows a few hundred rows a day; a full scan is milliseconds for years.
-const SIGHTINGS_SQL = "SELECT species_sci, ts FROM sightings ORDER BY ts";
+// Every sighting -- the tally walks them all so the visit grouping sees real
+// gaps, not a LIMIT's arbitrary edge. Post-debounce this table grows a few
+// hundred rows a day; a full scan is milliseconds for years.
+//
+// `confidence` and `clip` ride along for the best-recording pick (#333):
+// shapeRoster finds each species' best while walking rows it already had, so
+// exposing the good take costs no second query and no second scan. Both
+// columns have existed since #172, so this needs no fallback rung.
+const SIGHTINGS_SQL =
+  "SELECT species_sci, ts, confidence, clip FROM sightings ORDER BY ts";
 
 const empty = () => species([]);
 

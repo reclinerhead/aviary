@@ -355,6 +355,13 @@ export type RosterEntry = {
   // vocalization section, "sentences" gathered from an article that has
   // none. NULL on a pre-#317 row, which reads as the section case.
   voice_source?: string | null;
+  // The best recorded visit (#333) -- see bestClips. NULL when the species
+  // has no clip at all (every write failed, or the files were pruned before
+  // this shipped), which the page renders as the same reserved slot a
+  // clip-less first contact already uses.
+  best_clip?: string | null;
+  best_confidence?: number | null;
+  best_ts?: number | null;
 };
 
 /** The credit line under the "What It Sounds Like" panel (#317).
@@ -376,11 +383,57 @@ export function voiceCredit(source?: string | null): string {
     : "via Wikipedia";
 }
 
-/** life_list rows + raw sighting (species, ts) pairs -> the roster the grid
- * renders. Species-common order for determinism; the client owns the sort
- * control. A life_list species with no sighting rows (shouldn't happen --
- * the same insert writes both -- but a hand-edited store is a store) tallies
- * honestly at zero. */
+/** The best-sounding recording of each species (#333).
+ *
+ * Earl has curated this since #175 and nothing ever showed it: a window that
+ * beats its visit's best REWRITES that visit's clip in place, so every clip
+ * file already holds the best moment of its visit. What was missing was a way
+ * to pick the best VISIT -- and measured on pearl, for every top species the
+ * best-confidence visit is not the first one (American Goldfinch 0.65-0.98
+ * over 636 visits), so "first contact" was frequently a mediocre take while a
+ * near-perfect one sat on disk unreachable.
+ *
+ * Ranked by the STORED confidence, which is the visit's OPENING window --
+ * `sightings` is append-only and a visit's true peak lives only in the
+ * journal (#175's accepted trade-off). So this is honestly "the best recorded
+ * visit", not "the highest-confidence window ever": a visit that opened at
+ * 0.80 and peaked at 0.90 can lose to one that opened at 0.85 and never
+ * improved. The clip the listener actually hears is best-of-visit either way,
+ * which is why option A beat adding an UPDATE path to an append-only store.
+ *
+ * A clip-less row can never win: a failed clip write is an honest gap, and
+ * crowning it would hand the page a confident number attached to silence. */
+export function bestClips(
+  rows: {
+    species_sci: string;
+    ts: number;
+    confidence?: number;
+    clip?: string | null;
+  }[],
+): Record<string, { clip: string; confidence: number; ts: number }> {
+  const out: Record<string, { clip: string; confidence: number; ts: number }> =
+    {};
+  for (const r of rows) {
+    if (!r.clip || typeof r.confidence !== "number") continue;
+    const best = out[r.species_sci];
+    // Strictly greater, so a tie keeps the EARLIER take (rows arrive ts-
+    // ordered): given two equally good recordings, the older one has already
+    // survived a retention sweep the newer one hasn't faced.
+    if (!best || r.confidence > best.confidence)
+      out[r.species_sci] = { clip: r.clip, confidence: r.confidence, ts: r.ts };
+  }
+  return out;
+}
+
+/** life_list rows + raw sighting rows -> the roster the grid renders.
+ * Species-common order for determinism; the client owns the sort control. A
+ * life_list species with no sighting rows (shouldn't happen -- the same
+ * insert writes both -- but a hand-edited store is a store) tallies honestly
+ * at zero.
+ *
+ * `confidence`/`clip` are optional on the row type (#333): the tally only
+ * ever needed (species, ts), and keeping them optional means a caller that
+ * selects the narrow shape still type-checks and simply gets no best clip. */
 export function shapeRoster(
   lifeRows: {
     species_sci: string;
@@ -389,16 +442,27 @@ export function shapeRoster(
     first_source: string;
     first_clip: string | null;
   }[],
-  sightingRows: { species_sci: string; ts: number }[],
+  sightingRows: {
+    species_sci: string;
+    ts: number;
+    confidence?: number;
+    clip?: string | null;
+  }[],
   todayStart: number | null,
 ): RosterEntry[] {
   const tallies = tallyVisits(sightingRows, todayStart);
+  // One extra walk of rows the tally already had in hand -- no second query,
+  // no second scan of the store.
+  const best = bestClips(sightingRows);
   return lifeRows
     .map((r) => ({
       ...r,
       visits: tallies[r.species_sci]?.visits ?? 0,
       today: tallies[r.species_sci]?.today ?? 0,
       week: tallies[r.species_sci]?.week ?? 0,
+      best_clip: best[r.species_sci]?.clip ?? null,
+      best_confidence: best[r.species_sci]?.confidence ?? null,
+      best_ts: best[r.species_sci]?.ts ?? null,
     }))
     .sort((a, b) => a.species_common.localeCompare(b.species_common));
 }
