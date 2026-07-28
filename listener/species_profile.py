@@ -22,11 +22,38 @@
 # returned the image's license anyway -- attribution needs the imageinfo
 # call regardless, so "one keyless call" was never on the table. Two calls
 # per species, one more for the bytes:
-#   1. extracts|pageimages|pageprops  -> lead prose, thumbnail URL, file name
+#   1. extracts|pageimages|pageprops  -> article text, thumbnail URL, name
 #   2. imageinfo extmetadata          -> license + author (CC-BY requires
 #      attribution, and honesty is house style, so it's stored not implied)
 # BirdNET's scientific names resolve via redirects=1 -- bird articles live
 # at common-name titles with taxonomic redirects pointing in.
+#
+# WHAT IT SOUNDS LIKE (issue #315): call 1 no longer sends exintro=1, so it
+# returns the WHOLE article rather than just the lead, and `voice` is the
+# article's vocalization section -- the prose a person actually needs when
+# they are staring at a 9-second clip deciding whether BirdNET was right.
+# The lead is plumage and range; it never answers that question.
+#
+# Costing nothing is what makes it worth doing: clean_extract() already cuts
+# at the first section heading, so the SAME call and the SAME function still
+# yield byte-identical `description` prose -- measured, and asserted by a
+# test. Still two calls per species. The payload grows ~1.7 KB -> ~15 KB,
+# which against a life list this size behind a ~daily gate is nothing.
+#
+# ONLY A REAL HEADING COUNTS. Measured on 30 yard species: 22 have a section
+# whose heading names a sound (Vocalization/Vocalizations/Vocals/Voice/Song/
+# Songs/Song and calls/Call and flight), at top level and nested alike.
+# Scanning loose paragraphs for the other 8 was tried and REJECTED: it hands
+# back the Eastern Bluebird's "In culture" paragraph about "Over the Rainbow"
+# and the cowbird's brood-parasitism neurology. On a panel whose whole job is
+# helping someone judge a false positive, confidently wrong prose is worse
+# than an honest blank -- so no section means NULL, same as no page, no image.
+#
+# `voice_checked_ts` is stamped whether or not a section was found, and that
+# is load-bearing rather than bookkeeping: the backfill arm keys on it being
+# NULL, so without the stamp the ~27% with no section would sit on the
+# worklist and be re-fetched forever. It is species_analysis's checked_ts
+# vs generated_ts split, for exactly the same reason.
 #
 # THE STORE: a `species_profile` table in earl.db, created idempotently here
 # (the connect() upgrade idiom -- the pass owns its table; sightings.py's
@@ -91,6 +118,8 @@ CREATE TABLE IF NOT EXISTS species_profile (
     image_attribution TEXT,
     image_w           INTEGER,
     image_h           INTEGER,
+    voice             TEXT,
+    voice_checked_ts  INTEGER,
     fetched_ts        INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS profile_attempts (
@@ -110,6 +139,20 @@ _SAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 _SECTION_STUB = re.compile(r"\n==.*$", re.DOTALL)
 _BLANK_RUNS = re.compile(r"\n{3,}")
 _HTML_TAG = re.compile(r"<[^>]+>")
+
+# An explaintext heading line, with its own level captured: "== Song ==" is
+# level 2 (a top-level section), "=== Duetting ===" level 3.
+_HEADING = re.compile(r"^(=+)\s*(.+?)\s*=+\s*$", re.M)
+
+# A heading that names a sound (issue #315). WORD-BOUNDED, and that is not
+# fussiness: an unanchored "cri" matches inside "Description", which is
+# exactly how the first cut of this silently claimed a hit on every French
+# article it saw. Covers every spelling observed across 30 yard species --
+# note bare "Vocals" (the Common Grackle's, nested under Ecology and
+# behavior), which a vocali[sz]ation-only pattern misses.
+_VOICE_HEADING = re.compile(
+    r"\b(?:vocali[sz]ations?|vocals?|voice|songs?|calls?|sounds?"
+    r"|drumming|singing)\b", re.I)
 
 
 def db_path():
@@ -131,15 +174,17 @@ def connect(path):
         conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
     # Issue #185's upgrade, the repeatable-pass rule (never a one-time
-    # migration script): a #184-era file lacks the image dimensions. Add
-    # them in place; fresh files get them from SCHEMA. Both paths idempotent,
-    # so a fresh pearl and a week-old earl.db take the same code. Existing
-    # rows honestly NULL until the backfill arm of the worklist refills them.
+    # migration script): a #184-era file lacks the image dimensions, a
+    # pre-#315 one lacks the voice columns. Add them in place; fresh files
+    # get them from SCHEMA. Both paths idempotent, so a fresh pearl and a
+    # week-old earl.db take the same code. Existing rows are honestly NULL
+    # until the matching backfill arm of the worklist refills them.
     columns = {r["name"] for r in
                conn.execute("PRAGMA table_info(species_profile)")}
-    for col in ("image_w", "image_h"):
+    for col, decl in (("image_w", "INTEGER"), ("image_h", "INTEGER"),
+                      ("voice", "TEXT"), ("voice_checked_ts", "INTEGER")):
         if col not in columns:
-            conn.execute(f"ALTER TABLE species_profile ADD COLUMN {col} INTEGER")
+            conn.execute(f"ALTER TABLE species_profile ADD COLUMN {col} {decl}")
     conn.commit()
     return conn
 
@@ -154,14 +199,18 @@ def image_filename(sci):
 
 
 def summary_url(sci):
-    """Call 1: the lead extract, the page image, and the disambiguation
+    """Call 1: the article text, the page image, and the disambiguation
     marker in one query. redirects=1 is what makes scientific-name titles
-    land on the common-name articles; maxlag is fetch-job manners."""
+    land on the common-name articles; maxlag is fetch-job manners.
+
+    NO exintro (#315): the lead alone can't say what a bird sounds like, and
+    the full extract costs no extra call. `description` is unaffected --
+    clean_extract() cuts at the first heading either way."""
     params = urllib.parse.urlencode({
         "action": "query", "format": "json", "formatversion": 2,
         "redirects": 1, "maxlag": WIKI_MAXLAG_S,
         "prop": "extracts|pageimages|pageprops",
-        "exintro": 1, "explaintext": 1,
+        "explaintext": 1,
         "piprop": "thumbnail|name", "pithumbsize": THUMB_PX,
         "ppprop": "disambiguation",
         "titles": sci,
@@ -181,13 +230,56 @@ def imageinfo_url(image_name):
 
 
 def clean_extract(text):
-    """A lead extract -> the paragraphs a page renders: entities unescaped,
-    trailing section scaffolding dropped, blank-line runs collapsed."""
+    """An article extract -> the LEAD paragraphs a page renders: entities
+    unescaped, everything from the first section heading dropped, blank-line
+    runs collapsed.
+
+    Unchanged by #315 and deliberately so. It already cut at the first
+    heading to survive a truncated extract, which means handing it the whole
+    article instead of an exintro one yields the same bytes -- the reason
+    dropping exintro is free rather than a migration."""
     if not text:
         return None
     text = _SECTION_STUB.sub("", html.unescape(text))
     text = _BLANK_RUNS.sub("\n\n", text).strip()
     return text or None
+
+
+def clean_section(text):
+    """A section body -> readable prose. Unlike clean_extract this must NOT
+    cut at a heading (that would truncate a "Song and calls" section at its
+    first subsection); sub-headings are dropped as scaffolding and their
+    prose kept."""
+    if not text:
+        return None
+    text = _HEADING.sub("", html.unescape(text))
+    text = _BLANK_RUNS.sub("\n\n", text).strip()
+    return text or None
+
+
+def voice_section(text):
+    """The first section whose heading names a sound -> its cleaned prose,
+    or None when the article has no such section (the honest blank -- see
+    the module header on why loose-paragraph scanning was rejected).
+
+    A section runs until the next heading at the SAME OR HIGHER level, so a
+    nested "Vocals" under "Ecology and behavior" yields its own paragraphs
+    and not its parent's remaining siblings."""
+    if not text:
+        return None
+    text = html.unescape(text)
+    for m in _HEADING.finditer(text):
+        if not _VOICE_HEADING.search(m.group(2)):
+            continue
+        level = len(m.group(1))
+        rest = text[m.end():]
+        end = len(rest)
+        for nxt in _HEADING.finditer(rest):
+            if len(nxt.group(1)) <= level:
+                end = nxt.start()
+                break
+        return clean_section(rest[:end])
+    return None
 
 
 def parse_summary(d):
@@ -197,8 +289,8 @@ def parse_summary(d):
     listing three species is not a portrait of anybody."""
     pages = ((d or {}).get("query") or {}).get("pages") or []
     page = pages[0] if pages else None
-    empty = {"description": None, "image_url": None, "image_name": None,
-             "image_w": None, "image_h": None}
+    empty = {"description": None, "voice": None, "image_url": None,
+             "image_name": None, "image_w": None, "image_h": None}
     if not page or page.get("missing"):
         return empty
     if "disambiguation" in (page.get("pageprops") or {}):
@@ -206,6 +298,8 @@ def parse_summary(d):
     thumb = page.get("thumbnail") or {}
     return {
         "description": clean_extract(page.get("extract")),
+        # What it sounds like (#315), from the same response.
+        "voice": voice_section(page.get("extract")),
         "image_url": thumb.get("source"),
         "image_name": page.get("pageimage"),
         # The thumbnail's real dimensions (issue #185). Already in this
@@ -256,16 +350,36 @@ def worklist(conn):
         dimensions, i.e. everything #184 wrote before the columns existed.
         One ordinary re-run heals the whole life list -- an upgrade is a
         re-run, never a migration script.
+    (3) BACKFILL (issue #315): rows never yet asked about a vocalization
+        section, i.e. everything written before `voice` existed. Keyed on
+        voice_checked_ts being NULL rather than on `voice` being NULL,
+        because a bird whose article HAS no such section must settle: the
+        stamp is written either way, so this arm empties permanently after
+        one pass instead of re-asking Wikipedia forever about the ~27% that
+        will never have an answer.
 
-    Owner rows are never in either arm: `image_source = 'owner'` is excluded
+    Owner rows are never in any arm: `image_source = 'owner'` is excluded
     outright, so the pass cannot even spend a fetch on one."""
     return [(r["species_sci"], r["species_common"]) for r in conn.execute(
         "SELECT l.species_sci, l.species_common FROM life_list l"
         " LEFT JOIN species_profile p ON p.species_sci = l.species_sci"
         " WHERE (p.species_sci IS NULL"
         "        OR (p.image_source = 'wikipedia' AND p.image_file IS NOT NULL"
-        "            AND p.image_w IS NULL))"
+        "            AND p.image_w IS NULL)"
+        "        OR (p.voice_checked_ts IS NULL"
+        "            AND COALESCE(p.image_source, '') <> 'owner'))"
         " ORDER BY l.species_common")]
+
+
+def all_species(conn):
+    """Every species on the life list, common-name order -- what --refresh-all
+    walks. Deliberately NOT the worklist: this is the "re-fetch the lot" path
+    (a prompt-version bump on our side, a Wikipedia article that has since
+    grown a Vocalizations section), so it must ignore every gate. Owner rows
+    are still refused, one layer down in enrich_species()."""
+    return [(r["species_sci"], r["species_common"]) for r in conn.execute(
+        "SELECT species_sci, species_common FROM life_list"
+        " ORDER BY species_common")]
 
 
 def owner_locked(conn, sci):
@@ -368,16 +482,21 @@ def enrich_species(conn, media_dir, sci, *, fetch_json=get_json,
             image_source = "wikipedia"
             credit = attribution(info["license"], info["artist"])
 
+    stamp = int(now())
     conn.execute(
         "INSERT OR REPLACE INTO species_profile (species_sci, description,"
         " image_file, image_source, image_attribution, image_w, image_h,"
-        " fetched_ts) VALUES (?,?,?,?,?,?,?,?)",
+        " voice, voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (sci, summary["description"], image_file, image_source, credit,
          # Dimensions belong to the file we actually wrote: no file, no
          # claim about its shape (the honest-NULL rule).
          summary["image_w"] if image_file else None,
          summary["image_h"] if image_file else None,
-         int(now())))
+         summary["voice"],
+         # Stamped even when voice is None -- "we looked and there was
+         # nothing" is what keeps this species off the backfill arm (#315).
+         stamp,
+         stamp))
     conn.commit()
     return "enriched" if image_file else "no-image"
 
@@ -386,9 +505,13 @@ def enrich_species(conn, media_dir, sci, *, fetch_json=get_json,
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Fill species_profile from Wikipedia (issue #184)")
-    ap.add_argument("--refresh", metavar="SPECIES_SCI",
-                    help="re-fetch one species (owner rows still skipped)")
+        description="Fill species_profile from Wikipedia (issues #184, #315)")
+    one = ap.add_mutually_exclusive_group()
+    one.add_argument("--refresh", metavar="SPECIES_SCI",
+                     help="re-fetch one species (owner rows still skipped)")
+    one.add_argument("--refresh-all", action="store_true",
+                     help="re-fetch EVERY life-list species, ignoring the "
+                          "worklist gates (owner rows still skipped)")
     args = ap.parse_args()
 
     path = db_path()
@@ -397,6 +520,8 @@ def main():
     try:
         if args.refresh:
             todo = [(args.refresh, args.refresh)]
+        elif args.refresh_all:
+            todo = all_species(conn)
         else:
             todo = worklist(conn)
         if not todo:
@@ -423,6 +548,16 @@ def main():
                      "no-page": "no usable Wikipedia page",
                      "no-image": "prose, no portrait",
                      "enriched": "portrait + prose"}[status]
+            # Read back rather than widen enrich_species's return: the loop
+            # service unpacks a bare status word from it, and a run of the
+            # CLI is not worth changing a contract two callers share.
+            if status in ("no-image", "enriched"):
+                row = conn.execute(
+                    "SELECT voice FROM species_profile WHERE species_sci = ?",
+                    (sci,)).fetchone()
+                got = bool(row and row["voice"])
+                label += " · voice" if got else " · no voice section"
+                counts["voice"] = counts.get("voice", 0) + (1 if got else 0)
             print(f"[species] {common}: {label}", flush=True)
         print(f"[species] done: " + ", ".join(
             f"{v} {k}" for k, v in sorted(counts.items())), flush=True)

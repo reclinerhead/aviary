@@ -347,6 +347,10 @@ export type RosterEntry = {
   // fixed-box fallback rather than assuming a ratio.
   image_w?: number | null;
   image_h?: number | null;
+  // What it sounds like (#315): the article's vocalization section, or NULL
+  // for the ~27% of species whose article has no such section -- an honest
+  // blank, never a guess assembled from loose paragraphs.
+  voice?: string | null;
 };
 
 /** life_list rows + raw sighting (species, ts) pairs -> the roster the grid
