@@ -4,7 +4,9 @@
 >
 > **Covers:** Earl's GUI — `/aviary` + `components/Aviary.tsx` in `mcc/`, its read routes over `earl.db`, the visits chart, field notes, and the `listener/` enrichment passes behind them (`species_profile.py`, `species_analysis.py`, `enrichment_loop.py`)
 >
-> **On stations (epic #212):** the same loop runs **profile-only** (#312) — Wikipedia portraits and descriptions, no field notes, because `MERLE_OLLAMA` is absent from the station env and `run_analysis_pass()` short-circuits on an empty candidate list. No code arm, no profile flag: the kill switch that already existed *is* the station mode. The hosted-model notes are the epic's post-birthday addition.
+> **On stations (epic #212):** the same loop runs **without field notes** (#312) — Wikipedia profiles and the clip pass, but no LLM prose, because `MERLE_OLLAMA` is absent from the station env and `run_analysis_pass()` short-circuits on an empty candidate list. No code arm, no profile flag: the kill switch that already existed *is* the station mode. The hosted-model notes are the epic's post-birthday addition.
+>
+> **The loop's third pass is clip enhancement** (#325, both roles): every original clip gets its `-enh.wav` sibling within a tick, bounded per tick with deferred counts logged. Automatic because pearl's ENH toggle silently played raw for weeks of un-passed clips, and station clips are born ~20 dB quieter than camera-AGC audio.
 > **Runs on:** pearl (MCC production + enrichment loop)
 > **Related:** epic #182; issues #183–#186, #196, #204, #211, #216, #217, #220, #224
 

@@ -1,26 +1,34 @@
 # =============================================================================
 # project-squirrel -- listener/enrichment_loop.py
 #
-# The Aviary tends itself (issue #217): one loop service on pearl that runs
-# both enrichment worklists, each whenever its dependency is available --
-# the network for Wikipedia profiles, some reachable Ollama host for the
-# field notes. A lifer lands on the life list and, within one tick, has its
-# portrait, description, and (with a model up) its field notes, with no
-# human anywhere in the loop.
+# The Aviary tends itself (issue #217): one loop service -- pearl and every
+# station (#312) -- that runs the enrichment worklists, each whenever its
+# dependency is available: the network for Wikipedia profiles, numpy-only
+# local CPU for clip enhancement, some reachable Ollama host for the field
+# notes. A lifer lands on the life list and, within one tick, has its
+# portrait, description, an audible recording, and (with a model up) its
+# field notes, with no human anywhere in the loop.
 #
 #   python -m listener.enrichment_loop          # the earl-enrichment unit
 #
-# ONE TICK, TWO PASSES, IN THIS ORDER:
+# ONE TICK, THREE PASSES, IN THIS ORDER:
 #   1. Profile pass -- drain species_profile.worklist() through the ~daily
 #      retry gate. Depends only on the network, so it runs even when no
 #      model is up anywhere.
-#   2. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
+#   2. Clip pass (#325) -- drain clip_enhance.worklist(), bounded per tick:
+#      every original without a current -enh sibling gets one. Purely
+#      local, so it always runs; automatic on both roles because pearl's
+#      ENH toggle spent weeks silently falling back to raw, and a station's
+#      passive-mic clips are born ~20 dB quieter than camera-AGC audio.
+#   3. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
 #      order via /api/tags (liveness + which models the host holds, one
 #      cheap call); the first that answers wins; drain a bounded slice of
 #      species_analysis.worklist() through its fingerprint gate.
 # The order is load-bearing, not cosmetic: rhythm_prompt() feeds the model
 # the profile's description, so profile-before-notes means a brand-new bird
-# has its background before its first note is written -- same tick.
+# has its background before its first note is written -- same tick; and
+# clips-before-notes keeps audible evidence from waiting behind an LLM that
+# can take minutes per species.
 #
 # SCHEDULED BY OPPORTUNITY, NOT BY CLOCK (#206's design): Ollama lives on
 # bluejay, a workstation that is off overnight and busy some afternoons. A
@@ -61,6 +69,9 @@ from narration.narrator import Ollama, ollama_candidates
 TICK_S = 900          # a no-op tick costs one SQL query, so this is plenty
 PROBE_TIMEOUT_S = 5   # a host that can't list its models in 5s isn't "up"
 DEFAULT_TICK_CAP = 3
+CLIP_TICK_CAP = 200   # clips enhanced per tick (#325): bounds the first
+                      # drain of a weeks-deep backlog; the worklist is
+                      # idempotent, so what defers this tick lands next
 
 
 # --- Pure shaping (test_listener_enrichment_loop.py) --------------------------
@@ -163,6 +174,42 @@ def run_profile_pass(now=None):
     return counts
 
 
+def run_clip_pass(cap=None):
+    """Drain the clip-enhancement worklist (#325): every original without a
+    current -enh sibling gets one, via the same per-clip function the CLI
+    calls (the reusable-pass rule -- --refresh recipes keep working, nothing
+    drifts). Automatic on BOTH roles since #325: on pearl the ENH toggle had
+    quietly fallen back to raw for weeks of un-passed clips, and a station's
+    clips are born ~20 dB quieter than camera-AGC audio -- the normalize step
+    is what makes them audible at all.
+
+    The import is lazy on purpose (the earl.py heavy-imports precedent):
+    clip_enhance needs numpy at module top, and this loop must stay
+    importable -- and the other two passes runnable -- on a box without it.
+    A numpy-less box logs the failure once per tick via tick()'s guard."""
+    from listener import clip_enhance
+    cap = CLIP_TICK_CAP if cap is None else cap   # read at call time, not def
+    media = clip_enhance.clips_dir()
+    todo = clip_enhance.worklist(media)
+    counts = {}
+    if len(todo) > cap:
+        counts["deferred"] = len(todo) - cap   # no silent caps; next tick
+        todo = todo[:cap]
+    for relpath in todo:
+        try:
+            status = clip_enhance.enhance_clip(media, relpath)
+        except Exception as e:
+            print(f"[enrich] clip {relpath}: FAILED ({e}) -- staying on the "
+                  "worklist", flush=True)
+            counts["failed"] = counts.get("failed", 0) + 1
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    if counts:
+        print("[enrich] clips: " + ", ".join(
+            f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
+    return counts
+
+
 def drain_analysis(host, port, model, cap, now=None):
     """A bounded slice of the field-notes worklist against one host. The cap
     counts GENERATIONS, not gate-skips -- a tick that finds forty settled
@@ -225,13 +272,19 @@ def run_analysis_pass(now=None):
 
 def tick(now=None):
     """One turn of the crank: profiles first (the description a note wants
-    background from), then notes. A failed pass is one loud line, never a
-    dead service -- the other pass still runs."""
+    background from), then clips (#325 -- audible evidence shouldn't wait
+    behind an LLM that can take minutes per species), then notes. A failed
+    pass is one loud line, never a dead service -- the other passes still
+    run."""
     results = {}
     try:
         results["profile"] = run_profile_pass(now=now)
     except Exception as e:
         print(f"[enrich] profile pass FAILED ({e})", flush=True)
+    try:
+        results["clips"] = run_clip_pass()
+    except Exception as e:
+        print(f"[enrich] clip pass FAILED ({e})", flush=True)
     try:
         results["analysis"] = run_analysis_pass(now=now)
     except Exception as e:
