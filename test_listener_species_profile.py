@@ -96,7 +96,8 @@ def test_parse_summary_missing_page_and_disambiguation_are_nothing():
     disambig = summary_page(pageprops={"disambiguation": ""})
     for d in (missing, disambig, None, {}):
         got = species_profile.parse_summary(d)
-        assert got == {"description": None, "voice": None, "image_url": None,
+        assert got == {"description": None, "voice": None,
+                       "voice_source": None, "image_url": None,
                        "image_name": None, "image_w": None, "image_h": None}
 
 
@@ -201,6 +202,144 @@ def test_voice_section_ignores_the_in_culture_trap():
     assert species_profile.voice_section(art) is None
 
 
+# --- the sentence-level fallback (issue #317) --------------------------------
+
+# A Veery-shaped article: no vocalization heading anywhere, but real sound
+# prose stranded in Description. This is the shape #315 could not read.
+#
+# NOTE THE PARAGRAPHS ARE SINGLE LINES. That is what the API actually
+# returns -- explaintext puts one paragraph on one line and never hard-wraps
+# -- and hand-wrapped fixtures quietly test a shape that cannot occur.
+BURIED = """The veery is a small North American thrush.
+
+== Description ==
+The most common call is a harsh, descending vee-er, which gave the bird its name. The song is a breezy, downward-spiraling series of flute-like notes delivered from a low and concealed perch.
+
+== Feeding ==
+It gleans insects from the leaf litter and takes berries in late summer.
+"""
+
+# The trap that got the paragraph-density scan rejected in #315: a
+# similarity passage dense with "vocal"-adjacent words that is entirely
+# about what the bird LOOKS like.
+PLUMAGE_TRAP = """The eastern phoebe is a small flycatcher.
+
+== Similar species ==
+The eastern phoebe is similar, particularly in the worn plumage after breeding. It always lacks clearly defined wingbars, however, and bobs its tail frequently. It has a shorter primary projection than its relatives, and the underparts are a duller colour overall.
+"""
+
+
+def test_voice_sentences_recovers_prose_buried_in_description():
+    got = species_profile.voice_sentences(BURIED)
+    assert "vee-er" in got and "flute-like notes" in got
+    # Article order preserved...
+    assert got.index("vee-er") < got.index("flute-like")
+    # ...and the neighbouring section is somebody else's business.
+    assert "berries" not in got and "leaf litter" not in got
+
+
+def test_voice_sentences_refuses_the_plumage_trap():
+    """The whole reason this is a SENTENCE reader and not the paragraph
+    scan #315 rejected: that scan scored this passage at four 'vocal' words
+    and would have served it as a description of a bird's song."""
+    assert species_profile.voice_sentences(PLUMAGE_TRAP) is None
+
+
+def test_voice_sentences_needs_more_than_one_qualifying_sentence():
+    """A mention is not a description, and the floor is what keeps this
+    quiet on the thin articles it will mostly be pointed at."""
+    one = ("A bird.\n\n== Habits ==\nThe song is a thin high whistle repeated "
+           "three or four times. It nests in hedgerows and feeds on seeds "
+           "throughout the winter months.\n")
+    assert species_profile.voice_sentences(one) is None
+    # Same text, floor lowered: proves it is the FLOOR rejecting it and not
+    # a failure to recognise the sentence at all.
+    assert species_profile.voice_sentences(one, minimum=1) is not None
+
+
+def test_voice_sentences_is_none_when_nothing_claims_a_sound():
+    plain = ("A bird.\n\n== Description ==\nA small grey bird of woodland "
+             "edges.\n\n== Habitat ==\nIt prefers dense cover.\n")
+    assert species_profile.voice_sentences(plain) is None
+    assert species_profile.voice_sentences("") is None
+    assert species_profile.voice_sentences(None) is None
+
+
+def test_read_voice_always_prefers_a_real_section():
+    """Precedence is absolute, never a length comparison. Measured on the
+    real Carolina Wren: 2,308 characters of section against 1,069 the
+    sentence reader would assemble -- and the section wins regardless."""
+    both = ARTICLE + ("\n== Behaviour ==\nThe song is a clear whistle. "
+                      "The call is a sharp chip-chip repeated often.\n")
+    prose, source = species_profile.read_voice(both)
+    assert source == "section"
+    assert prose.startswith("Both sexes sing")      # the Songs section
+    assert "chip-chip" not in prose                 # not the gathered lines
+
+
+def test_read_voice_reports_which_reader_answered():
+    assert species_profile.read_voice(ARTICLE)[1] == "section"
+    assert species_profile.read_voice(BURIED)[1] == "sentences"
+    assert species_profile.read_voice(PLUMAGE_TRAP) == (None, None)
+
+
+def test_enrich_records_the_voice_source(conn, tmp_path):
+    fake_json, fake_bytes, _ = fetchers(summary=summary_page(extract=BURIED))
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice_source"] == "sentences"
+    assert "vee-er" in row["voice"]
+    assert row["voice_version"] == species_profile.VOICE_VERSION
+
+
+def test_enrich_stamps_the_version_even_with_no_voice(conn, tmp_path):
+    """'Generation 2 looked and found nothing' is precisely what generation
+    3 needs to know in order to try again."""
+    fake_json, fake_bytes, _ = fetchers()          # summary_page(): silent
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice"] is None and row["voice_source"] is None
+    assert row["voice_version"] == species_profile.VOICE_VERSION
+
+
+def test_worklist_backfills_rows_read_by_an_older_generation(conn, tmp_path):
+    """The #317 arm. A #315-era row was read by generation 1 and settled
+    under the old rule; keying on the VERSION is what brings it back for the
+    new reader without a hand --refresh-all, and one pass settles it again."""
+    life(conn, "A sci", "Robin")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h, voice,"
+        " voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("A sci", "prose", "A_sci.jpg", "wikipedia", "cc", 900, 600, None,
+         1, 5000, 1))                              # generation 1 = #315
+    assert species_profile.worklist(conn) == [("A sci", "Robin")]
+
+    fake_json, fake_bytes, _ = fetchers()
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes)
+    assert species_profile.worklist(conn) == []    # and stays settled
+
+
+def test_worklist_version_arm_still_refuses_an_owner_row(conn):
+    """An owner row at generation 1 must NOT be dragged back by the version
+    bump -- the provenance rule outranks every backfill."""
+    life(conn, "A sci", "Robin")
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, description, image_file,"
+        " image_source, image_attribution, image_w, image_h,"
+        " voice_version, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("A sci", "todd's", "A_sci.jpg", "owner", "photo: Todd", 900, 600,
+         1, 1))
+    assert species_profile.worklist(conn) == []
+
+
 def test_parse_summary_carries_the_voice():
     got = species_profile.parse_summary(summary_page(extract=ARTICLE))
     assert got["voice"].startswith("Both sexes sing")
@@ -261,9 +400,10 @@ def test_all_species_ignores_every_gate(conn):
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
         " image_source, image_attribution, image_w, image_h,"
-        " voice, voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " voice, voice_source, voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         ("A sci", "prose", "A_sci.jpg", "wikipedia", "cc", 900, 600,
-         "it sings", 1, 1))
+         "it sings", "section", species_profile.VOICE_VERSION, 1, 1))
     assert species_profile.worklist(conn) == [("B sci", "Cardinal")]
     assert species_profile.all_species(conn) == [
         ("B sci", "Cardinal"), ("A sci", "Robin")]   # common-name order
@@ -371,18 +511,24 @@ def test_worklist_backfills_dimensionless_rows(conn):
     # the whole life list.
     life(conn, "A sci", "Robin")
     life(conn, "B sci", "Cardinal")
-    # Both rows are settled for voice (#315), so this asserts the DIMENSION
-    # arm alone rather than accidentally riding the voice backfill.
+    # Both rows are settled for voice at the CURRENT reader generation
+    # (#315/#317), so this asserts the DIMENSION arm alone rather than
+    # accidentally riding the voice backfill.
+    settled = species_profile.VOICE_VERSION
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
         " image_source, image_attribution, image_w, image_h,"
-        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("A sci", "t", "A_sci.jpg", "wikipedia", "cc", None, None, 1, 1))
+        " voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("A sci", "t", "A_sci.jpg", "wikipedia", "cc", None, None,
+         settled, 1, 1))
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
         " image_source, image_attribution, image_w, image_h,"
-        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("B sci", "t", "B_sci.jpg", "wikipedia", "cc", 900, 600, 1, 1))
+        " voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("B sci", "t", "B_sci.jpg", "wikipedia", "cc", 900, 600,
+         settled, 1, 1))
     assert species_profile.worklist(conn) == [("A sci", "Robin")]
 
 
@@ -407,8 +553,10 @@ def test_worklist_leaves_prose_only_rows_alone(conn):
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
         " image_source, image_attribution, image_w, image_h,"
-        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("A sci", "prose", None, None, None, None, None, 1, 1))
+        " voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("A sci", "prose", None, None, None, None, None,
+         species_profile.VOICE_VERSION, 1, 1))
     assert species_profile.worklist(conn) == []
 
 
@@ -419,8 +567,10 @@ def test_worklist_is_the_unprofiled_life_list(conn):
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, image_file,"
         " image_source, image_attribution, image_w, image_h,"
-        " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("B sci", "text", None, None, None, None, None, 1, 1))
+        " voice_version, voice_checked_ts, fetched_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("B sci", "text", None, None, None, None, None,
+         species_profile.VOICE_VERSION, 1, 1))
     assert species_profile.worklist(conn) == [
         ("C sci", "Jay"), ("A sci", "Robin")]   # common-name order
 

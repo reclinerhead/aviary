@@ -124,13 +124,14 @@ def profile_writer(description="A very red bird."):
 
     def fake(conn, media, sci):
         calls.append(sci)
-        # voice_checked_ts mirrors the real pass: stamped whether or not a
-        # vocalization section was found (#315), which is what takes the
-        # species off the worklist for good.
+        # voice_version/voice_checked_ts mirror the real pass: written
+        # whether or not vocalization prose was found (#315, #317), which is
+        # what takes the species off the worklist for good.
         conn.execute(
             "INSERT OR REPLACE INTO species_profile (species_sci,"
-            " description, voice_checked_ts, fetched_ts) VALUES (?,?,?,?)",
-            (sci, description, NOW, NOW))
+            " description, voice_version, voice_checked_ts, fetched_ts)"
+            " VALUES (?,?,?,?,?)",
+            (sci, description, species_profile.VOICE_VERSION, NOW, NOW))
         conn.commit()
         return "no-image"
 
@@ -190,14 +191,17 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
                                        ("C sci", "Cardinal")]):
         seed(store, sci, common, [at(2026, 7, 18, 7 + i)])
         # Pre-filled profiles keep the Wikipedia half off the wire entirely
-        # -- which now requires voice_checked_ts as well (#315), or the voice
-        # backfill arm would put these three straight back on the worklist
-        # and this test would make real HTTP calls.
+        # -- which now requires voice_version at the CURRENT generation
+        # (#315, #317), or the voice backfill arm would put these three
+        # straight back on the worklist and this test would make real HTTP
+        # calls. Bumping VOICE_VERSION without updating this seed is exactly
+        # how that regresses, so it reads the constant rather than a literal.
         store.execute(
             "INSERT INTO species_profile (species_sci, description,"
-            " image_file, image_source, image_w, image_h, voice_checked_ts,"
-            " fetched_ts) VALUES (?,?,?,?,?,?,?,?)",
-            (sci, "prose", "x.jpg", "wikipedia", 900, 600, 1, 1))
+            " image_file, image_source, image_w, image_h, voice_version,"
+            " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+            (sci, "prose", "x.jpg", "wikipedia", 900, 600,
+             species_profile.VOICE_VERSION, 1, 1))
     store.commit()
     monkeypatch.setenv("MERLE_OLLAMA", "fakehost")
     monkeypatch.setenv("MERLE_ENRICH_CAP", "1")

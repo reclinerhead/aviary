@@ -44,6 +44,10 @@ const LIFE_COLS =
   " l.first_clip, p.description, p.image_file, p.image_source," +
   " p.image_attribution";
 const LIFE_JOINED_SQL =
+  `${LIFE_COLS}, p.image_w, p.image_h, p.voice, p.voice_source${JOIN_TAIL}`;
+// #317's rung: `voice` but not yet `voice_source`. Without its own step a
+// store one generation behind would fall past the dimensions too.
+const LIFE_JOINED_PRE317_SQL =
   `${LIFE_COLS}, p.image_w, p.image_h, p.voice${JOIN_TAIL}`;
 // Older store shapes: species_profile exists but predates a column this
 // route selects. Selecting it would throw and drop us straight to the bare
@@ -102,6 +106,7 @@ export async function GET(req: NextRequest) {
     let life: LifeRows | null = null;
     for (const sql of [
       LIFE_JOINED_SQL,
+      LIFE_JOINED_PRE317_SQL,
       LIFE_JOINED_PRE315_SQL,
       LIFE_JOINED_PRE185_SQL,
     ]) {

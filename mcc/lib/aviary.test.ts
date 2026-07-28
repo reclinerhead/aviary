@@ -40,6 +40,7 @@ import {
   rosterOrder,
   secondsIntoDay,
   shapeRoster,
+  voiceCredit,
   shareOfYard,
   smoothPath,
   smoothSegments,
@@ -324,6 +325,28 @@ describe("doomedFiles", () => {
     expect(doomedFiles([], "portrait.png")).toEqual([]);
     expect(doomedFiles([], null)).toEqual([]);
     expect(doomedFiles([], "")).toEqual([]);
+  });
+});
+
+describe("voiceCredit", () => {
+  it("credits Wikipedia either way -- same article, same licence", () => {
+    expect(voiceCredit("section")).toContain("via Wikipedia");
+    expect(voiceCredit("sentences")).toContain("via Wikipedia");
+  });
+
+  it("says so when the prose was gathered rather than quoted", () => {
+    expect(voiceCredit("sentences")).toBe(
+      "gathered from the article · via Wikipedia",
+    );
+    expect(voiceCredit("section")).toBe("via Wikipedia");
+  });
+
+  it("treats an unknown or missing source as a section", () => {
+    // Pre-#317 rows are all sections by construction, and over-claiming
+    // "gathered" about a real section would be its own small lie.
+    expect(voiceCredit(null)).toBe("via Wikipedia");
+    expect(voiceCredit(undefined)).toBe("via Wikipedia");
+    expect(voiceCredit("something-new")).toBe("via Wikipedia");
   });
 });
 
