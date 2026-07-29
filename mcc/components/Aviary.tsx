@@ -696,83 +696,6 @@ function PlaySlot({
   );
 }
 
-/** The species page's two recordings (#333): the BEST one, and first contact.
- *
- * Earl has curated best-of-visit clips since #175 -- a window that beats its
- * visit's best rewrites that visit's clip in place -- and until now the page
- * played only `first_clip`, which measurement showed is frequently a mediocre
- * take: for every top species on pearl the best-confidence visit is not the
- * first (American Goldfinch 0.65-0.98 across 636 visits). So the good take
- * leads, and first contact keeps its place as the historical record rather
- * than the thing you are invited to listen to.
- *
- * The best slot is deliberately the louder instrument -- a wider control, the
- * confidence set in the display face rather than a stamp -- because "hear this
- * bird at its best" is the page's most delightful offer and it should look
- * like one. First contact sits under it in the same faint chrome the metadata
- * row uses.
- *
- * GEOMETRY IS FIXED ACROSS EVERY STATE (house rule #1). Both rows always
- * render at the same heights whether the entry has landed, has one clip, has
- * two, or has none -- so nothing reflows when the fetch resolves, when a
- * best clip turns out to BE first contact, or when a file proves pruned. */
-function Recordings({
-  entry,
-  player,
-}: {
-  entry: RosterEntry | null;
-  player: ClipPlayer;
-}) {
-  const best = entry?.best_clip ?? null;
-  const first = entry?.first_clip ?? null;
-  // One recording wearing both hats -- the common case for a single-visit
-  // species, and for any bird whose first encounter was simply its clearest.
-  // Two identical players stacked would be silly; saying so is better.
-  const same = best !== null && best === first;
-  const conf = entry?.best_confidence ?? null;
-  return (
-    <div className="mt-4 border-t border-line pt-3">
-      <div className="flex items-center gap-3">
-        <PlaySlot clip={best} player={player} big />
-        <div className="min-w-0">
-          <p className="stamp text-[9px] text-inkfaint">
-            {same ? "the recording" : "best recording"}
-          </p>
-          <p
-            className="text-sm leading-tight text-ink"
-            style={{ fontFamily: "var(--font-display)" }}
-          >
-            {conf !== null ? conf.toFixed(2) : "—"}
-            {entry?.best_ts != null && (
-              <span className="text-inkfaint"> · {dateOf(entry.best_ts)}</span>
-            )}
-          </p>
-        </div>
-      </div>
-      {/* The second line always occupies its row: when best IS first contact
-          it carries the sentence instead of a duplicate player, which keeps
-          the block one height in every state and tells the nicer story. */}
-      <div className="mt-2 flex h-8 items-center gap-3">
-        {same ? (
-          <p className="stamp text-[9px] text-inkfaint">
-            first contact · still unbeaten
-          </p>
-        ) : (
-          <>
-            <PlaySlot clip={first} player={player} />
-            <p className="stamp text-[9px] text-inkfaint">
-              first contact
-              {entry ? (
-                <span className="text-inkfaint"> · {dateOf(entry.first_ts)}</span>
-              ) : null}
-            </p>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // --- Shared chrome -----------------------------------------------------------
 
 function PanelLabel({
@@ -2183,22 +2106,59 @@ export function SpeciesProfile({
                 remove species
               </button>
             </div>
-            <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
-              <div>
-                <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
-                <dd className="text-inkdim">
-                  {entry ? (
-                    <>
-                      {dateOf(entry.first_ts)}
+            {/* The metadata row owns both recordings (#339, reshaping #333):
+                the best take LEADS as the row's first and loudest entry --
+                the big PlaySlot, the confidence in the display face -- and
+                first contact's slot sits beside the first-heard entry it
+                was always restating (first contact IS first_ts; a separate
+                row carried one button and a duplicate date). Both slots
+                inherit PlaySlot's state coverage -- a pre-clip-era lifer
+                shows the reserved no-clip dot, a pruned file the faded
+                stamp, an un-enhanced one its raw notch (#331) -- so the
+                row is one geometry in every state. When best IS first
+                contact (30 of 73 species) the two slots share a clip path
+                and light together: one file, honestly presented twice. */}
+            <dl className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+              <div className="flex items-center gap-3">
+                <PlaySlot clip={entry?.best_clip ?? null} player={player} big />
+                <div className="min-w-0">
+                  <dt className="stamp text-[9px] text-inkfaint">
+                    best recording
+                  </dt>
+                  <dd
+                    className="text-sm leading-tight text-ink"
+                    style={{ fontFamily: "var(--font-display)" }}
+                  >
+                    {entry?.best_confidence != null
+                      ? entry.best_confidence.toFixed(2)
+                      : "—"}
+                    {entry?.best_ts != null && (
                       <span className="text-inkfaint">
                         {" "}
-                        · via {entry.first_source}
+                        · {dateOf(entry.best_ts)}
                       </span>
-                    </>
-                  ) : (
-                    "—"
-                  )}
-                </dd>
+                    )}
+                  </dd>
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <PlaySlot clip={entry?.first_clip ?? null} player={player} />
+                <div>
+                  <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
+                  <dd className="text-inkdim">
+                    {entry ? (
+                      <>
+                        {dateOf(entry.first_ts)}
+                        <span className="text-inkfaint">
+                          {" "}
+                          · via {entry.first_source}
+                        </span>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </dd>
+                </div>
               </div>
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">visits</dt>
@@ -2209,13 +2169,6 @@ export function SpeciesProfile({
                 <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
               </div>
             </dl>
-            {/* The recordings (#333): the best take leads, first contact
-                (#220) keeps its place beneath as the historical record.
-                Both slots inherit PlaySlot's state coverage -- a
-                pre-clip-era lifer shows the reserved no-clip dot, a pruned
-                file the faded stamp, and an un-enhanced one its raw notch
-                (#331). */}
-            <Recordings entry={entry ?? null} player={player} />
             {/* The magazine body (#192): the portrait + its CC-BY credit
                 float left in the description's text flow -- the Field
                 Journal's magazine-wrap precedent, and flow-root so a short
