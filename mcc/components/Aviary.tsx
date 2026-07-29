@@ -1451,110 +1451,6 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
   );
 }
 
-/** What It Sounds Like (#315): the article's vocalization section, sitting
- * directly under the hero -- above the standings and the chart, because this
- * is the panel someone reads with a clip playing, deciding whether BirdNET
- * was right. The prose is full of the mnemonics that actually settle it
- * ("teakettle-teakettle-teakettle", a rattle "similar to a bouncing ball"),
- * and it usually compares the bird to the very species it gets confused with.
- *
- * DELIBERATELY NOT A JOURNAL PAGE. The spread below is Earl's own writing --
- * numbered entries, drop caps, signed. This is somebody else's field guide
- * quoted on our page, so it wears the plain panel and says where it came
- * from. Two voices should not dress alike.
- *
- * No section, no panel -- and no empty state either. The honest blank is the
- * whole posture of the pass (~27% of species have no such section), and a
- * reserved footprint would be reserving room for something that is never
- * coming. Nothing below it moves, because everything below it is a sibling
- * in the same full-width stack that only renders once `entry` has landed. */
-// Twelve lines of text-sm/leading-relaxed (~273px). Sized off the real
-// articles rather than picked round: a species' opening paragraph runs
-// ~700 characters, which is about ten lines at this measure, so the
-// paragraph carrying the mnemonics reads whole before anyone clicks. A
-// constant is right here where the hero's clamp is computed per species --
-// there is no portrait beside this one to match a height to.
-const VOICE_CLAMP_LINES = 12;
-
-function VoiceEntry({
-  voice,
-  source,
-}: {
-  voice?: string | null;
-  source?: string | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const [long, setLong] = useState(false);
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  // #196's measurement, verbatim in shape: pre-paint so the control never
-  // arrives a frame late, and ONLY while collapsed -- open, scrollHeight
-  // equals clientHeight, and re-measuring there would delete the "read
-  // less" control out from under someone mid-read.
-  useLayoutEffect(() => {
-    if (open) return;
-    const el = bodyRef.current;
-    if (el) setLong(el.scrollHeight > el.clientHeight + 1);
-  }, [voice, open]);
-
-  if (!voice) return null;
-  return (
-    <section className="panel mt-4 rounded-sm border border-line bg-panel px-5 pb-4 pt-4">
-      <header className="flex items-baseline justify-between gap-3 border-b border-line pb-2">
-        <h2
-          className="text-lg text-ink"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
-          What It Sounds Like
-        </h2>
-        {/* CC BY-SA wants the credit and honesty is house style: this is
-            quoted, not ours -- and since #317 the stamp also says WHICH
-            reader found it, so gathered lines are never mistaken for the
-            article's own considered paragraph. */}
-        <span className="stamp shrink-0 text-[9px] text-inkfaint">
-          {voiceCredit(source)}
-        </span>
-      </header>
-      {/* Capped measure: reference prose runs long (2,300 characters on the
-          Carolina Wren) and full-bleed lines at this width are a slog. The
-          cap is on the text, not the panel, so the band keeps the page's
-          full width like every other full-width section. */}
-      <div
-        ref={bodyRef}
-        className="mt-3 max-w-[70ch] space-y-2.5 text-sm leading-relaxed text-inkdim"
-        // Clamped at rest for the same reason the hero's description is
-        // (#196): unclamped, the Carolina Wren's section alone runs 965px
-        // and buries the chart and the field desk under it. VOICE_CLAMP_LINES
-        // is set so a species' opening paragraph -- where the mnemonics
-        // almost always are -- reads whole before anyone clicks. Everything
-        // below is a sibling section, so expanding pushes but never reflows.
-        style={
-          open
-            ? undefined
-            : {
-                display: "-webkit-box",
-                WebkitBoxOrient: "vertical",
-                WebkitLineClamp: VOICE_CLAMP_LINES,
-                overflow: "hidden",
-              }
-        }
-      >
-        {voice.split(/\n+/).map((para, i) => (
-          <p key={i}>{para}</p>
-        ))}
-      </div>
-      {long && (
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="mt-2 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright"
-        >
-          {open ? "read less" : "read more"}
-        </button>
-      )}
-    </section>
-  );
-}
-
 /** One page of the journal: entry heading over a ruled line, the margin
  * figure, the prose (drop cap on the opening letter -- the naturalist's
  * flourish), and a dateline footer signed by the house voice. Fixed
@@ -1880,6 +1776,14 @@ export function SpeciesProfile({
   // toggle -- a two-sentence stub with a "read more" under it would be a
   // control that does nothing visible.
   const [bioOpen, setBioOpen] = useState(false);
+  // Which body the hero is showing (#346): the Wikipedia lead, or the
+  // vocalization prose that used to live in a full-width panel of its own
+  // below the hero. It sat alone in a mostly-empty band there, and this is
+  // where it belongs anyway -- the recording you play while reading it is in
+  // the metadata row directly above.
+  const [bodyTab, setBodyTab] = useState<"description" | "sounds">(
+    "description",
+  );
   // Species removal (#216): the confirm overlay's lifecycle. `removing`
   // freezes the dialog while the DELETE is in flight (no second click, no
   // Escape-mid-delete); a failure reports in the dialog's reserved line and
@@ -1976,6 +1880,7 @@ export function SpeciesProfile({
       .then((a: Analysis | null) => setAnalysis(a))
       .catch(() => {});
     setBioOpen(false); // a different bird opens closed
+    setBodyTab("description"); // ...and opens on its description (#346)
     setOpenings(null); // a different bird's records are not this bird's
   }, [sci]);
 
@@ -1999,11 +1904,18 @@ export function SpeciesProfile({
   // re-measuring there would delete the "read less" control mid-read.
   const bodyRef = useRef<HTMLDivElement>(null);
   const [longBio, setLongBio] = useState(false);
+  // Both tabs share the ref, the clamp, and this measurement -- only one is
+  // mounted at a time, so `bodyTab` in the deps is what re-measures after a
+  // switch. One clamp rule for both bodies retired #315's separate
+  // VOICE_CLAMP_LINES: two clamp constants governing one block was a seam
+  // waiting to drift.
+  const bodyText =
+    bodyTab === "sounds" ? entry?.voice : entry?.description;
   useLayoutEffect(() => {
     if (bioOpen) return;
     const el = bodyRef.current;
     if (el) setLongBio(el.scrollHeight > el.clientHeight + 1);
-  }, [entry?.description, clampLines, bioOpen]);
+  }, [bodyText, clampLines, bioOpen]);
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
@@ -2036,16 +1948,10 @@ export function SpeciesProfile({
                 flat panel they render today, and no layout difference. */}
             {entry?.image_file && (
               <div className="pointer-events-none absolute inset-0" aria-hidden>
-                {/* brightness/contrast CAP THE HIGHLIGHTS (#341), and that is
-                    a different move from the uniform dim #196 rejected. A
-                    bright blob is what swamps midtone ink; compressing the
-                    top of the range kills the blob while leaving the photo
-                    recognizable, where lowering everything lowered the
-                    midtones too and showed the bird nowhere. */}
                 <img
                   src={portraitUrl(sci)}
                   alt=""
-                  className="h-full w-full scale-105 object-cover object-top opacity-[0.78] blur-md brightness-[.45] contrast-[.85] saturate-[1.2]"
+                  className="h-full w-full scale-105 object-cover object-top opacity-[0.78] blur-md saturate-[1.2]"
                 />
                 {/* Two scrims share the legibility job (the AlbumView
                     trick): the house bottom-up fade, plus a right-anchored
@@ -2070,37 +1976,6 @@ export function SpeciesProfile({
                     ground than body prose does). */}
                 <div className="absolute inset-0 bg-gradient-to-t from-panel via-panel/75 to-panel/5" />
                 <div className="absolute inset-0 bg-gradient-to-l from-panel/95 via-panel/[0.78] to-transparent" />
-                {/* The chrome plateau (#341). Both gradients above bottom out
-                    in the TOP-LEFT corner -- the to-top one ends at panel/5,
-                    the to-left one at transparent -- so that corner carries
-                    effectively no scrim. That was tolerable while it held
-                    only the big display-type name (bright ink tolerates a
-                    busy ground); #339 moved faint stamp labels and outlined
-                    buttons into it, and the labels measured 1.39:1 against
-                    a 5.29:1 flat-panel baseline.
-                    FLAT, not a gradient, across the whole chrome zone: a
-                    fade starting its decay at y=0 is nearly spent by the
-                    metadata row, which is the row that needs it (a 0.94
-                    decaying band still left the labels at 2.35:1).
-                    Responsive because the row WRAPS on a phone -- measured,
-                    the dl runs 44px tall at desktop width and 108px at
-                    375px, ending at y=241 rather than y=165 -- so below lg
-                    the flat zone extends to 250px and the fade to 340px.
-                    Sizing both breakpoints off the phone would scrim art
-                    the desktop layout never needed. The element's HEIGHT is
-                    the fade end and --plateau the flat end, so the two
-                    stops stay in one place. Inline because Tailwind cannot
-                    express px-positioned gradient stops readably. */}
-                <div
-                  className="absolute inset-x-0 top-0 h-[340px] [--plateau:250px] lg:h-[290px] lg:[--plateau:200px]"
-                  style={{
-                    background:
-                      "linear-gradient(to bottom," +
-                      " color-mix(in srgb, var(--panel) 45%, transparent) 0," +
-                      " color-mix(in srgb, var(--panel) 45%, transparent) var(--plateau)," +
-                      " transparent 100%)",
-                  }}
-                />
               </div>
             )}
             <div className="relative">
@@ -2229,7 +2104,67 @@ export function SpeciesProfile({
                   </p>
                 )}
               </div>
-              {entry?.description ? (
+              {/* The body's tab bar (#346), in the masthead's own tab
+                  vocabulary -- an underlined active tab over a hairline
+                  rule, no new control language invented for two words.
+                  BOTH TABS ALWAYS RENDER, `sounds` merely disabled when the
+                  species has no vocalization prose (31 of 76 on the real
+                  life list) or while the entry is still in flight: the
+                  remove-species button and the chart's `now` control set
+                  that precedent, and it keeps this row one geometry on
+                  every species in every load state, so nothing moves when
+                  the fetch lands. It also tells the truth out loud -- a
+                  disabled tab says THIS BIRD HAS NO SOUND DESCRIPTION,
+                  where hiding it silently drops the question. That is the
+                  tab-bar form of #315's honest-blank posture, not a
+                  departure from it: the thing #315 refused was reserving a
+                  whole panel's footprint for prose that is never coming. */}
+              <nav className="mb-3 flex items-baseline gap-4 border-b border-line">
+                {(
+                  [
+                    ["description", true],
+                    ["sounds", Boolean(entry?.voice)],
+                  ] as const
+                ).map(([tab, enabled]) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    disabled={!enabled}
+                    onClick={() => {
+                      setBodyTab(tab);
+                      // Each tab opens clamped rather than inheriting the
+                      // other's expansion.
+                      setBioOpen(false);
+                    }}
+                    aria-pressed={bodyTab === tab}
+                    title={
+                      enabled
+                        ? undefined
+                        : entry
+                          ? "no sound description for this species — the article says nothing about its voice"
+                          : "opening the record …"
+                    }
+                    className={`stamp -mb-px border-b-2 pb-1.5 text-xs transition-colors ${
+                      bodyTab === tab
+                        ? "border-ink text-ink"
+                        : "border-transparent text-inkdim hover:text-squirrel"
+                    } disabled:cursor-default disabled:text-inkfaint disabled:opacity-50 disabled:hover:text-inkfaint`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+                {/* CC BY-SA wants the credit, and since #317 the stamp also
+                    says WHICH reader found the text so gathered lines are
+                    never mistaken for the article's own considered
+                    paragraph. It rides the tab row, which has a fixed
+                    height -- so it appearing with the tab moves nothing. */}
+                {bodyTab === "sounds" && entry?.voice && (
+                  <span className="stamp ml-auto shrink-0 pb-1.5 text-[9px] text-inkfaint">
+                    {voiceCredit(entry.voice_source)}
+                  </span>
+                )}
+              </nav>
+              {bodyText ? (
                 <>
                   {/* Clamped by default (#196, the ArtistView bio pattern):
                       Wikipedia's lead runs four or five paragraphs, which
@@ -2239,7 +2174,9 @@ export function SpeciesProfile({
                       prose over softened art reads where five paragraphs
                       would not. The float keeps the photo beside it either
                       way, so expanding grows the hero and shifts nothing
-                      above it. */}
+                      above it. The vocalization prose earns the same clamp
+                      for the same reason: unclamped, the Carolina Wren's
+                      section alone runs 965px. */}
                   <div
                     ref={bodyRef}
                     className="space-y-2.5 text-sm leading-relaxed text-inkdim"
@@ -2257,7 +2194,7 @@ export function SpeciesProfile({
                           }
                     }
                   >
-                    {entry.description.split(/\n+/).map((para, i) => (
+                    {bodyText.split(/\n+/).map((para, i) => (
                       <p key={i}>{para}</p>
                     ))}
                   </div>
@@ -2373,7 +2310,6 @@ export function SpeciesProfile({
           draw and nothing to say. */}
       {entry && (
         <>
-          <VoiceEntry voice={entry.voice} source={entry.voice_source} />
           <StandingsBand roster={roster} sci={sci} openings={openings} now={now} />
           <VisitsChart sci={sci} />
           <FieldNotes analysis={analysis} />
