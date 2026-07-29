@@ -104,6 +104,20 @@
 #                            perception daemon -- its down state is NORMAL,
 #                            it only runs during bluejay sessions, so the
 #                            launchpad's Merle lamp is honest, not alarming)
+#   network/<station>/status station liveness    "online"/"offline", RETAINED --
+#                            spoken BY pearl ABOUT a remote station (epic
+#                            #212: a station's own Last Will fires on its own
+#                            loopback broker where pearl can't hear it, and
+#                            the tailnet ACL forbids the station pushing
+#                            anything here -- so pearl probes the station's
+#                            dashboard over the tailnet and publishes the
+#                            debounced verdict itself; flyway/liveness.py,
+#                            issue #342). Same payload contract as every
+#                            status topic above, its own namespace because
+#                            network/<station>/ is where epic #212 Phase 4
+#                            lands remote-station traffic
+#                            (network/<station>/audio/events) -- this watcher
+#                            is that bridge's first tenant, not a one-off
 #
 # The weather topics are retained on purpose: weather is *state*, not a moment.
 # A late joiner (dashboard tab, restarted narrator) gets the latest report from
@@ -134,10 +148,18 @@ AUDIO_EVENTS_TOPIC = "audio/events"
 AUDIO_STATUS_TOPIC = "audio/status"
 AUDIO_SOURCES_TOPIC = "audio/sources"
 SERVICE_STATUS_WILDCARD = "services/+/status"
+NETWORK_STATUS_WILDCARD = "network/+/status"
 
 
 def service_status_topic(name):
     return f"services/{name}/status"
+
+
+def station_status_topic(name):
+    """The liveness verdict pearl publishes about one remote station (epic
+    #212; flyway/liveness.py). The name is validated by the watcher's
+    SAFE_NAME guard before it ever reaches a topic path."""
+    return f"network/{name}/status"
 
 
 def narrator_status_topic(mqtt_id):
