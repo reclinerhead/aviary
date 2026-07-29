@@ -618,23 +618,13 @@ function NewArrivals({
  * quiet "faded" stamp once its file is known pruned, and a dim placeholder
  * dot when the clip write failed -- never a missing element, never a broken
  * player. Playing wears --led: green means live. */
-function PlaySlot({
-  clip,
-  player,
-  big = false,
-}: {
-  clip: string | null;
-  player: ClipPlayer;
-  big?: boolean;
-}) {
-  // `big` is the species page's best-recording slot (#333) -- the same
-  // instrument at a size that reads as the page's main offer. Every state
-  // (no clip, faded, idle, playing) uses the same box, so the two variants
-  // are one component and can't drift apart.
-  const box = `flex shrink-0 items-center justify-center rounded-sm border ${
-    big ? "h-11 w-16" : "h-8 w-12"
-  }`;
-  const glyph = big ? "h-4 w-4" : "h-3 w-3";
+function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer }) {
+  // One size everywhere (#341). The best-recording slot wore a larger `big`
+  // variant from #333, when it led a block of its own; since #339 put it at
+  // the head of the metadata row, POSITION carries the prominence and the
+  // extra size only read as an inconsistency next to first contact.
+  const box = "flex h-8 w-12 shrink-0 items-center justify-center rounded-sm border";
+  const glyph = "h-3 w-3";
   if (!clip)
     return (
       <span className={`${box} border-line text-inkfaint`} title="no clip">
@@ -2046,10 +2036,16 @@ export function SpeciesProfile({
                 flat panel they render today, and no layout difference. */}
             {entry?.image_file && (
               <div className="pointer-events-none absolute inset-0" aria-hidden>
+                {/* brightness/contrast CAP THE HIGHLIGHTS (#341), and that is
+                    a different move from the uniform dim #196 rejected. A
+                    bright blob is what swamps midtone ink; compressing the
+                    top of the range kills the blob while leaving the photo
+                    recognizable, where lowering everything lowered the
+                    midtones too and showed the bird nowhere. */}
                 <img
                   src={portraitUrl(sci)}
                   alt=""
-                  className="h-full w-full scale-105 object-cover object-top opacity-[0.78] blur-md saturate-[1.2]"
+                  className="h-full w-full scale-105 object-cover object-top opacity-[0.78] blur-md brightness-[.45] contrast-[.85] saturate-[1.2]"
                 />
                 {/* Two scrims share the legibility job (the AlbumView
                     trick): the house bottom-up fade, plus a right-anchored
@@ -2074,6 +2070,37 @@ export function SpeciesProfile({
                     ground than body prose does). */}
                 <div className="absolute inset-0 bg-gradient-to-t from-panel via-panel/75 to-panel/5" />
                 <div className="absolute inset-0 bg-gradient-to-l from-panel/95 via-panel/[0.78] to-transparent" />
+                {/* The chrome plateau (#341). Both gradients above bottom out
+                    in the TOP-LEFT corner -- the to-top one ends at panel/5,
+                    the to-left one at transparent -- so that corner carries
+                    effectively no scrim. That was tolerable while it held
+                    only the big display-type name (bright ink tolerates a
+                    busy ground); #339 moved faint stamp labels and outlined
+                    buttons into it, and the labels measured 1.39:1 against
+                    a 5.29:1 flat-panel baseline.
+                    FLAT, not a gradient, across the whole chrome zone: a
+                    fade starting its decay at y=0 is nearly spent by the
+                    metadata row, which is the row that needs it (a 0.94
+                    decaying band still left the labels at 2.35:1).
+                    Responsive because the row WRAPS on a phone -- measured,
+                    the dl runs 44px tall at desktop width and 108px at
+                    375px, ending at y=241 rather than y=165 -- so below lg
+                    the flat zone extends to 250px and the fade to 340px.
+                    Sizing both breakpoints off the phone would scrim art
+                    the desktop layout never needed. The element's HEIGHT is
+                    the fade end and --plateau the flat end, so the two
+                    stops stay in one place. Inline because Tailwind cannot
+                    express px-positioned gradient stops readably. */}
+                <div
+                  className="absolute inset-x-0 top-0 h-[340px] [--plateau:250px] lg:h-[290px] lg:[--plateau:200px]"
+                  style={{
+                    background:
+                      "linear-gradient(to bottom," +
+                      " color-mix(in srgb, var(--panel) 45%, transparent) 0," +
+                      " color-mix(in srgb, var(--panel) 45%, transparent) var(--plateau)," +
+                      " transparent 100%)",
+                  }}
+                />
               </div>
             )}
             <div className="relative">
@@ -2108,7 +2135,7 @@ export function SpeciesProfile({
             </div>
             {/* The metadata row owns both recordings (#339, reshaping #333):
                 the best take LEADS as the row's first and loudest entry --
-                the big PlaySlot, the confidence in the display face -- and
+                its play slot first, the confidence in the display face -- and
                 first contact's slot sits beside the first-heard entry it
                 was always restating (first contact IS first_ts; a separate
                 row carried one button and a duplicate date). Both slots
@@ -2120,7 +2147,7 @@ export function SpeciesProfile({
                 and light together: one file, honestly presented twice. */}
             <dl className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
               <div className="flex items-center gap-3">
-                <PlaySlot clip={entry?.best_clip ?? null} player={player} big />
+                <PlaySlot clip={entry?.best_clip ?? null} player={player} />
                 <div className="min-w-0">
                   <dt className="stamp text-[9px] text-inkfaint">
                     best recording
