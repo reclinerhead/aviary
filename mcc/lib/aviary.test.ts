@@ -44,6 +44,7 @@ import {
   secondsIntoDay,
   shapeRoster,
   voiceCredit,
+  voiceProse,
   shareOfYard,
   smoothPath,
   smoothSegments,
@@ -351,6 +352,85 @@ describe("voiceCredit", () => {
     expect(voiceCredit(null)).toBe("via Wikipedia");
     expect(voiceCredit(undefined)).toBe("via Wikipedia");
     expect(voiceCredit("something-new")).toBe("via Wikipedia");
+  });
+});
+
+describe("voiceProse", () => {
+  const wiki = {
+    voice: "It goes teakettle-teakettle.",
+    voice_source: "section",
+    voice_adw: null,
+    voice_adw_attribution: null,
+  };
+  const adw = {
+    voice: null,
+    voice_source: "adw",
+    voice_adw: "Their song is a long, rich warble.",
+    voice_adw_attribution: "via Animal Diversity Web · CC BY-NC-SA 3.0",
+  };
+
+  it("pairs Wikipedia prose with a Wikipedia credit", () => {
+    expect(voiceProse(wiki)).toEqual({
+      text: "It goes teakettle-teakettle.",
+      credit: "via Wikipedia",
+    });
+    expect(voiceProse({ ...wiki, voice_source: "sentences" })?.credit).toBe(
+      "gathered from the article · via Wikipedia",
+    );
+  });
+
+  it("pairs ADW prose with ADW's own stored credit", () => {
+    // The licensing rule the whole pair exists for: ADW prose under a "via
+    // Wikipedia" stamp would be a licensing failure as well as a lie.
+    expect(voiceProse(adw)).toEqual({
+      text: "Their song is a long, rich warble.",
+      credit: "via Animal Diversity Web · CC BY-NC-SA 3.0",
+    });
+    expect(voiceProse(adw)?.credit).not.toContain("Wikipedia");
+    expect(voiceProse(adw)?.credit).toContain("CC BY-NC-SA");
+  });
+
+  it("never serves one source's text under the other's credit", () => {
+    // The two texts are never both present (the pass clears the ADW columns
+    // when Wikipedia answers), but if a hand-edited row ever carried both,
+    // the source column decides -- and the credit follows the text, always.
+    const both = { ...wiki, voice_adw: "ADW text", voice_adw_attribution: "x" };
+    expect(voiceProse(both)).toEqual({
+      text: "It goes teakettle-teakettle.",
+      credit: "via Wikipedia",
+    });
+    expect(voiceProse({ ...both, voice_source: "adw" })).toEqual({
+      text: "ADW text",
+      credit: "x",
+    });
+  });
+
+  it("names ADW even on a row whose stored attribution is missing", () => {
+    expect(
+      voiceProse({ ...adw, voice_adw_attribution: null })?.credit,
+    ).toContain("Animal Diversity Web");
+  });
+
+  it("is null when no source has anything -- the honest blank", () => {
+    expect(voiceProse(null)).toBeNull();
+    expect(voiceProse(undefined)).toBeNull();
+    expect(
+      voiceProse({
+        voice: null,
+        voice_source: null,
+        voice_adw: null,
+        voice_adw_attribution: null,
+      }),
+    ).toBeNull();
+    // "adw" claimed but no prose stored: still nothing, never an empty panel.
+    expect(voiceProse({ ...adw, voice_adw: null })).toBeNull();
+  });
+
+  it("reads a pre-#318 row exactly as before", () => {
+    // A store one generation behind LEFT JOINs the ADW columns to undefined.
+    expect(
+      voiceProse({ voice: "It sings.", voice_source: "section" }),
+    ).toEqual({ text: "It sings.", credit: "via Wikipedia" });
   });
 });
 

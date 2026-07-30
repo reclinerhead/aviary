@@ -43,7 +43,15 @@ const LIFE_COLS =
   "SELECT l.species_sci, l.species_common, l.first_ts, l.first_source," +
   " l.first_clip, p.description, p.image_file, p.image_source," +
   " p.image_attribution";
+// #318's columns ride as their OWN pair and are deliberately not COALESCEd
+// with `voice` here: the two texts are under incompatible licences, so which
+// one a row carries has to survive the wire alongside its own credit. A
+// merged field would also have to be unpicked to ever show both.
 const LIFE_JOINED_SQL =
+  `${LIFE_COLS}, p.image_w, p.image_h, p.voice, p.voice_source,` +
+  ` p.voice_adw, p.voice_adw_attribution${JOIN_TAIL}`;
+// #318's rung: everything through `voice_source`, but no ADW columns.
+const LIFE_JOINED_PRE318_SQL =
   `${LIFE_COLS}, p.image_w, p.image_h, p.voice, p.voice_source${JOIN_TAIL}`;
 // #317's rung: `voice` but not yet `voice_source`. Without its own step a
 // store one generation behind would fall past the dimensions too.
@@ -112,6 +120,7 @@ export async function GET(req: NextRequest) {
     let life: LifeRows | null = null;
     for (const sql of [
       LIFE_JOINED_SQL,
+      LIFE_JOINED_PRE318_SQL,
       LIFE_JOINED_PRE317_SQL,
       LIFE_JOINED_PRE315_SQL,
       LIFE_JOINED_PRE185_SQL,

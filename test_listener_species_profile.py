@@ -26,6 +26,25 @@ def conn():
     return c
 
 
+@pytest.fixture(autouse=True)
+def no_adw_network(monkeypatch):
+    """No test may reach animaldiversity.org, including by forgetting to.
+
+    #318's tier fires whenever Wikipedia has no voice prose, which is the
+    DEFAULT shape of summary_page() -- so without this guard most of the
+    tests in this file would quietly make a real HTTP request (and sleep
+    eight seconds doing it). The listener's own CI lesson, one source over:
+    a test that reaches the network is a test that fails on somebody else's
+    outage. Tests that mean to exercise the tier inject `fetch_text`.
+
+    The crawl-delay stamp is module state, so it is reset here too -- one
+    test's request must not make the next one sit out its eight seconds."""
+    def refuse(url):
+        raise AssertionError(f"test tried to fetch {url}")
+    monkeypatch.setattr(species_profile, "get_text", refuse)
+    monkeypatch.setattr(species_profile, "_adw_last_request", [None])
+
+
 def life(conn, sci, common):
     conn.execute(
         "INSERT OR IGNORE INTO life_list (species_sci, species_common, first_ts, first_source, first_clip) VALUES (?,?,?,?,?)",
@@ -441,6 +460,316 @@ def test_attribution_line():
         "photo: Jocelyn · CC BY-SA 4.0 · via Wikipedia"
     assert species_profile.attribution("CC0", None) == "CC0 · via Wikipedia"
     assert species_profile.attribution(None, None) is None
+
+
+# --- Animal Diversity Web, the third tier (issue #318) -----------------------
+
+# VERBATIM ADW markup, captured from the real blue grosbeak account page on
+# 2026-07-30 and trimmed only by shortening the two neighbouring sections'
+# prose. Everything the extractor has to cope with is here as it really
+# ships: the stable h2 id, the pretty-printer putting every tag on its own
+# line, inline <a> links inside a sentence, a <refs> citation block, and the
+# keyword <ul>s that are a taxonomy widget rather than prose.
+ADW_PAGE = """<section>
+       <h2 id="behavior">
+        Behavior
+       </h2>
+       <p audience="advanced">
+        In the spring, male blue grosbeaks arrive on the breeding grounds before females.
+       </p>
+      </section>
+      <section>
+       <h2 id="communication">
+        Communication and Perception
+       </h2>
+       <p audience="advanced">
+        Only male blue grosbeaks are known to sing. Their song is a long, rich warble lasting
+            around 2.5 seconds. Notably, the song lacks burry qualities common in related species,
+            such as
+        <a class="taxon-link rank--" href="/accounts/Carpodacus_mexicanus/">
+         house finches
+        </a>
+        and
+        <a class="taxon-link rank--" href="/accounts/Passerina_cyanea/">
+         indigo buntings
+        </a>
+        . Their flight call is described as 'zit-zit-zu-zit-zit-zu zoo-zieet zieet zieet'.
+        <refs>
+         <ref href="06545D87-6413-11E2-931C-002500F14F28">
+         </ref>
+        </refs>
+       </p>
+       <ul class="keywords wide">
+        <li class="keywords-header">
+         Communication Channels
+        </li>
+        <li>
+         <a class="gloss-link popover-replace" href="/glossary/e/#_20020904145822">
+          acoustic
+         </a>
+        </li>
+       </ul>
+      </section>
+      <section>
+       <h2 id="food_habits">
+        Food Habits
+       </h2>
+       <p audience="advanced">
+        Blue grosbeaks are omnivores, eating mainly insects and seeds.
+       </p>
+      </section>"""
+
+# A missing ADW account. THE TRAP THIS FIXTURE EXISTS FOR: the site answers
+# HTTP **200** for an account that does not exist, so the status code proves
+# nothing and the absence of the section is the only honest signal.
+# (Measured on Baeolophus_bicolor, the tufted titmouse, 2026-07-30.)
+ADW_NO_ACCOUNT = """<main>
+       <h2 id="label">
+        404 - Page not found
+       </h2>
+       <p>
+        The page you requested could not be found.
+       </p>
+      </main>"""
+
+
+def adw_fetcher(page=ADW_PAGE):
+    """A stand-in for the ADW wire that records what it was asked for."""
+    calls = []
+
+    def fake_text(url):
+        calls.append(url)
+        return page
+
+    return fake_text, calls
+
+
+def test_adw_section_reads_the_communication_prose():
+    got = species_profile.adw_section(ADW_PAGE)
+    assert got.startswith("Only male blue grosbeaks are known to sing.")
+    # Linked species names are KEPT and flattened into the sentence -- the
+    # comparison against the birds this one gets confused with is the whole
+    # reason this tier is worth having, and those names are links.
+    assert "such as house finches and indigo buntings." in got
+    # The pretty-printer's newline before the period must not survive as a
+    # space, or every linked sentence reads "indigo buntings ."
+    assert " ." not in got
+    # Citations carry no prose and their markup is not prose either.
+    assert "ref" not in got and "06545D87" not in got
+    # The keyword widget is a taxonomy control; under a sound description it
+    # would read as gibberish.
+    assert "Communication Channels" not in got and "acoustic" not in got
+    # ...and the neighbouring sections belong to somebody else.
+    assert "breeding grounds" not in got and "omnivores" not in got
+
+
+def test_adw_section_is_none_when_there_is_no_such_section():
+    """A missing account, an account without the section, and a page from a
+    site that has been redesigned are one answer to this pass: nothing."""
+    assert species_profile.adw_section(ADW_NO_ACCOUNT) is None
+    assert species_profile.adw_section("") is None
+    assert species_profile.adw_section(None) is None
+
+
+def test_adw_section_degrades_to_none_on_changed_markup():
+    """The brittleness this tier accepts, bounded. Every one of these is a
+    plausible redesign, and none of them may raise -- an HTML-parsed source
+    must not be able to fail a run that is also fetching portraits."""
+    changed = [
+        # the heading survives but the prose moved out of <p>
+        '<h2 id="communication">Communication</h2><div>It sings.</div>',
+        # the id was renamed
+        '<h2 id="comms">Communication and Perception</h2><p>It sings.</p>',
+        # unclosed everything
+        '<h2 id="communication"><p>It sings.',
+        # not even HTML
+        "{'json':'now'}",
+    ]
+    for page in changed:
+        assert species_profile.adw_section(page) is None, page
+
+
+def test_adw_url_scrubs_like_the_clips_rule():
+    assert species_profile.adw_url("Passerina caerulea") == \
+        "https://animaldiversity.org/accounts/Passerina_caerulea/"
+    # A hostile species name scrubs; it never walks out of /accounts/.
+    assert species_profile.adw_url("../../etc/passwd") == \
+        "https://animaldiversity.org/accounts/etc_passwd/"
+    assert species_profile.adw_url("   ") is None
+
+
+def test_read_adw_never_raises():
+    """The contract, stated as a test: read_adw swallows everything."""
+    def explode(url):
+        raise OSError("the site is down")
+    assert species_profile.read_adw("A sci", fetch_text=explode,
+                                    wait=lambda: None) is None
+
+
+def test_adw_wait_honours_the_published_crawl_delay():
+    """robots.txt says Crawl-delay: 8 and we say it back. Deliberately NOT
+    THROTTLE_S -- that one is our manners, this one is their published rule."""
+    slept = []
+    clock = [1000.0]
+
+    def wait():
+        species_profile.adw_wait(monotonic=lambda: clock[0],
+                                 sleep=slept.append)
+
+    wait()                       # first request of the run: no wait owed
+    assert slept == []
+    clock[0] += 3.0
+    wait()                       # 3 s later: the balance of the eight
+    assert slept == [pytest.approx(5.0)]
+    clock[0] += 100.0
+    wait()                       # long past it: nothing owed
+    assert slept == [pytest.approx(5.0)]
+    assert species_profile.ADW_THROTTLE_S == 8.0
+    assert species_profile.ADW_THROTTLE_S != species_profile.THROTTLE_S
+
+
+def test_enrich_never_asks_adw_when_wikipedia_has_a_section(conn, tmp_path):
+    """Wikipedia always wins, and winning means ADW is not even ASKED --
+    a species must never trade good CC BY-SA prose for a non-commercial
+    source, and we should not spend a request finding that out."""
+    fake_json, fake_bytes, _ = fetchers(summary=summary_page(extract=ARTICLE))
+    fake_text, adw_calls = adw_fetcher()
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes,
+                                   fetch_text=fake_text)
+    assert adw_calls == []                       # not one request
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice_source"] == "section"
+    assert row["voice_adw"] is None              # and nothing stored either
+    assert row["voice_adw_attribution"] is None
+
+
+def test_enrich_falls_through_to_adw_and_credits_it_separately(conn, tmp_path):
+    """The six species #318 exists for: a real Wikipedia article that says
+    nothing about sound anywhere in it."""
+    fake_json, fake_bytes, _ = fetchers()        # summary_page(): silent lead
+    fake_text, adw_calls = adw_fetcher()
+    species_profile.enrich_species(conn, str(tmp_path), "Passerina caerulea",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes,
+                                   fetch_text=fake_text, now=lambda: 777)
+    assert adw_calls == [
+        "https://animaldiversity.org/accounts/Passerina_caerulea/"]
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice_source"] == "adw"
+    assert "burry qualities" in row["voice_adw"]
+    # The attribution is STORED, not derived (#184's rule), and it names both
+    # the source and the licence -- ADW prose under a "via Wikipedia" stamp
+    # would be a licensing failure as well as a lie.
+    assert row["voice_adw_attribution"] == \
+        "via Animal Diversity Web · CC BY-NC-SA 3.0"
+    assert "CC BY-NC-SA" in row["voice_adw_attribution"]
+    assert row["voice_adw_checked_ts"] == 777
+
+
+def test_adw_prose_is_never_merged_with_wikipedia_prose(conn, tmp_path):
+    """The licences are not compatible, so the two texts live in two columns
+    and are never concatenated into one blob. Asserted from both sides."""
+    fake_json, fake_bytes, _ = fetchers()
+    fake_text, _ = adw_fetcher()
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes,
+                                   fetch_text=fake_text)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    # ADW answered: its prose is in its OWN column and `voice` stays empty.
+    assert row["voice"] is None
+    assert row["voice_adw"] is not None
+
+    # And the other direction: Wikipedia answering must clear any ADW text
+    # already standing, rather than leave an orphan second blob in the row.
+    fake_json2, fake_bytes2, _ = fetchers(
+        summary=summary_page(extract=ARTICLE))
+    fake_text2, adw_calls2 = adw_fetcher()
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json2,
+                                   fetch_bytes=fake_bytes2,
+                                   fetch_text=fake_text2)
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice"].startswith("Both sexes sing")
+    assert row["voice_adw"] is None and row["voice_adw_attribution"] is None
+    assert adw_calls2 == []
+
+
+def test_adw_attempt_stamp_settles_a_species_with_no_account(conn, tmp_path):
+    """The voice_checked_ts lesson, second occurrence. Six species have no
+    ADW account; without a stamp the tier would ask the site about each of
+    them on every pass forever, at eight seconds a go."""
+    life(conn, "A sci", "Robin")
+    fake_json, fake_bytes, _ = fetchers()
+    fake_text, adw_calls = adw_fetcher(page=ADW_NO_ACCOUNT)
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json,
+                                   fetch_bytes=fake_bytes,
+                                   fetch_text=fake_text, now=lambda: 500)
+    assert len(adw_calls) == 1
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice_adw"] is None              # honestly nothing found...
+    assert row["voice_adw_checked_ts"] == 500    # ...but we did look
+    assert species_profile.worklist(conn) == []  # and it settles
+
+    # A second pass over the same species asks Wikipedia again but NOT ADW.
+    fake_json2, fake_bytes2, _ = fetchers()
+    fake_text2, adw_calls2 = adw_fetcher(page=ADW_NO_ACCOUNT)
+    species_profile.enrich_species(conn, str(tmp_path), "A sci",
+                                   fetch_json=fake_json2,
+                                   fetch_bytes=fake_bytes2,
+                                   fetch_text=fake_text2, now=lambda: 900)
+    assert adw_calls2 == []
+    row = conn.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice_adw_checked_ts"] == 500    # the ORIGINAL look, kept
+
+
+def test_a_version_bump_is_what_re_asks_adw(conn, tmp_path):
+    """The other half of #317's lesson: a stamp that only tests for existence
+    settles a species permanently, including past an improvement to the
+    reader. adw_prior() trusts a stored look only at the CURRENT generation,
+    so bumping VOICE_VERSION brings the no-account species back for one look
+    and nothing else does."""
+    conn.execute(
+        "INSERT INTO species_profile (species_sci, voice_version,"
+        " voice_adw_checked_ts, fetched_ts) VALUES (?,?,?,?)",
+        ("A sci", species_profile.VOICE_VERSION - 1, 500, 1))
+    assert species_profile.adw_prior(conn, "A sci") is None     # stale look
+
+    conn.execute("UPDATE species_profile SET voice_version = ?",
+                 (species_profile.VOICE_VERSION,))
+    assert species_profile.adw_prior(conn, "A sci") == (None, None, 500)
+
+
+def test_connect_adds_the_adw_columns_in_place(tmp_path):
+    """A #317-era file gains #318's columns on open -- the repeatable-pass
+    rule, never a migration script."""
+    path = str(tmp_path / "earl.db")
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE species_profile (species_sci TEXT PRIMARY KEY,"
+        " description TEXT, image_file TEXT, image_source TEXT,"
+        " image_attribution TEXT, image_w INTEGER, image_h INTEGER,"
+        " voice TEXT, voice_source TEXT, voice_version INTEGER,"
+        " voice_checked_ts INTEGER, fetched_ts INTEGER NOT NULL)")
+    old.execute(
+        "INSERT INTO species_profile (species_sci, description, voice,"
+        " voice_source, voice_version, fetched_ts) VALUES (?,?,?,?,?,?)",
+        ("A sci", "prose", "it sings", "section", 2, 1))
+    old.commit()
+    old.close()
+
+    c = species_profile.connect(path)
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(species_profile)")}
+    assert {"voice_adw", "voice_adw_attribution",
+            "voice_adw_checked_ts"} <= cols
+    row = c.execute("SELECT * FROM species_profile").fetchone()
+    assert row["voice"] == "it sings"            # nothing lost
+    assert row["voice_adw"] is None              # honestly unknown, for now
+    species_profile.connect(path).close()        # and idempotent
+    c.close()
 
 
 # --- worklist ----------------------------------------------------------------
