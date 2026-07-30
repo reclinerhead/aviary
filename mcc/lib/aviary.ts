@@ -172,6 +172,33 @@ export function enhancedClipUrl(rel: string): string | null {
   return enh === null ? null : clipUrl(enh);
 }
 
+/** The playback gain steps (issue #189): unity up to the 8x rescue setting.
+ * Steps, not a slider -- the nameplate idiom is discrete states at fixed
+ * widths, and "normal / louder / much louder / rescue the finch" is the
+ * whole decision space. Above unity is the point: many real clips are very
+ * faint (measured: sighting 107 at rms 0.019), and an attenuator-only
+ * volume control cannot help them. */
+export const GAIN_STEPS = [1, 2, 4, 8] as const;
+
+/** A stored or proposed gain value, snapped to the nearest legal step.
+ *
+ * This is the localStorage boundary: the persisted string may be garbage
+ * (hand-edited, an old format, another tab's future idea of the range), and
+ * whatever comes back must land on a step the control can render as
+ * selected -- an off-step value would leave the nameplate showing four
+ * unlit buttons, a control asserting no state at all. Unparseable or
+ * non-positive input reads as unity, the do-no-harm default; a tie between
+ * two steps rounds DOWN, toward the quieter one. */
+export function coerceGain(raw: string | number | null): number {
+  const n = typeof raw === "number" ? raw : raw === null ? NaN : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  let best: number = GAIN_STEPS[0];
+  for (const step of GAIN_STEPS) {
+    if (Math.abs(step - n) < Math.abs(best - n)) best = step;
+  }
+  return best;
+}
+
 // --- The portrait route's name guard ----------------------------------------
 
 // Mirror of species_profile.image_filename's scrub, byte-for-byte: the pass
