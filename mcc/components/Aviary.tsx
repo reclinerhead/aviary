@@ -801,19 +801,12 @@ function AviaryMasthead({
             The Aviary
           </Link>
         </h1>
-        <div className="flex items-center gap-4">
-          {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
-          {/* The corner link has exactly one job since #359: leaving the
-              Aviary. It used to double as "← the aviary" on the inner pages,
-              but a corner link is where navigation goes to be ignored --
-              movement *within* the module belongs to the tab bar. */}
-          <Link
-            href="/"
-            className="stamp text-xs text-inkdim transition-colors hover:text-squirrel"
-          >
-            ← control center
-          </Link>
-        </div>
+        {/* No way back to the MCC dashboard from here, on purpose (#361):
+            the launchpad opens each module in its own window, so a corner
+            link out was a misclick that closed the yard rather than a
+            route anyone wanted. The Aviary's masthead now offers only the
+            lamp and the tab bar -- moves inside the module. */}
+        {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
       </div>
       <p className="stamp mt-1 text-xs text-inkfaint">
         {mastheadSub(stationName)}
