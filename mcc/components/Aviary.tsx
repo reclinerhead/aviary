@@ -743,16 +743,24 @@ function EarlLamp({ busUp, status }: { busUp: boolean; status: string | null }) 
   return <span className="stamp text-xs text-inkfaint">no word from earl</span>;
 }
 
-/** Page masthead + the tab bar. Aviary is the only tab there is -- future
- * listening modules earn tabs when they exist, not placeholder chrome.
- * The lamp is optional because only the dashboard runs a bus client; the
- * profile page showing "bus quiet" would be a lie about a bus it never
- * asked. */
+/** The tab bar's roster (#357). Tabs are earned by real pages, not
+ * placeholder chrome -- the Full Record earned its spot; future listening
+ * modules do the same by existing first. One label string per tab so a
+ * rename is a one-line change. */
+const MASTHEAD_TABS = [
+  { key: "aviary", label: "aviary", href: "/aviary" },
+  { key: "record", label: "full record", href: "/aviary/events" },
+] as const;
+
+/** Page masthead + the tab bar. The lamp is optional because only the
+ * dashboard runs a bus client; the profile page showing "bus quiet" would
+ * be a lie about a bus it never asked. */
 function AviaryMasthead({
   lamp,
   back,
   jumps,
   stationName,
+  tab = "aviary",
 }: {
   lamp?: { busUp: boolean; status: string | null };
   back?: { href: string; label: string };
@@ -767,6 +775,10 @@ function AviaryMasthead({
    * mismatch); absent means home, and the sub line is exactly what it has
    * always been. */
   stationName?: string;
+  /** Which tab is the current page (#357). The species profile counts as
+   * "aviary" -- it's a drill-down of the life list, not its own module --
+   * so only the events page overrides the default. */
+  tab?: (typeof MASTHEAD_TABS)[number]["key"];
 }) {
   return (
     <header className="mb-4">
@@ -775,7 +787,14 @@ function AviaryMasthead({
           className="text-3xl text-ink"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          The Aviary
+          {/* The title is the way home (#357) -- same rest look as the old
+              plain text, only the hover admits it's a link. */}
+          <Link
+            href="/aviary"
+            className="transition-colors hover:text-squirrel"
+          >
+            The Aviary
+          </Link>
         </h1>
         <div className="flex items-center gap-4">
           {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
@@ -791,9 +810,24 @@ function AviaryMasthead({
         {mastheadSub(stationName)}
       </p>
       <nav className="mt-3 flex items-baseline gap-4 border-b border-line">
-        <span className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink">
-          aviary
-        </span>
+        {MASTHEAD_TABS.map((t) =>
+          t.key === tab ? (
+            <span
+              key={t.key}
+              className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink"
+            >
+              {t.label}
+            </span>
+          ) : (
+            <Link
+              key={t.key}
+              href={t.href}
+              className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+            >
+              {t.label}
+            </Link>
+          ),
+        )}
         {jumps && (
           <span className="ml-auto flex gap-4 lg:hidden">
             {jumps.map((j) => (
@@ -2807,6 +2841,7 @@ export function AviaryEvents({
       <AviaryMasthead
         back={{ href: "/aviary", label: "← the aviary" }}
         stationName={stationName}
+        tab="record"
       />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
