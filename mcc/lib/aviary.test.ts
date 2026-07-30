@@ -12,6 +12,7 @@ import {
   clampVisitWindow,
   clipRelPath,
   clipUrl,
+  coerceGain,
   enhancedClipUrl,
   enhancedRelPath,
   collapseVisits,
@@ -251,6 +252,30 @@ describe("enhancedRelPath / enhancedClipUrl", () => {
       "amcrest/1000-Blue_Jay-enh.wav",
     );
     expect(clipRelPath(["..", "x-enh.wav"])).toBeNull();
+  });
+});
+
+describe("coerceGain", () => {
+  it("passes legal steps through untouched", () => {
+    expect(coerceGain(1)).toBe(1);
+    expect(coerceGain(2)).toBe(2);
+    expect(coerceGain("4")).toBe(4);
+    expect(coerceGain("8")).toBe(8);
+  });
+  it("reads garbage as unity -- the do-no-harm default", () => {
+    expect(coerceGain(null)).toBe(1);
+    expect(coerceGain("")).toBe(1);
+    expect(coerceGain("loud")).toBe(1);
+    expect(coerceGain("NaN")).toBe(1);
+    expect(coerceGain(0)).toBe(1);
+    expect(coerceGain(-3)).toBe(1);
+  });
+  it("snaps off-step values to the nearest step, ties toward quieter", () => {
+    expect(coerceGain("1.4")).toBe(1);
+    expect(coerceGain(3)).toBe(2); // equidistant from 2 and 4 -- round down
+    expect(coerceGain(5)).toBe(4);
+    expect(coerceGain(6.5)).toBe(8);
+    expect(coerceGain("999")).toBe(8); // an old wider range can only clamp in
   });
 });
 

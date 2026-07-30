@@ -47,8 +47,10 @@ import {
   SortKey,
   TodayTile,
   Visit,
+  GAIN_STEPS,
   archiveStats,
   clipUrl,
+  coerceGain,
   enhancedClipUrl,
   collapseVisits,
   cropPosition,
@@ -291,8 +293,20 @@ type ClipPlayer = {
   rawOnly: ReadonlySet<string>;
   enhanced: boolean;
   setEnhanced: (on: boolean) => void;
+  // Makeup gain (#189): one of GAIN_STEPS, applied to whatever plays next
+  // AND to whatever is playing now -- loudness is a listening-session knob,
+  // not a per-clip property, so it acts immediately where the raw/enh switch
+  // deliberately waits for the next clip.
+  gain: number;
+  setGain: (v: number) => void;
   toggle: (clip: string) => void;
 };
+
+// Where the gain step sleeps between sessions (#189). One key for the whole
+// Aviary on purpose: the three views each own a player instance, but "my
+// speakers, my room, my ears" is one fact -- a boost chosen on the dashboard
+// should greet you on the archive.
+const GAIN_KEY = "aviary.clip-gain";
 
 /** One shared <audio> per view: clicking a second clip stops the first
  * (two yards' worth of birdsong at once is noise, not data). A clip that
@@ -311,7 +325,24 @@ type ClipPlayer = {
  * Every key here -- `playing`, `faded`, `pending` -- is the RAW clip path,
  * never the sibling. Rows are identified by the recording, not by which
  * rendering of it happened to play, so flipping the mode mid-session can't
- * strand a lit button or double-mark a faded one. */
+ * strand a lit button or double-mark a faded one.
+ *
+ * MAKEUP GAIN (issue #189). The element's own volume only attenuates, and
+ * the complaint is the opposite one: a finch at rms 0.019 under a passing
+ * plane needs boosting ABOVE unity. So the element's output is routed
+ * through a WebAudio graph -- MediaElementSource -> GainNode -> a
+ * compressor leaned on as a limiter -> destination. The element itself
+ * stays: it keeps streaming, seeking, and the whole error/fallback path
+ * above untouched; only where its sound goes changes. The graph is built
+ * exactly once, around the element, at the same moment the element is born
+ * -- inside `toggle`, a click handler -- because an AudioContext created
+ * outside a user gesture starts suspended and stays there (autoplay
+ * policy), and because `createMediaElementSource` is a one-way, once-only
+ * claim on the element: the src-swapping retry in `start` must flow through
+ * the SAME graph, never occasion a new one. The limiter is the price of
+ * offering 8x at all -- a loud clip under full boost would otherwise hard-
+ * clip, and insurance here is a few lines. The setting persists to
+ * localStorage because someone who needs 4x needs it every session. */
 function useClipPlayer(): ClipPlayer {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playingRef = useRef<string | null>(null);
@@ -319,6 +350,12 @@ function useClipPlayer(): ClipPlayer {
   // signals identifiable -- see the note in `start`.
   const attemptRef = useRef<AbortController | null>(null);
   const enhancedRef = useRef(true);
+  // The gain rides refs alongside its state for the same reason `enhanced`
+  // does: `toggle` and the graph must read the current value without
+  // subscribing the callbacks to it.
+  const ctxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const gainRef = useRef(1);
   const [playing, setPlaying] = useState<string | null>(null);
   const [faded, setFaded] = useState<ReadonlySet<string>>(new Set());
   // Issue #331: the fallback below already discovers that a clip has no
@@ -332,6 +369,19 @@ function useClipPlayer(): ClipPlayer {
   // Default ON: a faint bird under a plane is the case that motivated the
   // pass, and the raw clip is one click away for the A/B.
   const [enhanced, setEnhancedState] = useState(true);
+  const [gain, setGainState] = useState(1);
+
+  // The persisted gain lands post-mount, not in the initializer: this is a
+  // client component but Next still renders it once on the server, where
+  // there is no localStorage and the initializer would bake in a different
+  // answer than the browser's -- a hydration mismatch. Unity first paint,
+  // then the stored step lands in the control's fixed geometry (content
+  // change, not layout -- the counts-land-in-place rule).
+  useEffect(() => {
+    const stored = coerceGain(localStorage.getItem(GAIN_KEY));
+    gainRef.current = stored;
+    setGainState(stored);
+  }, []);
 
   const stop = useCallback((clip: string | null) => {
     playingRef.current = clip;
@@ -395,7 +445,37 @@ function useClipPlayer(): ClipPlayer {
         a = new Audio();
         a.addEventListener("ended", () => stop(null));
         audioRef.current = a;
+        // First gesture, only chance (#189): build the graph here or never.
+        // Element -> gain -> limiter -> speakers. The limiter's numbers are
+        // ordinary brick-wall-ish values -- start squashing at -6 dB, hard
+        // ratio, fast attack -- inaudible at unity and the thing standing
+        // between an 8x crow and digital clipping.
+        try {
+          const ctx = new AudioContext();
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = gainRef.current;
+          const limiter = ctx.createDynamicsCompressor();
+          limiter.threshold.value = -6;
+          limiter.knee.value = 6;
+          limiter.ratio.value = 12;
+          limiter.attack.value = 0.003;
+          limiter.release.value = 0.25;
+          ctx
+            .createMediaElementSource(a)
+            .connect(gainNode)
+            .connect(limiter)
+            .connect(ctx.destination);
+          ctxRef.current = ctx;
+          gainNodeRef.current = gainNode;
+        } catch {
+          // No WebAudio (or a claimed element) leaves the bare element
+          // wired straight to the speakers -- playback at unity, exactly
+          // the pre-#189 behavior. The knob goes dead; the birds don't.
+        }
       }
+      // A tab backgrounded mid-session can suspend the context; waking it
+      // is idempotent and cheap, so ask every time rather than tracking.
+      if (ctxRef.current?.state === "suspended") void ctxRef.current.resume();
       if (playingRef.current === clip) {
         a.pause();
         stop(null);
@@ -405,6 +485,24 @@ function useClipPlayer(): ClipPlayer {
     },
     [start, stop],
   );
+
+  const setGain = useCallback((v: number) => {
+    const snapped = coerceGain(v);
+    gainRef.current = snapped;
+    setGainState(snapped);
+    try {
+      localStorage.setItem(GAIN_KEY, String(snapped));
+    } catch {
+      // Storage full or blocked: the session keeps its gain, the next one
+      // starts at whatever last persisted. Not worth surfacing.
+    }
+    const ctx = ctxRef.current;
+    const gainNode = gainNodeRef.current;
+    // A short ramp, not a jump -- an instant coefficient change mid-
+    // waveform is an audible click. 20 ms is below "fade" and above "pop".
+    if (ctx && gainNode)
+      gainNode.gain.setTargetAtTime(snapped, ctx.currentTime, 0.02);
+  }, []);
 
   const setEnhanced = useCallback((on: boolean) => {
     enhancedRef.current = on;
@@ -418,11 +516,26 @@ function useClipPlayer(): ClipPlayer {
     () => () => {
       audioRef.current?.pause();
       audioRef.current = null;
+      // The context holds an OS audio handle; closing it releases the
+      // element it claimed too. Best-effort -- an already-closed context
+      // rejects, and unmount has nobody to tell.
+      void ctxRef.current?.close().catch(() => {});
+      ctxRef.current = null;
+      gainNodeRef.current = null;
     },
     [],
   );
 
-  return { playing, faded, rawOnly, enhanced, setEnhanced, toggle };
+  return {
+    playing,
+    faded,
+    rawOnly,
+    enhanced,
+    setEnhanced,
+    gain,
+    setGain,
+    toggle,
+  };
 }
 
 /** The raw/enhanced switch, in a panel's label row. Two states, both always
@@ -470,6 +583,60 @@ function EnhanceToggle({ player }: { player: ClipPlayer }) {
           </button>
         ))}
       </span>
+    </span>
+  );
+}
+
+/** The makeup-gain switch (#189): EnhanceToggle's nameplate one knob over,
+ * four steps from unity to the 8x rescue setting. Steps rather than a
+ * slider because the panel's vocabulary is discrete states at fixed widths
+ * -- and because "a bit louder / much louder / as loud as it goes" is the
+ * entire decision anyone makes here. Persistent chrome: it renders whether
+ * or not a clip is loaded, identical geometry in every state (house rule
+ * #1) -- the setting is FOR the next clip as much as the current one. */
+function GainControl({ player }: { player: ClipPlayer }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="stamp text-[9px] text-inkfaint">gain</span>
+      <span className="flex overflow-hidden rounded-sm border border-line">
+        {GAIN_STEPS.map((step) => (
+          <button
+            key={step}
+            type="button"
+            onClick={() => player.setGain(step)}
+            aria-pressed={player.gain === step}
+            title={
+              step === 1
+                ? "play at the recorded level"
+                : step === 8
+                  ? "boost ×8 — rescue the faintest recordings (a limiter keeps loud clips from clipping)"
+                  : `boost quiet recordings ×${step}`
+            }
+            className={`stamp w-7 py-0.5 text-[9px] transition-colors ${
+              player.gain === step
+                ? "bg-panel2 text-squirrel"
+                : "text-inkfaint hover:text-inkdim"
+            }`}
+          >
+            {step}×
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/** The label row's audio cluster: the raw/enh switch with the gain knob
+ * beside it, one span mounted identically by all three panels that own a
+ * player. flex-wrap is the width story: "Latest Events" + both nameplates
+ * outgrow the 340px rail, so there the gain steps take a second right-
+ * aligned line -- decided by the viewport at layout, never re-decided while
+ * you watch (house rule #1 governs shifts, not breakpoints). */
+function AudioControls({ player }: { player: ClipPlayer }) {
+  return (
+    <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+      <EnhanceToggle player={player} />
+      <GainControl player={player} />
     </span>
   );
 }
@@ -1395,7 +1562,7 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
           >
             <PanelLabel
               title="Latest Events"
-              right={<EnhanceToggle player={player} />}
+              right={<AudioControls player={player} />}
             />
             <div className="px-4 pb-4">
               {events.length === 0 ? (
@@ -1446,7 +1613,11 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
                             <div className="stamp flex gap-2 text-[9px] text-inkfaint">
                               <span>{stampOf(e.ts, midnight)}</span>
                               <span>{e.source}</span>
-                              <span>{e.confidence.toFixed(2)}</span>
+                              {/* Labeled so it reads as a model score, not
+                                  a mystery decimal (#189). */}
+                              <span title="BirdNET's confidence in this identification (0–1)">
+                                conf {e.confidence.toFixed(2)}
+                              </span>
                               {e.wind_suspect && <span>wind?</span>}
                             </div>
                           </div>
@@ -2225,10 +2396,20 @@ export function SpeciesProfile({
                   <dd
                     className="text-sm leading-tight text-ink"
                     style={{ fontFamily: "var(--font-display)" }}
+                    title="BirdNET's confidence in this identification (0–1)"
                   >
-                    {entry?.best_confidence != null
-                      ? entry.best_confidence.toFixed(2)
-                      : "—"}
+                    {/* The dt says which recording; the number still needs
+                        to say what KIND of number it is (#189). */}
+                    {entry?.best_confidence != null ? (
+                      <>
+                        <span className="stamp text-[9px] text-inkfaint">
+                          conf{" "}
+                        </span>
+                        {entry.best_confidence.toFixed(2)}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                     {entry?.best_ts != null && (
                       <span className="text-inkfaint">
                         {" "}
@@ -2438,7 +2619,7 @@ export function SpeciesProfile({
           <section className="panel flex flex-col rounded-sm border border-line bg-panel lg:absolute lg:inset-0">
             <PanelLabel
               title="Recent Visits"
-              right={<EnhanceToggle player={player} />}
+              right={<AudioControls player={player} />}
             />
             <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
               {/* The list region flexes to fill the rail; the archive link
@@ -2482,7 +2663,13 @@ export function SpeciesProfile({
                             </span>
                           </div>
                           <div className="stamp flex gap-2 text-[9px] text-inkfaint">
-                            <span>best {v.best.toFixed(2)}</span>
+                            {/* "conf", not "best" (#189): "best 0.85" read
+                                as a ranking, and the one nuance it carried
+                                -- best window of the visit -- lives in the
+                                tooltip where it can use whole words. */}
+                            <span title="BirdNET's confidence in this identification (0–1) — the visit's best window">
+                              conf {v.best.toFixed(2)}
+                            </span>
                             {v.windows > 1 && <span>{v.windows} windows</span>}
                             {v.wind_suspect && <span>wind?</span>}
                           </div>
@@ -2844,7 +3031,7 @@ export function AviaryEvents({
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Full Record"
-          right={<EnhanceToggle player={player} />}
+          right={<AudioControls player={player} />}
         />
 
         {/* The controls: species pills (combinable), then the date leg.
@@ -3046,7 +3233,11 @@ export function AviaryEvents({
                           </div>
                           <div className="stamp flex gap-2 text-[9px] text-inkfaint">
                             <span>{e.source}</span>
-                            <span>{e.confidence.toFixed(2)}</span>
+                            {/* Labeled so it reads as a model score, not a
+                                mystery decimal (#189). */}
+                            <span title="BirdNET's confidence in this identification (0–1)">
+                              conf {e.confidence.toFixed(2)}
+                            </span>
                             {e.wind_suspect && <span>wind?</span>}
                           </div>
                         </div>
