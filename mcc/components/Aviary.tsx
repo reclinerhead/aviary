@@ -744,12 +744,15 @@ function EarlLamp({ busUp, status }: { busUp: boolean; status: string | null }) 
 }
 
 /** The tab bar's roster (#357). Tabs are earned by real pages, not
- * placeholder chrome -- the Full Record earned its spot; future listening
+ * placeholder chrome -- the event archive earned its spot; future listening
  * modules do the same by existing first. One label string per tab so a
- * rename is a one-line change. */
+ * rename is a one-line change (#359 was exactly that). The labels are the
+ * *reader's* words, deliberately not the pages' own titles: the panels still
+ * read "The Life List" and "The Full Record", while the bar says what each
+ * tab gets you. */
 const MASTHEAD_TABS = [
-  { key: "aviary", label: "aviary", href: "/aviary" },
-  { key: "record", label: "full record", href: "/aviary/events" },
+  { key: "aviary", label: "dashboard", href: "/aviary" },
+  { key: "record", label: "all detections", href: "/aviary/events" },
 ] as const;
 
 /** Page masthead + the tab bar. The lamp is optional because only the
@@ -809,32 +812,40 @@ function AviaryMasthead({
       <p className="stamp mt-1 text-xs text-inkfaint">
         {mastheadSub(stationName)}
       </p>
-      <nav className="mt-3 flex items-baseline gap-4 border-b border-line">
-        {MASTHEAD_TABS.map((t) =>
-          t.key === tab ? (
-            <span
-              key={t.key}
-              className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink"
-            >
-              {t.label}
-            </span>
-          ) : (
-            <Link
-              key={t.key}
-              href={t.href}
-              className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
-            >
-              {t.label}
-            </Link>
-          ),
-        )}
+      <nav className="mt-3 flex flex-wrap items-baseline">
+        {/* The tabs own a full-width row, and the rule rides with them
+            (#359). The longer labels no longer leave phone-width room for
+            the jump chips beside them -- they overflowed the viewport
+            outright -- and letting the chips push the rule to a second row
+            would strand the active tab's underline floating above it,
+            which is the one adjacency this idiom is made of. */}
+        <span className="flex w-full items-baseline gap-8 border-b border-line">
+          {MASTHEAD_TABS.map((t) =>
+            t.key === tab ? (
+              <span
+                key={t.key}
+                className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink"
+              >
+                {t.label}
+              </span>
+            ) : (
+              <Link
+                key={t.key}
+                href={t.href}
+                className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+              >
+                {t.label}
+              </Link>
+            ),
+          )}
+        </span>
         {jumps && (
-          <span className="ml-auto flex gap-4 lg:hidden">
+          <span className="mt-1.5 ml-auto flex gap-4 lg:hidden">
             {jumps.map((j) => (
               <a
                 key={j.href}
                 href={j.href}
-                className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+                className="stamp text-xs text-inkdim transition-colors hover:text-squirrel"
               >
                 {j.label}
               </a>
