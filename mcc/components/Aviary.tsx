@@ -760,13 +760,11 @@ const MASTHEAD_TABS = [
  * be a lie about a bus it never asked. */
 function AviaryMasthead({
   lamp,
-  back,
   jumps,
   stationName,
   tab = "aviary",
 }: {
   lamp?: { busUp: boolean; status: string | null };
-  back?: { href: string; label: string };
   /** Small-viewport anchor chips in the tab bar (#265) -- only the main
    * page has the stacked-columns problem (and the sections) they jump to,
    * so only it passes them; the lamp precedent. Plain hash anchors on
@@ -778,9 +776,13 @@ function AviaryMasthead({
    * mismatch); absent means home, and the sub line is exactly what it has
    * always been. */
   stationName?: string;
-  /** Which tab is the current page (#357). The species profile counts as
-   * "aviary" -- it's a drill-down of the life list, not its own module --
-   * so only the events page overrides the default. */
+  /** Which tab is underlined (#357, resemanticed by #359): the current
+   * *section*, not the current page -- every tab is a live link, the
+   * underlined one included (the GitHub-tabs model), so a drill-down keeps
+   * both destinations one click away instead of an inert span squatting in
+   * the one place the eye looks for a way back. The species profile counts
+   * as the dashboard's section -- it's a drill-down of the life list, not
+   * its own module -- so only the events page overrides the default. */
   tab?: (typeof MASTHEAD_TABS)[number]["key"];
 }) {
   return (
@@ -801,11 +803,15 @@ function AviaryMasthead({
         </h1>
         <div className="flex items-center gap-4">
           {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
+          {/* The corner link has exactly one job since #359: leaving the
+              Aviary. It used to double as "← the aviary" on the inner pages,
+              but a corner link is where navigation goes to be ignored --
+              movement *within* the module belongs to the tab bar. */}
           <Link
-            href={back?.href ?? "/"}
+            href="/"
             className="stamp text-xs text-inkdim transition-colors hover:text-squirrel"
           >
-            {back?.label ?? "← control center"}
+            ← control center
           </Link>
         </div>
       </div>
@@ -820,24 +826,19 @@ function AviaryMasthead({
             would strand the active tab's underline floating above it,
             which is the one adjacency this idiom is made of. */}
         <span className="flex w-full items-baseline gap-8 border-b border-line">
-          {MASTHEAD_TABS.map((t) =>
-            t.key === tab ? (
-              <span
-                key={t.key}
-                className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink"
-              >
-                {t.label}
-              </span>
-            ) : (
-              <Link
-                key={t.key}
-                href={t.href}
-                className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
-              >
-                {t.label}
-              </Link>
-            ),
-          )}
+          {MASTHEAD_TABS.map((t) => (
+            <Link
+              key={t.key}
+              href={t.href}
+              className={`stamp pb-1.5 text-xs transition-colors hover:text-squirrel ${
+                t.key === tab
+                  ? "-mb-px border-b-2 border-ink text-ink"
+                  : "text-inkdim"
+              }`}
+            >
+              {t.label}
+            </Link>
+          ))}
         </span>
         {jumps && (
           <span className="mt-1.5 ml-auto flex gap-4 lg:hidden">
@@ -2123,10 +2124,7 @@ export function SpeciesProfile({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead
-        back={{ href: "/aviary", label: "← the aviary" }}
-        stationName={stationName}
-      />
+      <AviaryMasthead stationName={stationName} />
       {loaded && !entry ? (
         <section className="panel flex min-h-[200px] items-center justify-center rounded-sm border border-line bg-panel">
           <span className="stamp text-xs text-inkfaint">
@@ -2849,11 +2847,7 @@ export function AviaryEvents({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead
-        back={{ href: "/aviary", label: "← the aviary" }}
-        stationName={stationName}
-        tab="record"
-      />
+      <AviaryMasthead stationName={stationName} tab="record" />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Full Record"
