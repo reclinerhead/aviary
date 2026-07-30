@@ -1229,7 +1229,13 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
                     onChange={(ev) => setQuery(ev.target.value)}
                     placeholder="find a bird"
                     aria-label="Search the life list"
-                    className="stamp w-32 rounded-sm border border-line bg-panel2 py-1 pl-7 pr-6 text-[10px] text-ink transition-colors placeholder:text-inkfaint focus:border-linebright focus:outline-none"
+                    // w-40, not w-32: at 128px the stamp lettering ran the
+                    // "find a bird" placeholder out of the box mid-word, and
+                    // the gutters are wide (pl-7 for the magnifier, pr-6 for
+                    // the ✕'s reserved seat) so only ~76px of it was text.
+                    // 160px leaves the placeholder room to sit whole and
+                    // gives a real search term somewhere to go.
+                    className="stamp w-40 rounded-sm border border-line bg-panel2 py-1 pl-7 pr-6 text-[10px] text-ink transition-colors placeholder:text-inkfaint focus:border-linebright focus:outline-none"
                   />
                   {/* Always rendered, merely invisible while the box is
                       empty (the now-control idiom): the input's pr-6 is
