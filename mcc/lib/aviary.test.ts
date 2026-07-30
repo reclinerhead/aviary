@@ -36,6 +36,8 @@ import {
   parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
+  reconcileOrder,
+  reconcileRail,
   rhythmStrip,
   rivalLine,
   rosterOrder,
@@ -46,6 +48,7 @@ import {
   smoothPath,
   smoothSegments,
   speciesImageName,
+  speciesMatches,
   standingFor,
   tallyVisits,
   todayVisitors,
@@ -595,6 +598,111 @@ describe("todayVisitors", () => {
       { species_sci: "A", species_common: "American Robin", count: 2 },
       { species_sci: "D", species_common: "Downy Woodpecker", count: 2 },
     ]);
+  });
+});
+
+// --- Life-list search (#352) -------------------------------------------------
+
+describe("speciesMatches", () => {
+  const downy = entry("Dryobates pubescens", "Downy Woodpecker", 3);
+  it("matches a case-insensitive substring of the common name", () => {
+    expect(speciesMatches(downy, "wood")).toBe(true);
+    expect(speciesMatches(downy, "WOOD")).toBe(true);
+    expect(speciesMatches(downy, "downy wood")).toBe(true);
+    expect(speciesMatches(downy, "finch")).toBe(false);
+  });
+  it("matches the scientific name too", () => {
+    expect(speciesMatches(downy, "dryobates")).toBe(true);
+    expect(speciesMatches(downy, "pubescens")).toBe(true);
+  });
+  it("a fragment mid-word still hits -- substring, not prefix", () => {
+    expect(speciesMatches(downy, "pecker")).toBe(true);
+  });
+  it("blank and all-whitespace queries match everything", () => {
+    expect(speciesMatches(downy, "")).toBe(true);
+    expect(speciesMatches(downy, "   ")).toBe(true);
+  });
+  it("a missing entry matches nothing, even on a blank query", () => {
+    expect(speciesMatches(undefined, "")).toBe(false);
+    expect(speciesMatches(undefined, "wood")).toBe(false);
+  });
+  it("trims the query -- ' wood ' is 'wood'", () => {
+    expect(speciesMatches(downy, "  wood  ")).toBe(true);
+  });
+});
+
+// --- The reconciliation poll (#352) ------------------------------------------
+
+describe("reconcileOrder", () => {
+  it("preserves the existing order exactly and appends the unseen at the end", () => {
+    const next = reconcileOrder(
+      ["B", "A"],
+      [
+        entry("A", "American Robin", 9),
+        entry("B", "Blue Jay", 5),
+        entry("C", "Carolina Wren", 1),
+        entry("D", "Downy Woodpecker", 2),
+      ],
+    );
+    expect(next).toEqual(["B", "A", "C", "D"]);
+  });
+  it("never drops a key the payload omitted -- a tile can't vanish mid-read", () => {
+    const prev = ["A", "B"];
+    const next = reconcileOrder(prev, [entry("A", "American Robin", 9)]);
+    expect(next).toEqual(["A", "B"]);
+    // And it is prev ITSELF when nothing is new, so a quiet poll re-renders
+    // nothing.
+    expect(next).toBe(prev);
+  });
+});
+
+describe("reconcileRail", () => {
+  const tile = (sci: string, common: string, count: number) => ({
+    species_sci: sci,
+    species_common: common,
+    count,
+  });
+  it("preserves pill order, lands counts in place, appends newcomers", () => {
+    const next = reconcileRail(
+      [tile("C", "Carolina Wren", 3), tile("A", "American Robin", 1)],
+      [
+        entry("A", "American Robin", 9, 2),
+        entry("B", "Blue Jay", 5, 1),
+        entry("C", "Carolina Wren", 5, 4),
+        entry("D", "Downy Woodpecker", 1, 2),
+      ],
+    );
+    expect(next).toEqual([
+      // Existing pills keep their seats, counts refreshed from the store.
+      tile("C", "Carolina Wren", 4),
+      tile("A", "American Robin", 2),
+      // Newcomers append, most-visited-today first among themselves.
+      tile("D", "Downy Woodpecker", 2),
+      tile("B", "Blue Jay", 1),
+    ]);
+  });
+  it("empties on a midnight rollover: an explicit today=0 retires a pill", () => {
+    const next = reconcileRail(
+      [tile("A", "American Robin", 7), tile("B", "Blue Jay", 2)],
+      [entry("A", "American Robin", 9, 0), entry("B", "Blue Jay", 5, 0)],
+    );
+    expect(next).toEqual([]);
+  });
+  it("keeps a pill the payload omitted -- unknown is not zero", () => {
+    // A just-minted lifer's row can trail its own bus event; the pill the
+    // live merge showed must not flicker out and back.
+    const next = reconcileRail(
+      [tile("A", "American Robin", 1)],
+      [entry("B", "Blue Jay", 5, 1)],
+    );
+    expect(next).toEqual([tile("A", "American Robin", 1), tile("B", "Blue Jay", 1)]);
+  });
+  it("picks up a common-name correction from the store", () => {
+    const next = reconcileRail(
+      [tile("A", "Amercan Robin", 1)],
+      [entry("A", "American Robin", 9, 1)],
+    );
+    expect(next).toEqual([tile("A", "American Robin", 1)]);
   });
 });
 

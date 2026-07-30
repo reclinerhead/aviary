@@ -44,6 +44,7 @@ import {
   RosterEntry,
   SortDir,
   SortKey,
+  TodayTile,
   Visit,
   archiveStats,
   clipUrl,
@@ -59,10 +60,13 @@ import {
   parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
+  reconcileOrder,
+  reconcileRail,
   rhythmStrip,
   mastheadSub,
   rivalLine,
   rosterOrder,
+  speciesMatches,
   shareOfYard,
   standingFor,
   todayVisitors,
@@ -86,7 +90,6 @@ const ARCHIVE_PAGE = 100;
 
 type TickerEvent = AudioEvent & { key: string };
 type ArchiveRow = BirdEvent & { key: string };
-type TodayTile = { species_sci: string; species_common: string; count: number };
 
 // --- Formatting (locale-side -- the audio namespace is epoch end to end) ----
 
@@ -939,12 +942,17 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   const [sortKey, setSortKey] = useState<SortKey>("visits");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [rail, setRail] = useState<TodayTile[]>([]);
+  // The search box (#352): a filter over `order`, never a re-sort of it.
+  const [query, setQuery] = useState("");
   const [events, setEvents] = useState<TickerEvent[]>([]);
   const [busUp, setBusUp] = useState(false);
   const [earlStatus, setEarlStatus] = useState<string | null>(null);
   const [midnight, setMidnight] = useState<number | null>(null);
-  // New Arrivals' clock (#224): fixed at mount like the midnight boundary,
-  // so a card never silently ages out of the window mid-session.
+  // New Arrivals' clock (#224): set at mount, advanced only by the
+  // reconciliation poll (#352) -- so a card ages out of its window at a
+  // once-a-minute tick on a long-open tab (the kiosk case #352 exists for;
+  // a "24h" nameplate over week-old cards is the #331 class of lie), while
+  // never vanishing mid-read on a render.
   const [nowTs, setNowTs] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   // Hydrated rows arrive already-read: they get no filed-flash on mount
@@ -954,9 +962,11 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   const player = useClipPlayer();
 
   useEffect(() => {
-    // Local midnight, computed once client-side: the server can't know the
-    // viewer's timezone, so the client says where its day began. A tab left
-    // open past midnight keeps yesterday's boundary until reload -- accepted.
+    // Local midnight, computed client-side: the server can't know the
+    // viewer's timezone, so the client says where its day began. Set here at
+    // mount and advanced by the reconciliation poll (#352) -- the old "keeps
+    // yesterday's boundary until reload -- accepted" posture dated from
+    // glance-length sessions, and the always-open kiosk tab is the opposite.
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     const mid = Math.floor(d.getTime() / 1000);
@@ -1092,11 +1102,68 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
     };
   }, []);
 
+  useEffect(() => {
+    // The reconciliation poll (#352): every minute -- and the moment a
+    // hidden tab comes back, which is exactly when it is most stale -- the
+    // page re-grounds itself in the store. The live bus ticks counts in
+    // place but replays nothing after a websocket gap (audio/events is an
+    // event topic), and the midnight boundary above must roll over on a tab
+    // that never reloads. One indexed read of a small store per open tab
+    // per minute, LAN-local, on a box we own -- the dashboard polls /state
+    // twice a second. Everything lands IN PLACE (house rule #1): the merge
+    // helpers preserve grid and rail order exactly, appending only, and the
+    // boundary + the counts computed against it move together -- a failed
+    // poll changes nothing at all, so the page is stale-but-consistent
+    // until the next tick heals it. Wholesale entry replacement also picks
+    // up enrichment landing (a portrait dresses its tile within a minute)
+    // and converges the documented ±1 live-tick race.
+    const tick = () => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      const mid = Math.floor(d.getTime() / 1000);
+      fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body: { species?: RosterEntry[] } | null) => {
+          const entries = body?.species;
+          if (!Array.isArray(entries)) return;
+          midnightRef.current = mid;
+          setMidnight(mid);
+          setNowTs(Math.floor(Date.now() / 1000));
+          setRoster((prev) => {
+            const next = { ...prev };
+            for (const e of entries) next[e.species_sci] = e;
+            return next;
+          });
+          setOrder((prev) => reconcileOrder(prev, entries));
+          setRail((prev) => reconcileRail(prev, entries));
+        })
+        .catch(() => {});
+    };
+    const id = setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
   const resort = (key: SortKey, dir: SortDir) => {
     setSortKey(key);
     setSortDir(dir);
     setOrder(rosterOrder(Object.values(roster), key, dir));
   };
+
+  // The grid the viewer actually sees: `order` filtered by the search box
+  // (#352), never re-sorted by it -- the active sort survives the filter,
+  // the archive pills' rule (a control that reshuffles as you use it is
+  // house rule #1 broken in a control).
+  const shown =
+    query.trim() === ""
+      ? order
+      : order.filter((sci) => speciesMatches(roster[sci], query));
 
   const sortButton = (key: SortKey, label: string) => (
     <button
@@ -1135,7 +1202,52 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
           <PanelLabel
             title="The Life List"
             right={
-              <span className="flex items-center gap-1.5">
+              <span className="flex flex-wrap items-center justify-end gap-1.5">
+                {/* The search box (#352), left of the sort pills: their
+                    chrome (stamp lettering, hairline border, panel2 ground)
+                    on an input, with the magnifier inline like BirdGlyph --
+                    no icon library. type="text", not "search": WebKit's
+                    native clear button would fight the ✕ this control
+                    already reserves space for. */}
+                <span className="relative flex items-center">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    className="pointer-events-none absolute left-2 h-3 w-3 text-inkfaint"
+                    aria-hidden="true"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-4.4-4.4" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(ev) => setQuery(ev.target.value)}
+                    placeholder="find a bird"
+                    aria-label="Search the life list"
+                    className="stamp w-32 rounded-sm border border-line bg-panel2 py-1 pl-7 pr-6 text-[10px] text-ink transition-colors placeholder:text-inkfaint focus:border-linebright focus:outline-none"
+                  />
+                  {/* Always rendered, merely invisible while the box is
+                      empty (the now-control idiom): the input's pr-6 is
+                      this button's reserved seat, so it never shifts the
+                      text as it appears. */}
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    aria-label="Clear search"
+                    tabIndex={query === "" ? -1 : 0}
+                    className={`absolute right-1.5 text-[10px] transition-colors ${
+                      query === ""
+                        ? "invisible"
+                        : "text-inkfaint hover:text-ink"
+                    }`}
+                  >
+                    ✕
+                  </button>
+                </span>
                 {sortButton("name", "name")}
                 {sortButton("visits", "visits")}
                 <button
@@ -1161,9 +1273,19 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
                     : "opening the record …"}
                 </span>
               </div>
+            ) : shown.length === 0 ? (
+              // The no-match state (#352): the empty grid's reserved
+              // footprint with an honest sentence naming the query, so
+              // entering and leaving a fruitless search shifts nothing.
+              <div className="flex min-h-[280px] items-center justify-center rounded-sm border border-line bg-panel2">
+                <span className="stamp px-4 text-center text-xs text-inkfaint">
+                  no birds match “{query.trim()}” — the list answers to common
+                  and scientific names
+                </span>
+              </div>
             ) : (
               <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                {order.map((sci) => {
+                {shown.map((sci) => {
                   const e = roster[sci];
                   if (!e) return null;
                   return (

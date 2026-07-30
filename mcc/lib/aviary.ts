@@ -518,6 +518,93 @@ export function todayVisitors(
     }));
 }
 
+// --- Life-list search (issue #352) -------------------------------------------
+
+/** Does this roster entry answer the search box? Case-insensitive substring
+ * over the common AND scientific name -- `wood` finds every woodpecker,
+ * `finc` the finches, and a Latin fragment works for whoever thinks in sci
+ * names. A blank (or all-whitespace) query matches everything: the empty
+ * box IS the unfiltered grid. Substring, deliberately not initials or
+ * edit-distance fuzz -- the search's whole job is "type a fragment of the
+ * name you know", and cleverer matching surfaces birds the typist can't
+ * see the reason for. */
+export function speciesMatches(
+  e: { species_common: string; species_sci: string } | undefined,
+  query: string,
+): boolean {
+  if (!e) return false;
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    e.species_common.toLowerCase().includes(q) ||
+    e.species_sci.toLowerCase().includes(q)
+  );
+}
+
+// --- The reconciliation poll (issue #352) ------------------------------------
+//
+// The main page re-grounds itself in the store every minute: the live bus
+// ticks counts in place, but a dropped websocket replays nothing (audio/
+// events is an event topic -- nothing retained), and the mount-time midnight
+// boundary goes stale on a tab left open past it. These helpers fold a fresh
+// roster payload into the page's existing state WITHOUT reordering anything
+// the viewer is looking at -- house rule #1 is exactly why the poll can't
+// just re-run the load-time shaping.
+
+/** Fold a fresh roster into the grid's order: existing positions are kept
+ * exactly (whatever the active sort was when the viewer last clicked it),
+ * unseen species append at the end -- the same rule a live lifer follows.
+ * Never drops a key: a species missing from one payload (a removal in
+ * another tab, a store write mid-flight) keeps its tile until reload rather
+ * than vanishing under the reader. Returns `prev` itself when nothing is
+ * new, so a quiet poll is a no-op render. */
+export function reconcileOrder(
+  prev: string[],
+  entries: RosterEntry[],
+): string[] {
+  const known = new Set(prev);
+  const fresh = entries
+    .filter((e) => !known.has(e.species_sci))
+    .map((e) => e.species_sci);
+  return fresh.length === 0 ? prev : [...prev, ...fresh];
+}
+
+/** One Today's Visitors pill. */
+export type TodayTile = {
+  species_sci: string;
+  species_common: string;
+  count: number;
+};
+
+/** Fold a fresh roster into the visitors rail: pill order is preserved,
+ * counts land in place, newcomers append (most-visited first among
+ * themselves -- todayVisitors' own order, the live-append rule). A pill
+ * leaves only when the store explicitly says its species has no visits
+ * today -- which is how a midnight rollover empties the rail -- never
+ * merely because a payload omitted it (a just-minted lifer's row can trail
+ * its own bus event; unknown is not zero). */
+export function reconcileRail(
+  prev: TodayTile[],
+  entries: RosterEntry[],
+): TodayTile[] {
+  const bySci = new Map(entries.map((e) => [e.species_sci, e]));
+  const kept = prev.flatMap((t) => {
+    const e = bySci.get(t.species_sci);
+    if (!e) return [t];
+    if (e.today <= 0) return [];
+    return [
+      {
+        species_sci: e.species_sci,
+        species_common: e.species_common,
+        count: e.today,
+      },
+    ];
+  });
+  const held = new Set(kept.map((t) => t.species_sci));
+  const fresh = todayVisitors(entries.filter((e) => !held.has(e.species_sci)));
+  return [...kept, ...fresh];
+}
+
 // --- The archive hero (issue #260) -------------------------------------------
 
 export type ArchiveStats = {
