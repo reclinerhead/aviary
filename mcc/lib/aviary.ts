@@ -351,10 +351,17 @@ export type RosterEntry = {
   // for the species whose article has no such section -- an honest blank,
   // never a guess assembled from loose paragraphs.
   voice?: string | null;
-  // Which reader produced it (#317): "section" quoted from a dedicated
+  // Which reader produced it (#317, #318): "section" quoted from a dedicated
   // vocalization section, "sentences" gathered from an article that has
-  // none. NULL on a pre-#317 row, which reads as the section case.
+  // none, "adw" from Animal Diversity Web when Wikipedia said nothing at
+  // all. NULL on a pre-#317 row, which reads as the section case.
   voice_source?: string | null;
+  // Animal Diversity Web's prose and its OWN stored credit (#318). A separate
+  // pair rather than more text in `voice`, because ADW is CC BY-NC-SA and
+  // Wikipedia is CC BY-SA: the two are not licence-compatible and must never
+  // be concatenated. `voice_source === "adw"` is what says which pair is live.
+  voice_adw?: string | null;
+  voice_adw_attribution?: string | null;
   // The best recorded visit (#333) -- see bestClips. NULL when the species
   // has no clip at all (every write failed, or the files were pruned before
   // this shipped), which the page renders as the same reserved slot a
@@ -381,6 +388,47 @@ export function voiceCredit(source?: string | null): string {
   return source === "sentences"
     ? "gathered from the article · via Wikipedia"
     : "via Wikipedia";
+}
+
+/** The vocalization prose to render, paired with the credit that belongs to
+ * it (#318). NULL when the species has no sound description from any source.
+ *
+ * A PAIR, NOT A COALESCE, and that is the licensing rule made structural.
+ * Wikipedia's prose is CC BY-SA and Animal Diversity Web's is CC BY-NC-SA;
+ * they may not be merged, and each must appear under its own credit. Picking
+ * the text and picking the credit therefore have to be ONE decision -- if
+ * they were two, some future edit would eventually pair one source's prose
+ * with the other's stamp, which is a licensing failure as well as a lie.
+ *
+ * `voice_source` is the authority on which pair is live: the pass writes it
+ * as "adw" only when it actually fell through to ADW, and it never writes
+ * both texts (Wikipedia answering clears the ADW columns).
+ *
+ * ADW's credit is READ FROM THE ROW rather than built here (#184's stored-
+ * attribution rule). Wikipedia's is still derived, because both of its
+ * readers quote the same article under the same licence and what differs is
+ * only the claim being made about the text -- see voiceCredit. */
+export function voiceProse(
+  entry?: Pick<
+    RosterEntry,
+    "voice" | "voice_source" | "voice_adw" | "voice_adw_attribution"
+  > | null,
+): { text: string; credit: string } | null {
+  if (!entry) return null;
+  if (entry.voice_source === "adw" && entry.voice_adw) {
+    return {
+      text: entry.voice_adw,
+      // The stored line is the honest one. The fallback exists only for a row
+      // written before the attribution column was filled, and still names the
+      // right source rather than defaulting to Wikipedia's.
+      credit: entry.voice_adw_attribution ||
+        "via Animal Diversity Web · CC BY-NC-SA 3.0",
+    };
+  }
+  if (entry.voice) {
+    return { text: entry.voice, credit: voiceCredit(entry.voice_source) };
+  }
+  return null;
 }
 
 /** The best-sounding recording of each species (#333).

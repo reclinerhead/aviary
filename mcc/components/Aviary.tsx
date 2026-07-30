@@ -20,6 +20,7 @@ import mqtt from "mqtt/dist/mqtt.esm";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -70,7 +71,7 @@ import {
   shareOfYard,
   standingFor,
   todayVisitors,
-  voiceCredit,
+  voiceProse,
   weatherChips,
   weatherChipExplain,
   yardRecords,
@@ -2026,18 +2027,48 @@ export function SpeciesProfile({
   // re-measuring there would delete the "read less" control mid-read.
   const bodyRef = useRef<HTMLDivElement>(null);
   const [longBio, setLongBio] = useState(false);
+  // Since #318 the clamp is a MEDIA QUERY, so whether there is anything left
+  // to expand depends on the viewport as well as on the text -- and the
+  // measurement below runs on mount, which would leave a window dragged
+  // narrower than md showing visibly cut-off prose with no control to open
+  // it. Crossing the breakpoint re-runs it.
+  //
+  // Deliberately NOT an input to the first render: CSS alone decides the
+  // clamp at first paint (a matchMedia read there would render clamped and
+  // unclamp a frame later, and would differ between SSR and hydration), and
+  // this only decides whether to OFFER the toggle afterwards. The query
+  // string is the one in globals.css's .bodyclamp rule -- keep them equal.
+  //
+  // VERIFY THIS IN A REAL BROWSER. The in-app preview pane composites no
+  // frames, and both `matchMedia` change events and ResizeObserver callbacks
+  // are delivered on the rendering lifecycle -- so in that pane neither ever
+  // fires, whatever the viewport does (measured: matches flips true->false
+  // with zero change events). Reloading at each width verifies first paint
+  // there; the live crossing needs a displayed window.
+  const [breakpointMoved, setBreakpointMoved] = useState(0);
+  useEffect(() => {
+    const mq = window.matchMedia("(width < 48rem)");
+    const bump = () => setBreakpointMoved((n) => n + 1);
+    mq.addEventListener("change", bump);
+    return () => mq.removeEventListener("change", bump);
+  }, []);
   // Both tabs share the ref, the clamp, and this measurement -- only one is
   // mounted at a time, so `bodyTab` in the deps is what re-measures after a
   // switch. One clamp rule for both bodies retired #315's separate
   // VOICE_CLAMP_LINES: two clamp constants governing one block was a seam
   // waiting to drift.
-  const bodyText =
-    bodyTab === "sounds" ? entry?.voice : entry?.description;
+  //
+  // The sounds tab's prose and its credit are ONE decision (#318): Wikipedia
+  // and Animal Diversity Web are under incompatible licences, so the text and
+  // the stamp that credits it must be picked together or they will eventually
+  // drift into crediting the wrong source.
+  const prose = voiceProse(entry);
+  const bodyText = bodyTab === "sounds" ? prose?.text : entry?.description;
   useLayoutEffect(() => {
     if (bioOpen) return;
     const el = bodyRef.current;
     if (el) setLongBio(el.scrollHeight > el.clientHeight + 1);
-  }, [bodyText, clampLines, bioOpen]);
+  }, [bodyText, clampLines, bioOpen, breakpointMoved]);
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
@@ -2245,7 +2276,7 @@ export function SpeciesProfile({
                 {(
                   [
                     ["description", true],
-                    ["sounds", Boolean(entry?.voice)],
+                    ["sounds", Boolean(prose)],
                   ] as const
                 ).map(([tab, enabled]) => (
                   <button
@@ -2275,56 +2306,68 @@ export function SpeciesProfile({
                     {tab}
                   </button>
                 ))}
-                {/* CC BY-SA wants the credit, and since #317 the stamp also
-                    says WHICH reader found the text so gathered lines are
-                    never mistaken for the article's own considered
-                    paragraph. It rides the tab row, which has a fixed
+                {/* Every licence here wants the credit, and since #317 the
+                    stamp also says WHICH reader found the text so gathered
+                    lines are never mistaken for the article's own considered
+                    paragraph. Since #318 it may name Animal Diversity Web
+                    and its CC BY-NC-SA licence instead: the credit comes
+                    from voiceProse alongside the very text being shown, so
+                    the panel cannot stamp one source's prose with another
+                    source's licence. It rides the tab row, which has a fixed
                     height -- so it appearing with the tab moves nothing. */}
-                {bodyTab === "sounds" && entry?.voice && (
+                {bodyTab === "sounds" && prose && (
                   <span className="stamp ml-auto shrink-0 pb-1.5 text-[9px] text-inkfaint">
-                    {voiceCredit(entry.voice_source)}
+                    {prose.credit}
                   </span>
                 )}
               </nav>
               {bodyText ? (
                 <>
-                  {/* Clamped by default (#196, the ArtistView bio pattern):
-                      Wikipedia's lead runs four or five paragraphs, which
-                      buried the chart and the field notes below the fold and
-                      is more encyclopedia than anyone asked for. It is also
-                      what makes the backdrop legible -- a short block of
-                      prose over softened art reads where five paragraphs
-                      would not. The float keeps the photo beside it either
-                      way, so expanding grows the hero and shifts nothing
-                      above it. The vocalization prose earns the same clamp
-                      for the same reason: unclamped, the Carolina Wren's
-                      section alone runs 965px. */}
+                  {/* Clamped BELOW md (#196, breakpointed by #318): on a
+                      phone Wikipedia's lead runs four or five paragraphs,
+                      which buried the chart and the field notes below the
+                      fold and is more encyclopedia than anyone asked for.
+                      It is also what makes the backdrop legible there -- a
+                      short block of prose over softened art reads where five
+                      paragraphs would not. The vocalization prose earns the
+                      same clamp for the same reason: unclamped, the Carolina
+                      Wren's section alone runs 965px. On a laptop none of
+                      that bites and the whole article fits, so the clamp
+                      lifts entirely rather than spending the room on a
+                      control. The float keeps the photo beside the prose at
+                      every width, so expanding grows the hero and shifts
+                      nothing above it. */}
                   <div
                     ref={bodyRef}
-                    className="space-y-2.5 text-sm leading-relaxed text-inkdim"
-                    // Inline rather than a line-clamp-N class: the count is
-                    // per-species, and Tailwind can only emit classes it can
-                    // see in the source.
+                    className={`space-y-2.5 text-sm leading-relaxed text-inkdim${
+                      bioOpen ? "" : " bodyclamp"
+                    }`}
+                    // The count is per-species, and Tailwind can only emit
+                    // classes it can see in the source -- so it rides in as a
+                    // custom property that .bodyclamp reads. The clamp itself
+                    // lives in globals.css because since #318 it applies
+                    // BELOW md only, and a media query cannot be expressed in
+                    // an inline style (which would outrank a `md:` class
+                    // anyway). Handing the number over even when open costs
+                    // nothing and keeps one source of truth for it.
                     style={
-                      bioOpen
-                        ? undefined
-                        : {
-                            display: "-webkit-box",
-                            WebkitBoxOrient: "vertical",
-                            WebkitLineClamp: clampLines,
-                            overflow: "hidden",
-                          }
+                      { "--clamp-lines": clampLines } as CSSProperties
                     }
                   >
                     {bodyText.split(/\n+/).map((para, i) => (
                       <p key={i}>{para}</p>
                     ))}
                   </div>
+                  {/* At md and up the block is never clamped, so `longBio`
+                      already measures false and this does not render at all.
+                      `md:hidden` is the belt to those braces: a control that
+                      expands nothing must not be able to appear on a wide
+                      viewport, whatever a stale measurement thinks. */}
                   {longBio && (
                     <button
                       type="button"
                       onClick={() => setBioOpen((o) => !o)}
-                      className="mt-1.5 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright"
+                      className="mt-1.5 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright md:hidden"
                     >
                       {bioOpen ? "read less" : "read more"}
                     </button>

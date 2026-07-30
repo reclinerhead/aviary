@@ -245,6 +245,30 @@ body {
   text-transform: uppercase;
 }
 
+/* The species hero's body clamp (#196, breakpointed by #318).
+   NARROW VIEWPORTS ONLY. On a laptop or desktop there is plenty of vertical
+   room, and spending it on a "read more" control instead of on prose is a
+   worse trade than the scroll it saves; below md the clamp still earns its
+   keep, because there the unclamped Wikipedia lead really does bury the
+   chart and the field notes under it.
+   The line count is PER-SPECIES -- computed from the portrait's aspect ratio
+   so the prose fills ~75% of the photo's height -- which is why it arrives as
+   an inline custom property instead of a line-clamp-N utility: Tailwind can
+   only emit classes it can see in the source. That inline style is also why
+   the breakpoint has to live here and not in a `md:` variant, since an inline
+   declaration outranks any class.
+   IT MUST BE CSS, not a matchMedia read: the browser knows the viewport at
+   first paint, whereas JS would render clamped and unclamp a frame later --
+   house rule #1 broken in miniature. */
+@media (width < 48rem) {
+  .bodyclamp {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--clamp-lines);
+    overflow: hidden;
+  }
+}
+
 /* The journal lightbox (issue #96) -- yet-another-react-lightbox reskinned
    as the station's own darkroom. The backdrop is near-opaque pine-black (a
    whisper of translucency lets the topo contours ghost through, the station-
