@@ -48,6 +48,16 @@
      target of 12 -- blue is the safest hue this palette could have grown. */
   --rain: #6bb6e5;
 
+  /* Willard's voice ink (issue #92). A muted slate-sky blue for the weather
+     man's Field Journal treatment (name stamp + entry rail) -- weather = sky,
+     and hue alone carries identity (body prose stays --ink, same house rule
+     as #89). Distinct from --rain (#6bb6e5): rain names the *measurement*
+     (precip bars); this names the *voice*. Darker and less chromatic so the
+     stamp reads as attribution, not as a rain mark, and still clears contrast
+     on --panel for the 11px stamp face. Never a species color, never --led
+     (live), never --chipmunk (alarm). */
+  --sky: #7a9eb8;
+
   /* Aviary ink (issue #185). The palette's SECOND non-species accent, and it
      follows --rain's rule rather than breaking it: species colors are the
      vision stack's literal box colors and mean "this species", while this
@@ -81,6 +91,7 @@
   --color-turkey: var(--turkey);
   --color-led: var(--led);
   --color-rain: var(--rain);
+  --color-sky: var(--sky);
   --color-wing: var(--wing);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);

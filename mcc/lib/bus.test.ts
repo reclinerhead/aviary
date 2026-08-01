@@ -236,12 +236,16 @@ describe("statusTopicId", () => {
 });
 
 describe("voiceColor", () => {
-  it("art-directs the named cast: warm host, khaki field man", () => {
+  it("art-directs the named cast: warm host, khaki field man, sky weather man", () => {
     expect(voiceColor("Marlin")).toBe("var(--squirrel)");
     expect(voiceColor("Jim")).toBe("var(--turkey)");
+    // Willard (issue #92): muted sky, not rain/precip and not a species accent.
+    expect(voiceColor("Willard")).toBe("var(--sky)");
   });
   it("keeps the cast visually distinct", () => {
     expect(voiceColor("Marlin")).not.toBe(voiceColor("Jim"));
+    expect(voiceColor("Willard")).not.toBe(voiceColor("Marlin"));
+    expect(voiceColor("Willard")).not.toBe(voiceColor("Jim"));
   });
   it("gives a guest voice a stable color from the palette", () => {
     const guest = voiceColor("Rover");

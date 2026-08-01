@@ -237,16 +237,19 @@ export function mergeJournals(
     .slice(-limit);
 }
 
-/** Voice colors (issue #89 follow-up): a stable accent per narrator so the
- * Field Journal's back-and-forth reads at a glance -- worn by the name stamp
+/** Voice colors (issue #89 follow-up, Willard in #92): a stable accent per
+ * on-air voice so attribution reads at a glance -- worn by the name stamp
  * and the entry rail, never the body text (the voice stays ink; hue carries
  * identity, intensity carries recency). The named cast is art-directed --
- * the host warm squirrel-orange, the field man turkey-khaki -- and any
- * future guest voice gets a deterministic pick from the same palette (led
- * last: it moonlights as the live/newest signal elsewhere in the panel). */
+ * the host warm squirrel-orange, the field man turkey-khaki, Willard the
+ * weather man muted sky-blue (--sky, distinct from --rain's precip ink) --
+ * and any future guest voice gets a deterministic pick from the species/
+ * live palette (led last: it moonlights as the live/newest signal
+ * elsewhere in the panel; chipmunk is alarm-adjacent, so guests only). */
 const CAST_COLORS: Record<string, string> = {
   Marlin: "var(--squirrel)",
   Jim: "var(--turkey)",
+  Willard: "var(--sky)",
 };
 const VOICE_PALETTE = [
   "var(--squirrel)",
