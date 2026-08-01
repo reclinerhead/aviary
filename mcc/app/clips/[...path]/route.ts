@@ -13,6 +13,21 @@
 // filesystem could interpret. The guard exists because the route's path
 // arrives from a URL, not from Earl.
 //
+// RANGE REQUESTS ARE LOAD-BEARING (#377): WebKit probes <audio> sources with
+// `Range: bytes=0-1` and refuses to play anything that answers 200-with-full-
+// body -- which made every clip on an iPhone/iPad "faded" while desktop
+// engines shrugged. So this route speaks RFC 7233: single byte ranges get a
+// 206 + Content-Range, unsatisfiable ones a 416, everything else the full
+// 200 -- now with Content-Length and Accept-Ranges, so the engine can learn
+// the media's size instead of a chunked stream of unknown length. The
+// parsing lives in lib/aviary.ts (parseRange) with the tests; this stays a
+// thin file-server over it.
+//
+// Known race, accepted: a visit-best rewrite (#175) can replace the file
+// between two range requests of one playback and mix takes. The old chunked
+// streaming had the same window mid-stream; clips are ~9 s and rewrites are
+// rare. If-Range/ETag is the escalation if it ever audibly bites.
+//
 // Cache: NO-STORE, decided here (#183 left it open) -- a clip path's bytes
 // DO change: a window beating the visit's best confidence rewrites the
 // visit's clip in place (#175), so a play during an open visit followed by
@@ -23,10 +38,16 @@
 
 import { promises as fs } from "fs";
 import path from "path";
-import { clipRelPath } from "@/lib/aviary";
+import { clipRelPath, parseRange } from "@/lib/aviary";
+
+const BASE_HEADERS = {
+  "content-type": "audio/wav",
+  "cache-control": "no-store",
+  "accept-ranges": "bytes",
+};
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ path: string[] }> },
 ) {
   const { path: parts } = await ctx.params;
@@ -40,10 +61,35 @@ export async function GET(
   } catch {
     return new Response(null, { status: 404 }); // pruned, or never written
   }
-  return new Response(new Uint8Array(bytes), {
+
+  const total = bytes.byteLength;
+  const range = parseRange(req.headers.get("range"), total);
+
+  if (range === "unsatisfiable")
+    return new Response(null, {
+      status: 416,
+      headers: { ...BASE_HEADERS, "content-range": `bytes */${total}` },
+    });
+
+  if (range === null)
+    return new Response(new Uint8Array(bytes), {
+      headers: { ...BASE_HEADERS, "content-length": String(total) },
+    });
+
+  // A view, not a copy -- byteOffset because fs may hand back a Buffer into
+  // a shared pool whose view doesn't start at 0.
+  const length = range.end - range.start + 1;
+  const body = new Uint8Array(
+    bytes.buffer,
+    bytes.byteOffset + range.start,
+    length,
+  );
+  return new Response(body, {
+    status: 206,
     headers: {
-      "content-type": "audio/wav",
-      "cache-control": "no-store",
+      ...BASE_HEADERS,
+      "content-length": String(length),
+      "content-range": `bytes ${range.start}-${range.end}/${total}`,
     },
   });
 }

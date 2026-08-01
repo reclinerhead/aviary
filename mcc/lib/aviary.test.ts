@@ -33,6 +33,7 @@ import {
   nextBefore,
   parseBefore,
   parseLimit,
+  parseRange,
   parseSince,
   parseSpeciesFilter,
   portraitAspect,
@@ -472,6 +473,51 @@ describe("parseLimit", () => {
   });
   it("truncates a fractional ask", () => {
     expect(parseLimit("25.9")).toBe(25);
+  });
+});
+
+describe("parseRange (#377)", () => {
+  // A 100-byte file; ranges are INCLUSIVE both ends (RFC 7233).
+  const SIZE = 100;
+
+  it("absence means no range -- the plain 200 path", () => {
+    expect(parseRange(null, SIZE)).toBeNull();
+  });
+  it("parses the WebKit probe that motivated the whole function", () => {
+    expect(parseRange("bytes=0-1", SIZE)).toEqual({ start: 0, end: 1 });
+  });
+  it("open-ended start-to-EOF", () => {
+    expect(parseRange("bytes=40-", SIZE)).toEqual({ start: 40, end: 99 });
+  });
+  it("suffix range takes the LAST n bytes", () => {
+    expect(parseRange("bytes=-30", SIZE)).toEqual({ start: 70, end: 99 });
+    // A suffix longer than the file is the whole file, not an error.
+    expect(parseRange("bytes=-500", SIZE)).toEqual({ start: 0, end: 99 });
+  });
+  it("clamps an end past EOF -- asking long is fine", () => {
+    expect(parseRange("bytes=90-150", SIZE)).toEqual({ start: 90, end: 99 });
+  });
+  it("the exact last byte", () => {
+    expect(parseRange("bytes=99-99", SIZE)).toEqual({ start: 99, end: 99 });
+  });
+  it("start at or past EOF is unsatisfiable -> 416", () => {
+    expect(parseRange("bytes=100-", SIZE)).toBe("unsatisfiable");
+    expect(parseRange("bytes=500-600", SIZE)).toBe("unsatisfiable");
+  });
+  it("an empty file satisfies nothing", () => {
+    expect(parseRange("bytes=0-0", 0)).toBe("unsatisfiable");
+    expect(parseRange("bytes=-5", 0)).toBe("unsatisfiable");
+  });
+  it("a zero-length suffix names no byte -> 416", () => {
+    expect(parseRange("bytes=-0", SIZE)).toBe("unsatisfiable");
+  });
+  it("malformed or exotic asks are ignored, never honored wrong", () => {
+    expect(parseRange("bytes=-", SIZE)).toBeNull(); // both ends empty
+    expect(parseRange("bytes=5-2", SIZE)).toBeNull(); // end before start
+    expect(parseRange("bytes=0-1,5-6", SIZE)).toBeNull(); // multi-range
+    expect(parseRange("items=0-1", SIZE)).toBeNull(); // non-byte units
+    expect(parseRange("bytes=one-two", SIZE)).toBeNull();
+    expect(parseRange("", SIZE)).toBeNull();
   });
 });
 
