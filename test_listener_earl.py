@@ -206,17 +206,20 @@ def test_source_commands_dispatches_on_kind_never_name(monkeypatch, tmp_path):
 
 
 def test_source_commands_shipped_registry_runs_the_house(monkeypatch):
-    """The default path is the repo's own feeds.yml -- both cameras and the
-    rover, every rtsp pull carrying the stall bar (issue #201's layer 1)."""
+    """The default path is the repo's own feeds.yml -- the two camera ears,
+    every rtsp pull carrying the stall bar (issue #201's layer 1). The rover
+    is deliberately ABSENT since #375: its mic belongs to Field Mode, and
+    the tailnet ended the era when distance freed the single-open device --
+    an Earl pull follows the rover onto a park hotspot and starves the field
+    session. The feed itself stays declared with its keepalives; that guard
+    lives in test_feeds.py, beside the data it protects."""
     monkeypatch.delenv("MERLE_FEEDS", raising=False)
     commands = earl.source_commands()
-    assert set(commands) == {"house-rear", "house-front", "rover"}
+    assert set(commands) == {"house-rear", "house-front"}
+    assert "rover" not in commands           # the #375 contract, stated
     for name in ("house-rear", "house-front"):
         argv, _ = commands[name]
         assert "-timeout" in argv
-    rover_argv, _ = commands["rover"]
-    assert "ServerAliveInterval=5" in rover_argv          # #201's layer 2
-    assert "ServerAliveCountMax=3" in rover_argv
 
 
 def test_source_commands_empty_roster_fails_loud(monkeypatch, tmp_path):

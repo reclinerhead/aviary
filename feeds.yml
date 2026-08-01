@@ -58,10 +58,18 @@ feeds:
   # ServerAlive pair are load-bearing (issue #201): merle powering down
   # mid-capture half-opens the TCP, and without them ssh waits on the
   # kernel's ~2-hour keepalive instead of exiting in ~15s.
+  #
+  # earl: false since #375 -- the rover's mic belongs to Field Mode now
+  # (#233). The device is single-open, and distance stopped freeing it the
+  # day the fleet joined the tailnet: MagicDNS resolves `merle` to its
+  # tailnet address, so this ssh pull follows the rover onto a park hotspot
+  # and holds plughw:0,0 there -- a field session then records NOTHING
+  # (measured 2026-08-01, twice). Flip back to true for a driveway era when
+  # the rover should be a third house ear again.
   rover:
     kind: command
     cmd: >-
       ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5
       -o ServerAliveCountMax=3 todd@merle
       arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw -q
-    earl: true
+    earl: false
