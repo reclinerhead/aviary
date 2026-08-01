@@ -172,6 +172,33 @@ export function enhancedClipUrl(rel: string): string | null {
   return enh === null ? null : clipUrl(enh);
 }
 
+/** The playback gain steps (issue #189): unity up to the 8x rescue setting.
+ * Steps, not a slider -- the nameplate idiom is discrete states at fixed
+ * widths, and "normal / louder / much louder / rescue the finch" is the
+ * whole decision space. Above unity is the point: many real clips are very
+ * faint (measured: sighting 107 at rms 0.019), and an attenuator-only
+ * volume control cannot help them. */
+export const GAIN_STEPS = [1, 2, 4, 8] as const;
+
+/** A stored or proposed gain value, snapped to the nearest legal step.
+ *
+ * This is the localStorage boundary: the persisted string may be garbage
+ * (hand-edited, an old format, another tab's future idea of the range), and
+ * whatever comes back must land on a step the control can render as
+ * selected -- an off-step value would leave the nameplate showing four
+ * unlit buttons, a control asserting no state at all. Unparseable or
+ * non-positive input reads as unity, the do-no-harm default; a tie between
+ * two steps rounds DOWN, toward the quieter one. */
+export function coerceGain(raw: string | number | null): number {
+  const n = typeof raw === "number" ? raw : raw === null ? NaN : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  let best: number = GAIN_STEPS[0];
+  for (const step of GAIN_STEPS) {
+    if (Math.abs(step - n) < Math.abs(best - n)) best = step;
+  }
+  return best;
+}
+
 // --- The portrait route's name guard ----------------------------------------
 
 // Mirror of species_profile.image_filename's scrub, byte-for-byte: the pass
@@ -347,13 +374,141 @@ export type RosterEntry = {
   // fixed-box fallback rather than assuming a ratio.
   image_w?: number | null;
   image_h?: number | null;
+  // What it sounds like (#315): the article's vocalization section, or NULL
+  // for the species whose article has no such section -- an honest blank,
+  // never a guess assembled from loose paragraphs.
+  voice?: string | null;
+  // Which reader produced it (#317, #318): "section" quoted from a dedicated
+  // vocalization section, "sentences" gathered from an article that has
+  // none, "adw" from Animal Diversity Web when Wikipedia said nothing at
+  // all. NULL on a pre-#317 row, which reads as the section case.
+  voice_source?: string | null;
+  // Animal Diversity Web's prose and its OWN stored credit (#318). A separate
+  // pair rather than more text in `voice`, because ADW is CC BY-NC-SA and
+  // Wikipedia is CC BY-SA: the two are not licence-compatible and must never
+  // be concatenated. `voice_source === "adw"` is what says which pair is live.
+  voice_adw?: string | null;
+  voice_adw_attribution?: string | null;
+  // The best recorded visit (#333) -- see bestClips. NULL when the species
+  // has no clip at all (every write failed, or the files were pruned before
+  // this shipped), which the page renders as the same reserved slot a
+  // clip-less first contact already uses.
+  best_clip?: string | null;
+  best_confidence?: number | null;
+  best_ts?: number | null;
 };
 
-/** life_list rows + raw sighting (species, ts) pairs -> the roster the grid
- * renders. Species-common order for determinism; the client owns the sort
- * control. A life_list species with no sighting rows (shouldn't happen --
- * the same insert writes both -- but a hand-edited store is a store) tallies
- * honestly at zero. */
+/** The credit line under the "What It Sounds Like" panel (#317).
+ *
+ * Both readers take CC BY-SA prose from the same article, so the licence
+ * credit is identical -- what differs is the claim we are making about the
+ * text. A dedicated section is the article's own account of the bird, quoted
+ * whole; the fallback is lines gathered from across an article that never
+ * set out to describe a sound. Saying so is the same honesty the portrait
+ * attribution already practises, and it is what stops a reader taking
+ * assembled sentences for an encyclopedia's considered paragraph.
+ *
+ * An unknown or missing source reads as the section case: pre-#317 rows are
+ * all sections by construction, and over-claiming "gathered" about a genuine
+ * section would be its own small lie. */
+export function voiceCredit(source?: string | null): string {
+  return source === "sentences"
+    ? "gathered from the article · via Wikipedia"
+    : "via Wikipedia";
+}
+
+/** The vocalization prose to render, paired with the credit that belongs to
+ * it (#318). NULL when the species has no sound description from any source.
+ *
+ * A PAIR, NOT A COALESCE, and that is the licensing rule made structural.
+ * Wikipedia's prose is CC BY-SA and Animal Diversity Web's is CC BY-NC-SA;
+ * they may not be merged, and each must appear under its own credit. Picking
+ * the text and picking the credit therefore have to be ONE decision -- if
+ * they were two, some future edit would eventually pair one source's prose
+ * with the other's stamp, which is a licensing failure as well as a lie.
+ *
+ * `voice_source` is the authority on which pair is live: the pass writes it
+ * as "adw" only when it actually fell through to ADW, and it never writes
+ * both texts (Wikipedia answering clears the ADW columns).
+ *
+ * ADW's credit is READ FROM THE ROW rather than built here (#184's stored-
+ * attribution rule). Wikipedia's is still derived, because both of its
+ * readers quote the same article under the same licence and what differs is
+ * only the claim being made about the text -- see voiceCredit. */
+export function voiceProse(
+  entry?: Pick<
+    RosterEntry,
+    "voice" | "voice_source" | "voice_adw" | "voice_adw_attribution"
+  > | null,
+): { text: string; credit: string } | null {
+  if (!entry) return null;
+  if (entry.voice_source === "adw" && entry.voice_adw) {
+    return {
+      text: entry.voice_adw,
+      // The stored line is the honest one. The fallback exists only for a row
+      // written before the attribution column was filled, and still names the
+      // right source rather than defaulting to Wikipedia's.
+      credit: entry.voice_adw_attribution ||
+        "via Animal Diversity Web · CC BY-NC-SA 3.0",
+    };
+  }
+  if (entry.voice) {
+    return { text: entry.voice, credit: voiceCredit(entry.voice_source) };
+  }
+  return null;
+}
+
+/** The best-sounding recording of each species (#333).
+ *
+ * Earl has curated this since #175 and nothing ever showed it: a window that
+ * beats its visit's best REWRITES that visit's clip in place, so every clip
+ * file already holds the best moment of its visit. What was missing was a way
+ * to pick the best VISIT -- and measured on pearl, for every top species the
+ * best-confidence visit is not the first one (American Goldfinch 0.65-0.98
+ * over 636 visits), so "first contact" was frequently a mediocre take while a
+ * near-perfect one sat on disk unreachable.
+ *
+ * Ranked by the STORED confidence, which is the visit's OPENING window --
+ * `sightings` is append-only and a visit's true peak lives only in the
+ * journal (#175's accepted trade-off). So this is honestly "the best recorded
+ * visit", not "the highest-confidence window ever": a visit that opened at
+ * 0.80 and peaked at 0.90 can lose to one that opened at 0.85 and never
+ * improved. The clip the listener actually hears is best-of-visit either way,
+ * which is why option A beat adding an UPDATE path to an append-only store.
+ *
+ * A clip-less row can never win: a failed clip write is an honest gap, and
+ * crowning it would hand the page a confident number attached to silence. */
+export function bestClips(
+  rows: {
+    species_sci: string;
+    ts: number;
+    confidence?: number;
+    clip?: string | null;
+  }[],
+): Record<string, { clip: string; confidence: number; ts: number }> {
+  const out: Record<string, { clip: string; confidence: number; ts: number }> =
+    {};
+  for (const r of rows) {
+    if (!r.clip || typeof r.confidence !== "number") continue;
+    const best = out[r.species_sci];
+    // Strictly greater, so a tie keeps the EARLIER take (rows arrive ts-
+    // ordered): given two equally good recordings, the older one has already
+    // survived a retention sweep the newer one hasn't faced.
+    if (!best || r.confidence > best.confidence)
+      out[r.species_sci] = { clip: r.clip, confidence: r.confidence, ts: r.ts };
+  }
+  return out;
+}
+
+/** life_list rows + raw sighting rows -> the roster the grid renders.
+ * Species-common order for determinism; the client owns the sort control. A
+ * life_list species with no sighting rows (shouldn't happen -- the same
+ * insert writes both -- but a hand-edited store is a store) tallies honestly
+ * at zero.
+ *
+ * `confidence`/`clip` are optional on the row type (#333): the tally only
+ * ever needed (species, ts), and keeping them optional means a caller that
+ * selects the narrow shape still type-checks and simply gets no best clip. */
 export function shapeRoster(
   lifeRows: {
     species_sci: string;
@@ -362,16 +517,27 @@ export function shapeRoster(
     first_source: string;
     first_clip: string | null;
   }[],
-  sightingRows: { species_sci: string; ts: number }[],
+  sightingRows: {
+    species_sci: string;
+    ts: number;
+    confidence?: number;
+    clip?: string | null;
+  }[],
   todayStart: number | null,
 ): RosterEntry[] {
   const tallies = tallyVisits(sightingRows, todayStart);
+  // One extra walk of rows the tally already had in hand -- no second query,
+  // no second scan of the store.
+  const best = bestClips(sightingRows);
   return lifeRows
     .map((r) => ({
       ...r,
       visits: tallies[r.species_sci]?.visits ?? 0,
       today: tallies[r.species_sci]?.today ?? 0,
       week: tallies[r.species_sci]?.week ?? 0,
+      best_clip: best[r.species_sci]?.clip ?? null,
+      best_confidence: best[r.species_sci]?.confidence ?? null,
+      best_ts: best[r.species_sci]?.ts ?? null,
     }))
     .sort((a, b) => a.species_common.localeCompare(b.species_common));
 }
@@ -425,6 +591,93 @@ export function todayVisitors(
       species_common: e.species_common,
       count: e.today,
     }));
+}
+
+// --- Life-list search (issue #352) -------------------------------------------
+
+/** Does this roster entry answer the search box? Case-insensitive substring
+ * over the common AND scientific name -- `wood` finds every woodpecker,
+ * `finc` the finches, and a Latin fragment works for whoever thinks in sci
+ * names. A blank (or all-whitespace) query matches everything: the empty
+ * box IS the unfiltered grid. Substring, deliberately not initials or
+ * edit-distance fuzz -- the search's whole job is "type a fragment of the
+ * name you know", and cleverer matching surfaces birds the typist can't
+ * see the reason for. */
+export function speciesMatches(
+  e: { species_common: string; species_sci: string } | undefined,
+  query: string,
+): boolean {
+  if (!e) return false;
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    e.species_common.toLowerCase().includes(q) ||
+    e.species_sci.toLowerCase().includes(q)
+  );
+}
+
+// --- The reconciliation poll (issue #352) ------------------------------------
+//
+// The main page re-grounds itself in the store every minute: the live bus
+// ticks counts in place, but a dropped websocket replays nothing (audio/
+// events is an event topic -- nothing retained), and the mount-time midnight
+// boundary goes stale on a tab left open past it. These helpers fold a fresh
+// roster payload into the page's existing state WITHOUT reordering anything
+// the viewer is looking at -- house rule #1 is exactly why the poll can't
+// just re-run the load-time shaping.
+
+/** Fold a fresh roster into the grid's order: existing positions are kept
+ * exactly (whatever the active sort was when the viewer last clicked it),
+ * unseen species append at the end -- the same rule a live lifer follows.
+ * Never drops a key: a species missing from one payload (a removal in
+ * another tab, a store write mid-flight) keeps its tile until reload rather
+ * than vanishing under the reader. Returns `prev` itself when nothing is
+ * new, so a quiet poll is a no-op render. */
+export function reconcileOrder(
+  prev: string[],
+  entries: RosterEntry[],
+): string[] {
+  const known = new Set(prev);
+  const fresh = entries
+    .filter((e) => !known.has(e.species_sci))
+    .map((e) => e.species_sci);
+  return fresh.length === 0 ? prev : [...prev, ...fresh];
+}
+
+/** One Today's Visitors pill. */
+export type TodayTile = {
+  species_sci: string;
+  species_common: string;
+  count: number;
+};
+
+/** Fold a fresh roster into the visitors rail: pill order is preserved,
+ * counts land in place, newcomers append (most-visited first among
+ * themselves -- todayVisitors' own order, the live-append rule). A pill
+ * leaves only when the store explicitly says its species has no visits
+ * today -- which is how a midnight rollover empties the rail -- never
+ * merely because a payload omitted it (a just-minted lifer's row can trail
+ * its own bus event; unknown is not zero). */
+export function reconcileRail(
+  prev: TodayTile[],
+  entries: RosterEntry[],
+): TodayTile[] {
+  const bySci = new Map(entries.map((e) => [e.species_sci, e]));
+  const kept = prev.flatMap((t) => {
+    const e = bySci.get(t.species_sci);
+    if (!e) return [t];
+    if (e.today <= 0) return [];
+    return [
+      {
+        species_sci: e.species_sci,
+        species_common: e.species_common,
+        count: e.today,
+      },
+    ];
+  });
+  const held = new Set(kept.map((t) => t.species_sci));
+  const fresh = todayVisitors(entries.filter((e) => !held.has(e.species_sci)));
+  return [...kept, ...fresh];
 }
 
 // --- The archive hero (issue #260) -------------------------------------------
@@ -1207,4 +1460,14 @@ export function dayAnchor(value: string): number | null {
   date.setDate(date.getDate() + 1);
   date.setHours(0, 0, 0, 0); // re-floor: DST days are 23h or 25h
   return Math.floor(date.getTime() / 1000) - 1;
+}
+
+
+/** The masthead's second line, station-aware (#304, epic #212): a remote
+ * station says whose yard it is; at home (no name configured) the line is
+ * byte-for-byte the one the Aviary has always worn. Blank and whitespace
+ * collapse to home -- half-configured is not a third voice. */
+export function mastheadSub(stationName?: string | null): string {
+  const name = (stationName ?? "").trim();
+  return `${name || "earl with the ears"} · every bird the yard has announced`;
 }

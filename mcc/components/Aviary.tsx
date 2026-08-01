@@ -20,6 +20,7 @@ import mqtt from "mqtt/dist/mqtt.esm";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -44,9 +45,12 @@ import {
   RosterEntry,
   SortDir,
   SortKey,
+  TodayTile,
   Visit,
+  GAIN_STEPS,
   archiveStats,
   clipUrl,
+  coerceGain,
   enhancedClipUrl,
   collapseVisits,
   cropPosition,
@@ -59,12 +63,17 @@ import {
   parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
+  reconcileOrder,
+  reconcileRail,
   rhythmStrip,
+  mastheadSub,
   rivalLine,
   rosterOrder,
+  speciesMatches,
   shareOfYard,
   standingFor,
   todayVisitors,
+  voiceProse,
   weatherChips,
   weatherChipExplain,
   yardRecords,
@@ -84,7 +93,6 @@ const ARCHIVE_PAGE = 100;
 
 type TickerEvent = AudioEvent & { key: string };
 type ArchiveRow = BirdEvent & { key: string };
-type TodayTile = { species_sci: string; species_common: string; count: number };
 
 // --- Formatting (locale-side -- the audio namespace is epoch end to end) ----
 
@@ -280,10 +288,25 @@ function TickerThumb({
 type ClipPlayer = {
   playing: string | null;
   faded: ReadonlySet<string>;
+  // Clips proven to have no `-enh` sibling (#331), learned the only way the
+  // pass allows: by asking for one and being 404'd. See `rawOnly` in the hook.
+  rawOnly: ReadonlySet<string>;
   enhanced: boolean;
   setEnhanced: (on: boolean) => void;
+  // Makeup gain (#189): one of GAIN_STEPS, applied to whatever plays next
+  // AND to whatever is playing now -- loudness is a listening-session knob,
+  // not a per-clip property, so it acts immediately where the raw/enh switch
+  // deliberately waits for the next clip.
+  gain: number;
+  setGain: (v: number) => void;
   toggle: (clip: string) => void;
 };
+
+// Where the gain step sleeps between sessions (#189). One key for the whole
+// Aviary on purpose: the three views each own a player instance, but "my
+// speakers, my room, my ears" is one fact -- a boost chosen on the dashboard
+// should greet you on the archive.
+const GAIN_KEY = "aviary.clip-gain";
 
 /** One shared <audio> per view: clicking a second clip stops the first
  * (two yards' worth of birdsong at once is noise, not data). A clip that
@@ -302,7 +325,24 @@ type ClipPlayer = {
  * Every key here -- `playing`, `faded`, `pending` -- is the RAW clip path,
  * never the sibling. Rows are identified by the recording, not by which
  * rendering of it happened to play, so flipping the mode mid-session can't
- * strand a lit button or double-mark a faded one. */
+ * strand a lit button or double-mark a faded one.
+ *
+ * MAKEUP GAIN (issue #189). The element's own volume only attenuates, and
+ * the complaint is the opposite one: a finch at rms 0.019 under a passing
+ * plane needs boosting ABOVE unity. So the element's output is routed
+ * through a WebAudio graph -- MediaElementSource -> GainNode -> a
+ * compressor leaned on as a limiter -> destination. The element itself
+ * stays: it keeps streaming, seeking, and the whole error/fallback path
+ * above untouched; only where its sound goes changes. The graph is built
+ * exactly once, around the element, at the same moment the element is born
+ * -- inside `toggle`, a click handler -- because an AudioContext created
+ * outside a user gesture starts suspended and stays there (autoplay
+ * policy), and because `createMediaElementSource` is a one-way, once-only
+ * claim on the element: the src-swapping retry in `start` must flow through
+ * the SAME graph, never occasion a new one. The limiter is the price of
+ * offering 8x at all -- a loud clip under full boost would otherwise hard-
+ * clip, and insurance here is a few lines. The setting persists to
+ * localStorage because someone who needs 4x needs it every session. */
 function useClipPlayer(): ClipPlayer {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playingRef = useRef<string | null>(null);
@@ -310,11 +350,38 @@ function useClipPlayer(): ClipPlayer {
   // signals identifiable -- see the note in `start`.
   const attemptRef = useRef<AbortController | null>(null);
   const enhancedRef = useRef(true);
+  // The gain rides refs alongside its state for the same reason `enhanced`
+  // does: `toggle` and the graph must read the current value without
+  // subscribing the callbacks to it.
+  const ctxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const gainRef = useRef(1);
   const [playing, setPlaying] = useState<string | null>(null);
   const [faded, setFaded] = useState<ReadonlySet<string>>(new Set());
+  // Issue #331: the fallback below already discovers that a clip has no
+  // enhanced sibling -- it just used to throw that away, so the control kept
+  // saying ENH while raw audio played. For weeks that made a completely idle
+  // enhancement pipeline look like a working feature (pearl had siblings for
+  // 3.3% of its clips and nobody could tell by listening). Remembering the
+  // answer is the whole fix; a control that reports a state the system is not
+  // in is worse than one that admits it doesn't have the goods.
+  const [rawOnly, setRawOnly] = useState<ReadonlySet<string>>(new Set());
   // Default ON: a faint bird under a plane is the case that motivated the
   // pass, and the raw clip is one click away for the A/B.
   const [enhanced, setEnhancedState] = useState(true);
+  const [gain, setGainState] = useState(1);
+
+  // The persisted gain lands post-mount, not in the initializer: this is a
+  // client component but Next still renders it once on the server, where
+  // there is no localStorage and the initializer would bake in a different
+  // answer than the browser's -- a hydration mismatch. Unity first paint,
+  // then the stored step lands in the control's fixed geometry (content
+  // change, not layout -- the counts-land-in-place rule).
+  useEffect(() => {
+    const stored = coerceGain(localStorage.getItem(GAIN_KEY));
+    gainRef.current = stored;
+    setGainState(stored);
+  }, []);
 
   const stop = useCallback((clip: string | null) => {
     playingRef.current = clip;
@@ -348,7 +415,14 @@ function useClipPlayer(): ClipPlayer {
         if (enh !== null) {
           // No sibling for this one. Fall back quietly -- an un-enhanced clip
           // is not an error, it's a clip the pass hasn't reached yet. This
-          // silent retry IS the existence check (see the hook's note).
+          // silent retry IS the existence check (see the hook's note), and
+          // #331 is simply that we now REMEMBER the answer instead of
+          // discarding it: the audio stays uninterrupted, the label stops
+          // lying. Since #325 enhances on a 5-15 minute tick, a clip lands
+          // here mostly in the window before its first pass -- a normal,
+          // recurring state, which is exactly why it deserves honest chrome
+          // rather than an error.
+          setRawOnly((prev) => new Set(prev).add(clip));
           start(a, clip, false);
           return;
         }
@@ -371,7 +445,37 @@ function useClipPlayer(): ClipPlayer {
         a = new Audio();
         a.addEventListener("ended", () => stop(null));
         audioRef.current = a;
+        // First gesture, only chance (#189): build the graph here or never.
+        // Element -> gain -> limiter -> speakers. The limiter's numbers are
+        // ordinary brick-wall-ish values -- start squashing at -6 dB, hard
+        // ratio, fast attack -- inaudible at unity and the thing standing
+        // between an 8x crow and digital clipping.
+        try {
+          const ctx = new AudioContext();
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = gainRef.current;
+          const limiter = ctx.createDynamicsCompressor();
+          limiter.threshold.value = -6;
+          limiter.knee.value = 6;
+          limiter.ratio.value = 12;
+          limiter.attack.value = 0.003;
+          limiter.release.value = 0.25;
+          ctx
+            .createMediaElementSource(a)
+            .connect(gainNode)
+            .connect(limiter)
+            .connect(ctx.destination);
+          ctxRef.current = ctx;
+          gainNodeRef.current = gainNode;
+        } catch {
+          // No WebAudio (or a claimed element) leaves the bare element
+          // wired straight to the speakers -- playback at unity, exactly
+          // the pre-#189 behavior. The knob goes dead; the birds don't.
+        }
       }
+      // A tab backgrounded mid-session can suspend the context; waking it
+      // is idempotent and cheap, so ask every time rather than tracking.
+      if (ctxRef.current?.state === "suspended") void ctxRef.current.resume();
       if (playingRef.current === clip) {
         a.pause();
         stop(null);
@@ -381,6 +485,24 @@ function useClipPlayer(): ClipPlayer {
     },
     [start, stop],
   );
+
+  const setGain = useCallback((v: number) => {
+    const snapped = coerceGain(v);
+    gainRef.current = snapped;
+    setGainState(snapped);
+    try {
+      localStorage.setItem(GAIN_KEY, String(snapped));
+    } catch {
+      // Storage full or blocked: the session keeps its gain, the next one
+      // starts at whatever last persisted. Not worth surfacing.
+    }
+    const ctx = ctxRef.current;
+    const gainNode = gainNodeRef.current;
+    // A short ramp, not a jump -- an instant coefficient change mid-
+    // waveform is an audible click. 20 ms is below "fade" and above "pop".
+    if (ctx && gainNode)
+      gainNode.gain.setTargetAtTime(snapped, ctx.currentTime, 0.02);
+  }, []);
 
   const setEnhanced = useCallback((on: boolean) => {
     enhancedRef.current = on;
@@ -394,17 +516,37 @@ function useClipPlayer(): ClipPlayer {
     () => () => {
       audioRef.current?.pause();
       audioRef.current = null;
+      // The context holds an OS audio handle; closing it releases the
+      // element it claimed too. Best-effort -- an already-closed context
+      // rejects, and unmount has nobody to tell.
+      void ctxRef.current?.close().catch(() => {});
+      ctxRef.current = null;
+      gainNodeRef.current = null;
     },
     [],
   );
 
-  return { playing, faded, enhanced, setEnhanced, toggle };
+  return {
+    playing,
+    faded,
+    rawOnly,
+    enhanced,
+    setEnhanced,
+    gain,
+    setGain,
+    toggle,
+  };
 }
 
 /** The raw/enhanced switch, in a panel's label row. Two states, both always
  * rendered at a fixed width -- it reads as one instrument nameplate rather
  * than a control that resizes as you use it (house rule #1). */
 function EnhanceToggle({ player }: { player: ClipPlayer }) {
+  // ENH is selected but what's actually sounding is the raw file (#331).
+  const fellBack =
+    player.enhanced &&
+    player.playing !== null &&
+    player.rawOnly.has(player.playing);
   return (
     <span className="flex items-center gap-1">
       <span className="stamp text-[9px] text-inkfaint">audio</span>
@@ -420,12 +562,20 @@ function EnhanceToggle({ player }: { player: ClipPlayer }) {
             aria-pressed={player.enhanced === on}
             title={
               on
-                ? "play the enhanced clip — band-limited, denoised, normalized"
+                ? fellBack
+                  ? "enhanced selected — but this recording has no enhanced version yet, so you are hearing it raw"
+                  : "play the enhanced clip — band-limited, denoised, normalized"
                 : "play the clip exactly as Earl recorded it"
             }
             className={`stamp w-8 py-0.5 text-[9px] transition-colors ${
               player.enhanced === on
-                ? "bg-panel2 text-squirrel"
+                ? // Selected-but-not-delivered wears the faint ink instead of
+                  // the squirrel accent (#331): the nameplate stops asserting
+                  // a treatment the audio isn't getting. Same box, same
+                  // weight -- only the colour tells the truth.
+                  on && fellBack
+                  ? "bg-panel2 text-inkfaint"
+                  : "bg-panel2 text-squirrel"
                 : "text-inkfaint hover:text-inkdim"
             }`}
           >
@@ -433,6 +583,60 @@ function EnhanceToggle({ player }: { player: ClipPlayer }) {
           </button>
         ))}
       </span>
+    </span>
+  );
+}
+
+/** The makeup-gain switch (#189): EnhanceToggle's nameplate one knob over,
+ * four steps from unity to the 8x rescue setting. Steps rather than a
+ * slider because the panel's vocabulary is discrete states at fixed widths
+ * -- and because "a bit louder / much louder / as loud as it goes" is the
+ * entire decision anyone makes here. Persistent chrome: it renders whether
+ * or not a clip is loaded, identical geometry in every state (house rule
+ * #1) -- the setting is FOR the next clip as much as the current one. */
+function GainControl({ player }: { player: ClipPlayer }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="stamp text-[9px] text-inkfaint">gain</span>
+      <span className="flex overflow-hidden rounded-sm border border-line">
+        {GAIN_STEPS.map((step) => (
+          <button
+            key={step}
+            type="button"
+            onClick={() => player.setGain(step)}
+            aria-pressed={player.gain === step}
+            title={
+              step === 1
+                ? "play at the recorded level"
+                : step === 8
+                  ? "boost ×8 — rescue the faintest recordings (a limiter keeps loud clips from clipping)"
+                  : `boost quiet recordings ×${step}`
+            }
+            className={`stamp w-7 py-0.5 text-[9px] transition-colors ${
+              player.gain === step
+                ? "bg-panel2 text-squirrel"
+                : "text-inkfaint hover:text-inkdim"
+            }`}
+          >
+            {step}×
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/** The label row's audio cluster: the raw/enh switch with the gain knob
+ * beside it, one span mounted identically by all three panels that own a
+ * player. flex-wrap is the width story: "Latest Events" + both nameplates
+ * outgrow the 340px rail, so there the gain steps take a second right-
+ * aligned line -- decided by the viewport at layout, never re-decided while
+ * you watch (house rule #1 governs shifts, not breakpoints). */
+function AudioControls({ player }: { player: ClipPlayer }) {
+  return (
+    <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+      <EnhanceToggle player={player} />
+      <GainControl player={player} />
     </span>
   );
 }
@@ -586,8 +790,12 @@ function NewArrivals({
  * dot when the clip write failed -- never a missing element, never a broken
  * player. Playing wears --led: green means live. */
 function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer }) {
-  const box =
-    "flex h-8 w-12 shrink-0 items-center justify-center rounded-sm border";
+  // One size everywhere (#341). The best-recording slot wore a larger `big`
+  // variant from #333, when it led a block of its own; since #339 put it at
+  // the head of the metadata row, POSITION carries the prominence and the
+  // extra size only read as an inconsistency next to first contact.
+  const box = "flex h-8 w-12 shrink-0 items-center justify-center rounded-sm border";
+  const glyph = "h-3 w-3";
   if (!clip)
     return (
       <span className={`${box} border-line text-inkfaint`} title="no clip">
@@ -604,26 +812,46 @@ function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer })
       </span>
     );
   const on = player.playing === clip;
+  // Issue #331: this recording is known to have no enhanced sibling while the
+  // panel says ENH -- so the slot says so too. A hairline notch in the corner,
+  // not a badge: it must read at a glance without competing with the play
+  // control, and it occupies geometry the box already reserved, so nothing
+  // moves when the answer arrives mid-session (house rule #1).
+  const raw = player.enhanced && player.rawOnly.has(clip);
   return (
     <button
       type="button"
       onClick={() => player.toggle(clip)}
       aria-label={on ? "Stop the clip" : "Play the clip"}
-      title={on ? "stop" : "play the recording"}
-      className={`${box} transition-colors ${
+      title={
+        raw
+          ? "play the recording — raw: the enhancement pass hasn't reached this clip yet"
+          : on
+            ? "stop"
+            : "play the recording"
+      }
+      className={`${box} relative transition-colors ${
         on
           ? "border-led text-led"
           : "border-linebright text-inkdim hover:border-squirrel hover:text-squirrel"
       }`}
     >
       {on ? (
-        <svg viewBox="0 0 16 16" className="lamp h-3 w-3" aria-hidden="true">
+        <svg viewBox="0 0 16 16" className={`lamp ${glyph}`} aria-hidden="true">
           <rect x="3.5" y="3.5" width="9" height="9" fill="currentColor" />
         </svg>
       ) : (
-        <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
+        <svg viewBox="0 0 16 16" className={glyph} aria-hidden="true">
           <path d="M4.5 2.8v10.4L13 8Z" fill="currentColor" />
         </svg>
+      )}
+      {raw && (
+        <span
+          aria-hidden="true"
+          className="stamp absolute right-0.5 top-0 text-[7px] leading-none text-inkfaint"
+        >
+          r
+        </span>
       )}
     </button>
   );
@@ -682,23 +910,47 @@ function EarlLamp({ busUp, status }: { busUp: boolean; status: string | null }) 
   return <span className="stamp text-xs text-inkfaint">no word from earl</span>;
 }
 
-/** Page masthead + the tab bar. Aviary is the only tab there is -- future
- * listening modules earn tabs when they exist, not placeholder chrome.
- * The lamp is optional because only the dashboard runs a bus client; the
- * profile page showing "bus quiet" would be a lie about a bus it never
- * asked. */
+/** The tab bar's roster (#357). Tabs are earned by real pages, not
+ * placeholder chrome -- the event archive earned its spot; future listening
+ * modules do the same by existing first. One label string per tab so a
+ * rename is a one-line change (#359 was exactly that). The labels are the
+ * *reader's* words, deliberately not the pages' own titles: the panels still
+ * read "The Life List" and "The Full Record", while the bar says what each
+ * tab gets you. */
+const MASTHEAD_TABS = [
+  { key: "aviary", label: "dashboard", href: "/aviary" },
+  { key: "record", label: "all detections", href: "/aviary/events" },
+] as const;
+
+/** Page masthead + the tab bar. The lamp is optional because only the
+ * dashboard runs a bus client; the profile page showing "bus quiet" would
+ * be a lie about a bus it never asked. */
 function AviaryMasthead({
   lamp,
-  back,
   jumps,
+  stationName,
+  tab = "aviary",
 }: {
   lamp?: { busUp: boolean; status: string | null };
-  back?: { href: string; label: string };
   /** Small-viewport anchor chips in the tab bar (#265) -- only the main
    * page has the stacked-columns problem (and the sections) they jump to,
    * so only it passes them; the lamp precedent. Plain hash anchors on
    * purpose: instant, pre-hydration, shareable. */
   jumps?: { href: string; label: string }[];
+  /** The station's display name (#304, epic #212) -- a remote station's
+   * masthead says whose yard it is. Server pages read it from env and pass
+   * it down (client components can't read runtime env without a hydration
+   * mismatch); absent means home, and the sub line is exactly what it has
+   * always been. */
+  stationName?: string;
+  /** Which tab is underlined (#357, resemanticed by #359): the current
+   * *section*, not the current page -- every tab is a live link, the
+   * underlined one included (the GitHub-tabs model), so a drill-down keeps
+   * both destinations one click away instead of an inert span squatting in
+   * the one place the eye looks for a way back. The species profile counts
+   * as the dashboard's section -- it's a drill-down of the life list, not
+   * its own module -- so only the events page overrides the default. */
+  tab?: (typeof MASTHEAD_TABS)[number]["key"];
 }) {
   return (
     <header className="mb-4">
@@ -707,32 +959,54 @@ function AviaryMasthead({
           className="text-3xl text-ink"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          The Aviary
-        </h1>
-        <div className="flex items-center gap-4">
-          {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
+          {/* The title is the way home (#357) -- same rest look as the old
+              plain text, only the hover admits it's a link. */}
           <Link
-            href={back?.href ?? "/"}
-            className="stamp text-xs text-inkdim transition-colors hover:text-squirrel"
+            href="/aviary"
+            className="transition-colors hover:text-squirrel"
           >
-            {back?.label ?? "← control center"}
+            The Aviary
           </Link>
-        </div>
+        </h1>
+        {/* No way back to the MCC dashboard from here, on purpose (#361):
+            the launchpad opens each module in its own window, so a corner
+            link out was a misclick that closed the yard rather than a
+            route anyone wanted. The Aviary's masthead now offers only the
+            lamp and the tab bar -- moves inside the module. */}
+        {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
       </div>
       <p className="stamp mt-1 text-xs text-inkfaint">
-        earl with the ears · every bird the yard has announced
+        {mastheadSub(stationName)}
       </p>
-      <nav className="mt-3 flex items-baseline gap-4 border-b border-line">
-        <span className="stamp -mb-px border-b-2 border-ink pb-1.5 text-xs text-ink">
-          aviary
+      <nav className="mt-3 flex flex-wrap items-baseline">
+        {/* The tabs own a full-width row, and the rule rides with them
+            (#359). The longer labels no longer leave phone-width room for
+            the jump chips beside them -- they overflowed the viewport
+            outright -- and letting the chips push the rule to a second row
+            would strand the active tab's underline floating above it,
+            which is the one adjacency this idiom is made of. */}
+        <span className="flex w-full items-baseline gap-8 border-b border-line">
+          {MASTHEAD_TABS.map((t) => (
+            <Link
+              key={t.key}
+              href={t.href}
+              className={`stamp pb-1.5 text-xs transition-colors hover:text-squirrel ${
+                t.key === tab
+                  ? "-mb-px border-b-2 border-ink text-ink"
+                  : "text-inkdim"
+              }`}
+            >
+              {t.label}
+            </Link>
+          ))}
         </span>
         {jumps && (
-          <span className="ml-auto flex gap-4 lg:hidden">
+          <span className="mt-1.5 ml-auto flex gap-4 lg:hidden">
             {jumps.map((j) => (
               <a
                 key={j.href}
                 href={j.href}
-                className="stamp pb-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+                className="stamp text-xs text-inkdim transition-colors hover:text-squirrel"
               >
                 {j.label}
               </a>
@@ -866,7 +1140,7 @@ function ArchiveHero({
   );
 }
 
-export function Aviary() {
+export function Aviary({ stationName }: { stationName?: string } = {}) {
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
   // live count updates land in place and nothing reshuffles on its own.
@@ -875,12 +1149,17 @@ export function Aviary() {
   const [sortKey, setSortKey] = useState<SortKey>("visits");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [rail, setRail] = useState<TodayTile[]>([]);
+  // The search box (#352): a filter over `order`, never a re-sort of it.
+  const [query, setQuery] = useState("");
   const [events, setEvents] = useState<TickerEvent[]>([]);
   const [busUp, setBusUp] = useState(false);
   const [earlStatus, setEarlStatus] = useState<string | null>(null);
   const [midnight, setMidnight] = useState<number | null>(null);
-  // New Arrivals' clock (#224): fixed at mount like the midnight boundary,
-  // so a card never silently ages out of the window mid-session.
+  // New Arrivals' clock (#224): set at mount, advanced only by the
+  // reconciliation poll (#352) -- so a card ages out of its window at a
+  // once-a-minute tick on a long-open tab (the kiosk case #352 exists for;
+  // a "24h" nameplate over week-old cards is the #331 class of lie), while
+  // never vanishing mid-read on a render.
   const [nowTs, setNowTs] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   // Hydrated rows arrive already-read: they get no filed-flash on mount
@@ -890,9 +1169,11 @@ export function Aviary() {
   const player = useClipPlayer();
 
   useEffect(() => {
-    // Local midnight, computed once client-side: the server can't know the
-    // viewer's timezone, so the client says where its day began. A tab left
-    // open past midnight keeps yesterday's boundary until reload -- accepted.
+    // Local midnight, computed client-side: the server can't know the
+    // viewer's timezone, so the client says where its day began. Set here at
+    // mount and advanced by the reconciliation poll (#352) -- the old "keeps
+    // yesterday's boundary until reload -- accepted" posture dated from
+    // glance-length sessions, and the always-open kiosk tab is the opposite.
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     const mid = Math.floor(d.getTime() / 1000);
@@ -1028,11 +1309,68 @@ export function Aviary() {
     };
   }, []);
 
+  useEffect(() => {
+    // The reconciliation poll (#352): every minute -- and the moment a
+    // hidden tab comes back, which is exactly when it is most stale -- the
+    // page re-grounds itself in the store. The live bus ticks counts in
+    // place but replays nothing after a websocket gap (audio/events is an
+    // event topic), and the midnight boundary above must roll over on a tab
+    // that never reloads. One indexed read of a small store per open tab
+    // per minute, LAN-local, on a box we own -- the dashboard polls /state
+    // twice a second. Everything lands IN PLACE (house rule #1): the merge
+    // helpers preserve grid and rail order exactly, appending only, and the
+    // boundary + the counts computed against it move together -- a failed
+    // poll changes nothing at all, so the page is stale-but-consistent
+    // until the next tick heals it. Wholesale entry replacement also picks
+    // up enrichment landing (a portrait dresses its tile within a minute)
+    // and converges the documented ±1 live-tick race.
+    const tick = () => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      const mid = Math.floor(d.getTime() / 1000);
+      fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body: { species?: RosterEntry[] } | null) => {
+          const entries = body?.species;
+          if (!Array.isArray(entries)) return;
+          midnightRef.current = mid;
+          setMidnight(mid);
+          setNowTs(Math.floor(Date.now() / 1000));
+          setRoster((prev) => {
+            const next = { ...prev };
+            for (const e of entries) next[e.species_sci] = e;
+            return next;
+          });
+          setOrder((prev) => reconcileOrder(prev, entries));
+          setRail((prev) => reconcileRail(prev, entries));
+        })
+        .catch(() => {});
+    };
+    const id = setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
   const resort = (key: SortKey, dir: SortDir) => {
     setSortKey(key);
     setSortDir(dir);
     setOrder(rosterOrder(Object.values(roster), key, dir));
   };
+
+  // The grid the viewer actually sees: `order` filtered by the search box
+  // (#352), never re-sorted by it -- the active sort survives the filter,
+  // the archive pills' rule (a control that reshuffles as you use it is
+  // house rule #1 broken in a control).
+  const shown =
+    query.trim() === ""
+      ? order
+      : order.filter((sci) => speciesMatches(roster[sci], query));
 
   const sortButton = (key: SortKey, label: string) => (
     <button
@@ -1057,6 +1395,7 @@ export function Aviary() {
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
       <AviaryMasthead
         lamp={{ busUp, status: earlStatus }}
+        stationName={stationName}
         jumps={[
           { href: "#latest-events", label: "events ↓" },
           { href: "#new-arrivals", label: "arrivals ↓" },
@@ -1070,7 +1409,58 @@ export function Aviary() {
           <PanelLabel
             title="The Life List"
             right={
-              <span className="flex items-center gap-1.5">
+              <span className="flex flex-wrap items-center justify-end gap-1.5">
+                {/* The search box (#352), left of the sort pills: their
+                    chrome (stamp lettering, hairline border, panel2 ground)
+                    on an input, with the magnifier inline like BirdGlyph --
+                    no icon library. type="text", not "search": WebKit's
+                    native clear button would fight the ✕ this control
+                    already reserves space for. */}
+                <span className="relative flex items-center">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    className="pointer-events-none absolute left-2 h-3 w-3 text-inkfaint"
+                    aria-hidden="true"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-4.4-4.4" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(ev) => setQuery(ev.target.value)}
+                    placeholder="find a bird"
+                    aria-label="Search the life list"
+                    // w-40, not w-32: at 128px the stamp lettering ran the
+                    // "find a bird" placeholder out of the box mid-word, and
+                    // the gutters are wide (pl-7 for the magnifier, pr-6 for
+                    // the ✕'s reserved seat) so only ~76px of it was text.
+                    // 160px leaves the placeholder room to sit whole and
+                    // gives a real search term somewhere to go.
+                    className="stamp w-40 rounded-sm border border-line bg-panel2 py-1 pl-7 pr-6 text-[10px] text-ink transition-colors placeholder:text-inkfaint focus:border-linebright focus:outline-none"
+                  />
+                  {/* Always rendered, merely invisible while the box is
+                      empty (the now-control idiom): the input's pr-6 is
+                      this button's reserved seat, so it never shifts the
+                      text as it appears. */}
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    aria-label="Clear search"
+                    tabIndex={query === "" ? -1 : 0}
+                    className={`absolute right-1.5 text-[10px] transition-colors ${
+                      query === ""
+                        ? "invisible"
+                        : "text-inkfaint hover:text-ink"
+                    }`}
+                  >
+                    ✕
+                  </button>
+                </span>
                 {sortButton("name", "name")}
                 {sortButton("visits", "visits")}
                 <button
@@ -1096,9 +1486,19 @@ export function Aviary() {
                     : "opening the record …"}
                 </span>
               </div>
+            ) : shown.length === 0 ? (
+              // The no-match state (#352): the empty grid's reserved
+              // footprint with an honest sentence naming the query, so
+              // entering and leaving a fruitless search shifts nothing.
+              <div className="flex min-h-[280px] items-center justify-center rounded-sm border border-line bg-panel2">
+                <span className="stamp px-4 text-center text-xs text-inkfaint">
+                  no birds match “{query.trim()}” — the list answers to common
+                  and scientific names
+                </span>
+              </div>
             ) : (
               <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                {order.map((sci) => {
+                {shown.map((sci) => {
                   const e = roster[sci];
                   if (!e) return null;
                   return (
@@ -1162,7 +1562,7 @@ export function Aviary() {
           >
             <PanelLabel
               title="Latest Events"
-              right={<EnhanceToggle player={player} />}
+              right={<AudioControls player={player} />}
             />
             <div className="px-4 pb-4">
               {events.length === 0 ? (
@@ -1213,7 +1613,11 @@ export function Aviary() {
                             <div className="stamp flex gap-2 text-[9px] text-inkfaint">
                               <span>{stampOf(e.ts, midnight)}</span>
                               <span>{e.source}</span>
-                              <span>{e.confidence.toFixed(2)}</span>
+                              {/* Labeled so it reads as a model score, not
+                                  a mystery decimal (#189). */}
+                              <span title="BirdNET's confidence in this identification (0–1)">
+                                conf {e.confidence.toFixed(2)}
+                              </span>
                               {e.wind_suspect && <span>wind?</span>}
                             </div>
                           </div>
@@ -1688,7 +2092,13 @@ type Analysis = {
   generated_ts: number | null;
 };
 
-export function SpeciesProfile({ sci }: { sci: string }) {
+export function SpeciesProfile({
+  sci,
+  stationName,
+}: {
+  sci: string;
+  stationName?: string;
+}) {
   const [entry, setEntry] = useState<RosterEntry | null>(null);
   // The whole roster rides along (#220): the standings band ranks this bird
   // against every other, and the payload is already on the wire for `entry`.
@@ -1705,6 +2115,14 @@ export function SpeciesProfile({ sci }: { sci: string }) {
   // toggle -- a two-sentence stub with a "read more" under it would be a
   // control that does nothing visible.
   const [bioOpen, setBioOpen] = useState(false);
+  // Which body the hero is showing (#346): the Wikipedia lead, or the
+  // vocalization prose that used to live in a full-width panel of its own
+  // below the hero. It sat alone in a mostly-empty band there, and this is
+  // where it belongs anyway -- the recording you play while reading it is in
+  // the metadata row directly above.
+  const [bodyTab, setBodyTab] = useState<"description" | "sounds">(
+    "description",
+  );
   // Species removal (#216): the confirm overlay's lifecycle. `removing`
   // freezes the dialog while the DELETE is in flight (no second click, no
   // Escape-mid-delete); a failure reports in the dialog's reserved line and
@@ -1801,6 +2219,7 @@ export function SpeciesProfile({ sci }: { sci: string }) {
       .then((a: Analysis | null) => setAnalysis(a))
       .catch(() => {});
     setBioOpen(false); // a different bird opens closed
+    setBodyTab("description"); // ...and opens on its description (#346)
     setOpenings(null); // a different bird's records are not this bird's
   }, [sci]);
 
@@ -1824,15 +2243,52 @@ export function SpeciesProfile({ sci }: { sci: string }) {
   // re-measuring there would delete the "read less" control mid-read.
   const bodyRef = useRef<HTMLDivElement>(null);
   const [longBio, setLongBio] = useState(false);
+  // Since #318 the clamp is a MEDIA QUERY, so whether there is anything left
+  // to expand depends on the viewport as well as on the text -- and the
+  // measurement below runs on mount, which would leave a window dragged
+  // narrower than md showing visibly cut-off prose with no control to open
+  // it. Crossing the breakpoint re-runs it.
+  //
+  // Deliberately NOT an input to the first render: CSS alone decides the
+  // clamp at first paint (a matchMedia read there would render clamped and
+  // unclamp a frame later, and would differ between SSR and hydration), and
+  // this only decides whether to OFFER the toggle afterwards. The query
+  // string is the one in globals.css's .bodyclamp rule -- keep them equal.
+  //
+  // VERIFY THIS IN A REAL BROWSER. The in-app preview pane composites no
+  // frames, and both `matchMedia` change events and ResizeObserver callbacks
+  // are delivered on the rendering lifecycle -- so in that pane neither ever
+  // fires, whatever the viewport does (measured: matches flips true->false
+  // with zero change events). Reloading at each width verifies first paint
+  // there; the live crossing needs a displayed window.
+  const [breakpointMoved, setBreakpointMoved] = useState(0);
+  useEffect(() => {
+    const mq = window.matchMedia("(width < 48rem)");
+    const bump = () => setBreakpointMoved((n) => n + 1);
+    mq.addEventListener("change", bump);
+    return () => mq.removeEventListener("change", bump);
+  }, []);
+  // Both tabs share the ref, the clamp, and this measurement -- only one is
+  // mounted at a time, so `bodyTab` in the deps is what re-measures after a
+  // switch. One clamp rule for both bodies retired #315's separate
+  // VOICE_CLAMP_LINES: two clamp constants governing one block was a seam
+  // waiting to drift.
+  //
+  // The sounds tab's prose and its credit are ONE decision (#318): Wikipedia
+  // and Animal Diversity Web are under incompatible licences, so the text and
+  // the stamp that credits it must be picked together or they will eventually
+  // drift into crediting the wrong source.
+  const prose = voiceProse(entry);
+  const bodyText = bodyTab === "sounds" ? prose?.text : entry?.description;
   useLayoutEffect(() => {
     if (bioOpen) return;
     const el = bodyRef.current;
     if (el) setLongBio(el.scrollHeight > el.clientHeight + 1);
-  }, [entry?.description, clampLines, bioOpen]);
+  }, [bodyText, clampLines, bioOpen, breakpointMoved]);
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead back={{ href: "/aviary", label: "← the aviary" }} />
+      <AviaryMasthead stationName={stationName} />
       {loaded && !entry ? (
         <section className="panel flex min-h-[200px] items-center justify-center rounded-sm border border-line bg-panel">
           <span className="stamp text-xs text-inkfaint">
@@ -1918,22 +2374,69 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                 remove species
               </button>
             </div>
-            <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
-              <div>
-                <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
-                <dd className="text-inkdim">
-                  {entry ? (
-                    <>
-                      {dateOf(entry.first_ts)}
+            {/* The metadata row owns both recordings (#339, reshaping #333):
+                the best take LEADS as the row's first and loudest entry --
+                its play slot first, the confidence in the display face -- and
+                first contact's slot sits beside the first-heard entry it
+                was always restating (first contact IS first_ts; a separate
+                row carried one button and a duplicate date). Both slots
+                inherit PlaySlot's state coverage -- a pre-clip-era lifer
+                shows the reserved no-clip dot, a pruned file the faded
+                stamp, an un-enhanced one its raw notch (#331) -- so the
+                row is one geometry in every state. When best IS first
+                contact (30 of 73 species) the two slots share a clip path
+                and light together: one file, honestly presented twice. */}
+            <dl className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+              <div className="flex items-center gap-3">
+                <PlaySlot clip={entry?.best_clip ?? null} player={player} />
+                <div className="min-w-0">
+                  <dt className="stamp text-[9px] text-inkfaint">
+                    best recording
+                  </dt>
+                  <dd
+                    className="text-sm leading-tight text-ink"
+                    style={{ fontFamily: "var(--font-display)" }}
+                    title="BirdNET's confidence in this identification (0–1)"
+                  >
+                    {/* The dt says which recording; the number still needs
+                        to say what KIND of number it is (#189). */}
+                    {entry?.best_confidence != null ? (
+                      <>
+                        <span className="stamp text-[9px] text-inkfaint">
+                          conf{" "}
+                        </span>
+                        {entry.best_confidence.toFixed(2)}
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                    {entry?.best_ts != null && (
                       <span className="text-inkfaint">
                         {" "}
-                        · via {entry.first_source}
+                        · {dateOf(entry.best_ts)}
                       </span>
-                    </>
-                  ) : (
-                    "—"
-                  )}
-                </dd>
+                    )}
+                  </dd>
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <PlaySlot clip={entry?.first_clip ?? null} player={player} />
+                <div>
+                  <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
+                  <dd className="text-inkdim">
+                    {entry ? (
+                      <>
+                        {dateOf(entry.first_ts)}
+                        <span className="text-inkfaint">
+                          {" "}
+                          · via {entry.first_source}
+                        </span>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </dd>
+                </div>
               </div>
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">visits</dt>
@@ -1942,23 +2445,6 @@ export function SpeciesProfile({ sci }: { sci: string }) {
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">today</dt>
                 <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
-              </div>
-              {/* First contact (#220): the very first recording Earl ever
-                  made of this bird -- the one clip retention exempts forever
-                  (#175), which until now nothing played. PlaySlot's own
-                  geometry covers every state: a pre-clip-era lifer shows the
-                  reserved no-clip dot, a hand-pruned file the faded stamp. */}
-              <div>
-                <dt className="stamp text-[9px] text-inkfaint">
-                  first contact
-                </dt>
-                <dd className="mt-0.5">
-                  {entry ? (
-                    <PlaySlot clip={entry.first_clip} player={player} />
-                  ) : (
-                    <span className="text-inkdim">—</span>
-                  )}
-                </dd>
               </div>
             </dl>
             {/* The magazine body (#192): the portrait + its CC-BY credit
@@ -1994,43 +2480,117 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                   </p>
                 )}
               </div>
-              {entry?.description ? (
+              {/* The body's tab bar (#346), in the masthead's own tab
+                  vocabulary -- an underlined active tab over a hairline
+                  rule, no new control language invented for two words.
+                  BOTH TABS ALWAYS RENDER, `sounds` merely disabled when the
+                  species has no vocalization prose (31 of 76 on the real
+                  life list) or while the entry is still in flight: the
+                  remove-species button and the chart's `now` control set
+                  that precedent, and it keeps this row one geometry on
+                  every species in every load state, so nothing moves when
+                  the fetch lands. It also tells the truth out loud -- a
+                  disabled tab says THIS BIRD HAS NO SOUND DESCRIPTION,
+                  where hiding it silently drops the question. That is the
+                  tab-bar form of #315's honest-blank posture, not a
+                  departure from it: the thing #315 refused was reserving a
+                  whole panel's footprint for prose that is never coming. */}
+              <nav className="mb-3 flex items-baseline gap-4 border-b border-line">
+                {(
+                  [
+                    ["description", true],
+                    ["sounds", Boolean(prose)],
+                  ] as const
+                ).map(([tab, enabled]) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    disabled={!enabled}
+                    onClick={() => {
+                      setBodyTab(tab);
+                      // Each tab opens clamped rather than inheriting the
+                      // other's expansion.
+                      setBioOpen(false);
+                    }}
+                    aria-pressed={bodyTab === tab}
+                    title={
+                      enabled
+                        ? undefined
+                        : entry
+                          ? "no sound description for this species — the article says nothing about its voice"
+                          : "opening the record …"
+                    }
+                    className={`stamp -mb-px border-b-2 pb-1.5 text-xs transition-colors ${
+                      bodyTab === tab
+                        ? "border-ink text-ink"
+                        : "border-transparent text-inkdim hover:text-squirrel"
+                    } disabled:cursor-default disabled:text-inkfaint disabled:opacity-50 disabled:hover:text-inkfaint`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+                {/* Every licence here wants the credit, and since #317 the
+                    stamp also says WHICH reader found the text so gathered
+                    lines are never mistaken for the article's own considered
+                    paragraph. Since #318 it may name Animal Diversity Web
+                    and its CC BY-NC-SA licence instead: the credit comes
+                    from voiceProse alongside the very text being shown, so
+                    the panel cannot stamp one source's prose with another
+                    source's licence. It rides the tab row, which has a fixed
+                    height -- so it appearing with the tab moves nothing. */}
+                {bodyTab === "sounds" && prose && (
+                  <span className="stamp ml-auto shrink-0 pb-1.5 text-[9px] text-inkfaint">
+                    {prose.credit}
+                  </span>
+                )}
+              </nav>
+              {bodyText ? (
                 <>
-                  {/* Clamped by default (#196, the ArtistView bio pattern):
-                      Wikipedia's lead runs four or five paragraphs, which
-                      buried the chart and the field notes below the fold and
-                      is more encyclopedia than anyone asked for. It is also
-                      what makes the backdrop legible -- a short block of
-                      prose over softened art reads where five paragraphs
-                      would not. The float keeps the photo beside it either
-                      way, so expanding grows the hero and shifts nothing
-                      above it. */}
+                  {/* Clamped BELOW md (#196, breakpointed by #318): on a
+                      phone Wikipedia's lead runs four or five paragraphs,
+                      which buried the chart and the field notes below the
+                      fold and is more encyclopedia than anyone asked for.
+                      It is also what makes the backdrop legible there -- a
+                      short block of prose over softened art reads where five
+                      paragraphs would not. The vocalization prose earns the
+                      same clamp for the same reason: unclamped, the Carolina
+                      Wren's section alone runs 965px. On a laptop none of
+                      that bites and the whole article fits, so the clamp
+                      lifts entirely rather than spending the room on a
+                      control. The float keeps the photo beside the prose at
+                      every width, so expanding grows the hero and shifts
+                      nothing above it. */}
                   <div
                     ref={bodyRef}
-                    className="space-y-2.5 text-sm leading-relaxed text-inkdim"
-                    // Inline rather than a line-clamp-N class: the count is
-                    // per-species, and Tailwind can only emit classes it can
-                    // see in the source.
+                    className={`space-y-2.5 text-sm leading-relaxed text-inkdim${
+                      bioOpen ? "" : " bodyclamp"
+                    }`}
+                    // The count is per-species, and Tailwind can only emit
+                    // classes it can see in the source -- so it rides in as a
+                    // custom property that .bodyclamp reads. The clamp itself
+                    // lives in globals.css because since #318 it applies
+                    // BELOW md only, and a media query cannot be expressed in
+                    // an inline style (which would outrank a `md:` class
+                    // anyway). Handing the number over even when open costs
+                    // nothing and keeps one source of truth for it.
                     style={
-                      bioOpen
-                        ? undefined
-                        : {
-                            display: "-webkit-box",
-                            WebkitBoxOrient: "vertical",
-                            WebkitLineClamp: clampLines,
-                            overflow: "hidden",
-                          }
+                      { "--clamp-lines": clampLines } as CSSProperties
                     }
                   >
-                    {entry.description.split(/\n+/).map((para, i) => (
+                    {bodyText.split(/\n+/).map((para, i) => (
                       <p key={i}>{para}</p>
                     ))}
                   </div>
+                  {/* At md and up the block is never clamped, so `longBio`
+                      already measures false and this does not render at all.
+                      `md:hidden` is the belt to those braces: a control that
+                      expands nothing must not be able to appear on a wide
+                      viewport, whatever a stale measurement thinks. */}
                   {longBio && (
                     <button
                       type="button"
                       onClick={() => setBioOpen((o) => !o)}
-                      className="mt-1.5 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright"
+                      className="mt-1.5 text-sm text-ink underline decoration-line underline-offset-4 transition-colors hover:decoration-linebright md:hidden"
                     >
                       {bioOpen ? "read less" : "read more"}
                     </button>
@@ -2059,7 +2619,7 @@ export function SpeciesProfile({ sci }: { sci: string }) {
           <section className="panel flex flex-col rounded-sm border border-line bg-panel lg:absolute lg:inset-0">
             <PanelLabel
               title="Recent Visits"
-              right={<EnhanceToggle player={player} />}
+              right={<AudioControls player={player} />}
             />
             <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
               {/* The list region flexes to fill the rail; the archive link
@@ -2103,7 +2663,13 @@ export function SpeciesProfile({ sci }: { sci: string }) {
                             </span>
                           </div>
                           <div className="stamp flex gap-2 text-[9px] text-inkfaint">
-                            <span>best {v.best.toFixed(2)}</span>
+                            {/* "conf", not "best" (#189): "best 0.85" read
+                                as a ranking, and the one nuance it carried
+                                -- best window of the visit -- lives in the
+                                tooltip where it can use whole words. */}
+                            <span title="BirdNET's confidence in this identification (0–1) — the visit's best window">
+                              conf {v.best.toFixed(2)}
+                            </span>
                             {v.windows > 1 && <span>{v.windows} windows</span>}
                             {v.wind_suspect && <span>wind?</span>}
                           </div>
@@ -2235,7 +2801,11 @@ export function SpeciesProfile({ sci }: { sci: string }) {
  * a page boundary is a no-op instead of a dropped bird. A short page is the
  * record's true end for the active filter -- the WHERE runs before the
  * LIMIT -- so `exhausted` needs no second opinion. */
-export function AviaryEvents() {
+export function AviaryEvents({
+  stationName,
+}: {
+  stationName?: string;
+} = {}) {
   const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
   // Pill order: most-visited first, computed once at load (rosterOrder --
   // the grid's sort logic, reused). Static thereafter: a filter bar that
@@ -2457,11 +3027,11 @@ export function AviaryEvents() {
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead back={{ href: "/aviary", label: "← the aviary" }} />
+      <AviaryMasthead stationName={stationName} tab="record" />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Full Record"
-          right={<EnhanceToggle player={player} />}
+          right={<AudioControls player={player} />}
         />
 
         {/* The controls: species pills (combinable), then the date leg.
@@ -2663,7 +3233,11 @@ export function AviaryEvents() {
                           </div>
                           <div className="stamp flex gap-2 text-[9px] text-inkfaint">
                             <span>{e.source}</span>
-                            <span>{e.confidence.toFixed(2)}</span>
+                            {/* Labeled so it reads as a model score, not a
+                                mystery decimal (#189). */}
+                            <span title="BirdNET's confidence in this identification (0–1)">
+                              conf {e.confidence.toFixed(2)}
+                            </span>
                             {e.wind_suspect && <span>wind?</span>}
                           </div>
                         </div>

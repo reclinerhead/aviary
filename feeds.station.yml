@@ -1,0 +1,35 @@
+# =============================================================================
+# project-squirrel -- feeds.station.yml (issue #302, epic #212)
+#
+# The STATION feed registry: what a standalone Aviary station's Earl listens
+# to. A station's env file points MERLE_FEEDS at this file (see
+# station.env.example), so the committed feeds.yml -- the HOME registry, full
+# of this house's cameras and rover -- is bypassed entirely, never edited.
+#
+# One feed: the station's own microphone, captured locally with arecord (the
+# rover's `command` kind minus the ssh -- same s16le/48kHz/mono contract on
+# stdout). The SABRENT USB sound card + Movo lavalier enumerate as a C-Media
+# device doing native 48 kHz mono S16_LE (verified on birdhouse 2026-07-26).
+#
+# The device is addressed BY NAME (CARD=Device), never by index (#320):
+# ALSA card indices are a boot-time race, and birdhouse's first cold boot
+# in the field flipped the USB dongle from card 1 to card 0 -- a `plughw:1,0`
+# capture then opens the onboard HDA jack (nothing plugged in), which
+# produces perfectly healthy-looking near-zero samples: worker up, no
+# error, station deaf, and only the honest `silent` state to show for it.
+# `CARD=Device` is the dongle's ALSA name (`card N: Device [USB Advanced
+# Audio Device]`), stable across enumeration order, and D2 standardizes
+# this dongle -- so this one committed file keeps serving every station
+# (the tiles.station.json principle: Phase 5 is a copy, not an edit).
+#
+# The feed name is its published source label, its clip directory under
+# MERLE_EARL_CLIPS, and the bird record's `source` column -- renaming it is a
+# data migration (#270's runbook). `window-mic` is named for what it will
+# stay: the mic in the window facing the feeder.
+# =============================================================================
+
+feeds:
+  window-mic:
+    kind: command
+    cmd: arecord -D plughw:CARD=Device,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q
+    earl: true

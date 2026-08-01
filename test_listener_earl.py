@@ -243,3 +243,78 @@ def test_source_commands_refuses_a_kind_it_cannot_capture(monkeypatch):
     monkeypatch.setattr(earl.feeds, "feeds_for", lambda consumer: [fake])
     with pytest.raises(RuntimeError, match="no capture for"):
         earl.source_commands()
+
+
+# --- the gate's LiteRT arm (issue #300) --------------------------------------
+#
+# The interpreter itself needs ai-edge-litert and a real model -- station
+# territory, desk-tested there. What's covered here is the pure logic the
+# arm hangs on: the framing fenceposts, label extraction from the tflite's
+# zip payload, and the contract that a failing litert arm lands in the same
+# ungated-and-loud posture as any other gate failure.
+
+def test_yamnet_frames_cover_a_3s_window():
+    """3 s at 16 kHz = 48000 samples -> five full frames at half-frame hop,
+    every one in bounds, ~75 ms tail unscored (the hub arm's own framing
+    drops partial patches too)."""
+    starts = earl.yamnet_frame_starts(48000)
+    assert starts == [0, 7800, 15600, 23400, 31200]
+    assert starts[-1] + earl.YAMNET_FRAME_SAMPLES <= 48000
+
+
+def test_yamnet_frames_exactly_one_frame():
+    assert earl.yamnet_frame_starts(earl.YAMNET_FRAME_SAMPLES) == [0]
+
+
+def test_yamnet_frames_short_window_yields_none():
+    """Shorter than one frame -> no frames -> classify returns [] -> route()
+    reads that as "listen". No divide-by-zero, no crash."""
+    assert earl.yamnet_frame_starts(earl.YAMNET_FRAME_SAMPLES - 1) == []
+
+
+def test_yamnet_labels_read_from_the_zip_member(tmp_path):
+    """The display names ride inside the .tflite as a zip member, one per
+    line -- a tflite with metadata is also a valid zip. Blank lines (a
+    trailing newline artifact) must not become empty class names."""
+    import zipfile
+    fake = tmp_path / "yamnet.tflite"
+    with zipfile.ZipFile(fake, "w") as z:
+        z.writestr(earl.YAMNET_LABEL_MEMBER, "Speech\nBird\nAnimal\n\n")
+    assert earl.yamnet_labels(str(fake)) == ["Speech", "Bird", "Animal"]
+
+
+def test_yamnet_tflite_env_selects_the_litert_arm_and_fails_loud(
+        monkeypatch, tmp_path):
+    """With MERLE_YAMNET_TFLITE set, load_yamnet must take the litert arm --
+    and on a box where that arm can't come up (no ai-edge-litert, or a bad
+    model path, as here) it lands in the same ungated-and-loud posture as
+    any other gate failure. Never a crash, never silent."""
+    monkeypatch.setenv("MERLE_YAMNET_TFLITE", str(tmp_path / "missing.tflite"))
+    lines = []
+    classify = earl.load_yamnet(np=None, log=lines.append)
+    assert classify is None
+    assert any("UNAVAILABLE" in line for line in lines)
+
+
+# --- birdnet_load_kwargs: the station library switch (issue #299) ------------
+#
+# The contract under test is absence, not defaulting: with the var unset the
+# kwarg must not exist at all, so pearl's birdnet.load() calls are invoked
+# exactly as they were before #299 and the package default stays the
+# package's business.
+
+def test_birdnet_library_unset_omits_the_kwarg_entirely(monkeypatch):
+    monkeypatch.delenv("MERLE_BIRDNET_LIBRARY", raising=False)
+    assert earl.birdnet_load_kwargs() == {}
+
+
+def test_birdnet_library_set_becomes_the_library_kwarg(monkeypatch):
+    monkeypatch.setenv("MERLE_BIRDNET_LIBRARY", "litert")
+    assert earl.birdnet_load_kwargs() == {"library": "litert"}
+
+
+def test_birdnet_library_blank_is_unset_not_an_empty_library(monkeypatch):
+    """library="" would be a third behavior nobody asked for -- whitespace
+    and empty collapse to the unset arm."""
+    monkeypatch.setenv("MERLE_BIRDNET_LIBRARY", "   ")
+    assert earl.birdnet_load_kwargs() == {}

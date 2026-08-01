@@ -8,9 +8,11 @@ import {
   VISITS_SPAN_S,
   VISIT_GAP_S,
   archiveStats,
+  bestClips,
   clampVisitWindow,
   clipRelPath,
   clipUrl,
+  coerceGain,
   enhancedClipUrl,
   enhancedRelPath,
   collapseVisits,
@@ -18,6 +20,7 @@ import {
   cropPosition,
   dayAnchor,
   dayBuckets,
+  mastheadSub,
   dayGroups,
   dayStart,
   detectionFromRow,
@@ -34,15 +37,20 @@ import {
   parseSpeciesFilter,
   portraitAspect,
   portraitUrl,
+  reconcileOrder,
+  reconcileRail,
   rhythmStrip,
   rivalLine,
   rosterOrder,
   secondsIntoDay,
   shapeRoster,
+  voiceCredit,
+  voiceProse,
   shareOfYard,
   smoothPath,
   smoothSegments,
   speciesImageName,
+  speciesMatches,
   standingFor,
   tallyVisits,
   todayVisitors,
@@ -247,6 +255,30 @@ describe("enhancedRelPath / enhancedClipUrl", () => {
   });
 });
 
+describe("coerceGain", () => {
+  it("passes legal steps through untouched", () => {
+    expect(coerceGain(1)).toBe(1);
+    expect(coerceGain(2)).toBe(2);
+    expect(coerceGain("4")).toBe(4);
+    expect(coerceGain("8")).toBe(8);
+  });
+  it("reads garbage as unity -- the do-no-harm default", () => {
+    expect(coerceGain(null)).toBe(1);
+    expect(coerceGain("")).toBe(1);
+    expect(coerceGain("loud")).toBe(1);
+    expect(coerceGain("NaN")).toBe(1);
+    expect(coerceGain(0)).toBe(1);
+    expect(coerceGain(-3)).toBe(1);
+  });
+  it("snaps off-step values to the nearest step, ties toward quieter", () => {
+    expect(coerceGain("1.4")).toBe(1);
+    expect(coerceGain(3)).toBe(2); // equidistant from 2 and 4 -- round down
+    expect(coerceGain(5)).toBe(4);
+    expect(coerceGain(6.5)).toBe(8);
+    expect(coerceGain("999")).toBe(8); // an old wider range can only clamp in
+  });
+});
+
 describe("speciesImageName", () => {
   it("mirrors the pass's scrub exactly (species_profile.image_filename)", () => {
     expect(speciesImageName("Cardinalis cardinalis")).toBe(
@@ -326,6 +358,107 @@ describe("doomedFiles", () => {
   });
 });
 
+describe("voiceCredit", () => {
+  it("credits Wikipedia either way -- same article, same licence", () => {
+    expect(voiceCredit("section")).toContain("via Wikipedia");
+    expect(voiceCredit("sentences")).toContain("via Wikipedia");
+  });
+
+  it("says so when the prose was gathered rather than quoted", () => {
+    expect(voiceCredit("sentences")).toBe(
+      "gathered from the article · via Wikipedia",
+    );
+    expect(voiceCredit("section")).toBe("via Wikipedia");
+  });
+
+  it("treats an unknown or missing source as a section", () => {
+    // Pre-#317 rows are all sections by construction, and over-claiming
+    // "gathered" about a real section would be its own small lie.
+    expect(voiceCredit(null)).toBe("via Wikipedia");
+    expect(voiceCredit(undefined)).toBe("via Wikipedia");
+    expect(voiceCredit("something-new")).toBe("via Wikipedia");
+  });
+});
+
+describe("voiceProse", () => {
+  const wiki = {
+    voice: "It goes teakettle-teakettle.",
+    voice_source: "section",
+    voice_adw: null,
+    voice_adw_attribution: null,
+  };
+  const adw = {
+    voice: null,
+    voice_source: "adw",
+    voice_adw: "Their song is a long, rich warble.",
+    voice_adw_attribution: "via Animal Diversity Web · CC BY-NC-SA 3.0",
+  };
+
+  it("pairs Wikipedia prose with a Wikipedia credit", () => {
+    expect(voiceProse(wiki)).toEqual({
+      text: "It goes teakettle-teakettle.",
+      credit: "via Wikipedia",
+    });
+    expect(voiceProse({ ...wiki, voice_source: "sentences" })?.credit).toBe(
+      "gathered from the article · via Wikipedia",
+    );
+  });
+
+  it("pairs ADW prose with ADW's own stored credit", () => {
+    // The licensing rule the whole pair exists for: ADW prose under a "via
+    // Wikipedia" stamp would be a licensing failure as well as a lie.
+    expect(voiceProse(adw)).toEqual({
+      text: "Their song is a long, rich warble.",
+      credit: "via Animal Diversity Web · CC BY-NC-SA 3.0",
+    });
+    expect(voiceProse(adw)?.credit).not.toContain("Wikipedia");
+    expect(voiceProse(adw)?.credit).toContain("CC BY-NC-SA");
+  });
+
+  it("never serves one source's text under the other's credit", () => {
+    // The two texts are never both present (the pass clears the ADW columns
+    // when Wikipedia answers), but if a hand-edited row ever carried both,
+    // the source column decides -- and the credit follows the text, always.
+    const both = { ...wiki, voice_adw: "ADW text", voice_adw_attribution: "x" };
+    expect(voiceProse(both)).toEqual({
+      text: "It goes teakettle-teakettle.",
+      credit: "via Wikipedia",
+    });
+    expect(voiceProse({ ...both, voice_source: "adw" })).toEqual({
+      text: "ADW text",
+      credit: "x",
+    });
+  });
+
+  it("names ADW even on a row whose stored attribution is missing", () => {
+    expect(
+      voiceProse({ ...adw, voice_adw_attribution: null })?.credit,
+    ).toContain("Animal Diversity Web");
+  });
+
+  it("is null when no source has anything -- the honest blank", () => {
+    expect(voiceProse(null)).toBeNull();
+    expect(voiceProse(undefined)).toBeNull();
+    expect(
+      voiceProse({
+        voice: null,
+        voice_source: null,
+        voice_adw: null,
+        voice_adw_attribution: null,
+      }),
+    ).toBeNull();
+    // "adw" claimed but no prose stored: still nothing, never an empty panel.
+    expect(voiceProse({ ...adw, voice_adw: null })).toBeNull();
+  });
+
+  it("reads a pre-#318 row exactly as before", () => {
+    // A store one generation behind LEFT JOINs the ADW columns to undefined.
+    expect(
+      voiceProse({ voice: "It sings.", voice_source: "section" }),
+    ).toEqual({ text: "It sings.", credit: "via Wikipedia" });
+  });
+});
+
 describe("parseLimit", () => {
   it("defaults on absence or garbage", () => {
     expect(parseLimit(null)).toBe(50);
@@ -355,6 +488,57 @@ describe("parseSince", () => {
   it("clamps a typo to within two days -- it can't relabel the archive", () => {
     expect(parseSince("0", now)).toBe(now - 2 * 86400);
     expect(parseSince(String(now + 999), now)).toBe(now);
+  });
+});
+
+describe("bestClips (#333)", () => {
+  const row = (
+    ts: number,
+    confidence: number,
+    clip: string | null,
+    sci = "Cardinalis cardinalis",
+  ) => ({ species_sci: sci, ts, confidence, clip });
+
+  it("picks the highest-confidence recording per species", () => {
+    expect(
+      bestClips([row(100, 0.7, "a.wav"), row(200, 0.95, "b.wav"), row(300, 0.8, "c.wav")]),
+    ).toEqual({
+      "Cardinalis cardinalis": { clip: "b.wav", confidence: 0.95, ts: 200 },
+    });
+  });
+
+  it("never crowns a clip-less sighting", () => {
+    // A failed clip write is an honest gap; a confident number attached to
+    // silence would be the page's worst possible offer.
+    expect(bestClips([row(100, 0.99, null), row(200, 0.6, "b.wav")])).toEqual({
+      "Cardinalis cardinalis": { clip: "b.wav", confidence: 0.6, ts: 200 },
+    });
+    expect(bestClips([row(100, 0.99, null)])).toEqual({});
+  });
+
+  it("keeps the earlier take on a tie", () => {
+    // Two equally good recordings: the older one has already survived a
+    // retention sweep the newer one hasn't faced.
+    expect(
+      bestClips([row(100, 0.9, "old.wav"), row(200, 0.9, "new.wav")]),
+    ).toMatchObject({
+      "Cardinalis cardinalis": { clip: "old.wav", ts: 100 },
+    });
+  });
+
+  it("keeps species independent", () => {
+    const out = bestClips([
+      row(100, 0.9, "card.wav"),
+      row(200, 0.5, "robin.wav", "Turdus migratorius"),
+    ]);
+    expect(out["Cardinalis cardinalis"].clip).toBe("card.wav");
+    expect(out["Turdus migratorius"].clip).toBe("robin.wav");
+  });
+
+  it("ignores rows with no confidence (the tally's narrow shape)", () => {
+    expect(bestClips([{ species_sci: "Cardinalis cardinalis", ts: 100 }])).toEqual(
+      {},
+    );
   });
 });
 
@@ -395,6 +579,42 @@ describe("shapeRoster", () => {
   it("tallies a lifer with no sighting rows honestly at zero", () => {
     const roster = shapeRoster(life.slice(0, 1), [], null);
     expect(roster[0]).toMatchObject({ visits: 0, today: 0 });
+  });
+  it("carries the best recording onto the entry (#333)", () => {
+    const roster = shapeRoster(
+      life.slice(0, 1),
+      [
+        {
+          species_sci: "Cardinalis cardinalis",
+          ts: 100,
+          confidence: 0.7,
+          clip: "amcrest/100-Northern_Cardinal.wav",
+        },
+        {
+          species_sci: "Cardinalis cardinalis",
+          ts: 500,
+          confidence: 0.95,
+          clip: "amcrest/500-Northern_Cardinal.wav",
+        },
+      ],
+      null,
+    );
+    expect(roster[0]).toMatchObject({
+      best_clip: "amcrest/500-Northern_Cardinal.wav",
+      best_confidence: 0.95,
+      best_ts: 500,
+      // First contact is untouched -- the historical record keeps its place.
+      first_clip: "amcrest/100-Northern_Cardinal.wav",
+    });
+  });
+  it("leaves the best null when no sighting carries a clip", () => {
+    const roster = shapeRoster(
+      life.slice(0, 1),
+      [{ species_sci: "Cardinalis cardinalis", ts: 100, confidence: 0.9 }],
+      null,
+    );
+    expect(roster[0].best_clip).toBeNull();
+    expect(roster[0].best_confidence).toBeNull();
   });
   it("passes the enrichment columns (#184) through untouched", () => {
     const enriched = [
@@ -483,6 +703,111 @@ describe("todayVisitors", () => {
       { species_sci: "A", species_common: "American Robin", count: 2 },
       { species_sci: "D", species_common: "Downy Woodpecker", count: 2 },
     ]);
+  });
+});
+
+// --- Life-list search (#352) -------------------------------------------------
+
+describe("speciesMatches", () => {
+  const downy = entry("Dryobates pubescens", "Downy Woodpecker", 3);
+  it("matches a case-insensitive substring of the common name", () => {
+    expect(speciesMatches(downy, "wood")).toBe(true);
+    expect(speciesMatches(downy, "WOOD")).toBe(true);
+    expect(speciesMatches(downy, "downy wood")).toBe(true);
+    expect(speciesMatches(downy, "finch")).toBe(false);
+  });
+  it("matches the scientific name too", () => {
+    expect(speciesMatches(downy, "dryobates")).toBe(true);
+    expect(speciesMatches(downy, "pubescens")).toBe(true);
+  });
+  it("a fragment mid-word still hits -- substring, not prefix", () => {
+    expect(speciesMatches(downy, "pecker")).toBe(true);
+  });
+  it("blank and all-whitespace queries match everything", () => {
+    expect(speciesMatches(downy, "")).toBe(true);
+    expect(speciesMatches(downy, "   ")).toBe(true);
+  });
+  it("a missing entry matches nothing, even on a blank query", () => {
+    expect(speciesMatches(undefined, "")).toBe(false);
+    expect(speciesMatches(undefined, "wood")).toBe(false);
+  });
+  it("trims the query -- ' wood ' is 'wood'", () => {
+    expect(speciesMatches(downy, "  wood  ")).toBe(true);
+  });
+});
+
+// --- The reconciliation poll (#352) ------------------------------------------
+
+describe("reconcileOrder", () => {
+  it("preserves the existing order exactly and appends the unseen at the end", () => {
+    const next = reconcileOrder(
+      ["B", "A"],
+      [
+        entry("A", "American Robin", 9),
+        entry("B", "Blue Jay", 5),
+        entry("C", "Carolina Wren", 1),
+        entry("D", "Downy Woodpecker", 2),
+      ],
+    );
+    expect(next).toEqual(["B", "A", "C", "D"]);
+  });
+  it("never drops a key the payload omitted -- a tile can't vanish mid-read", () => {
+    const prev = ["A", "B"];
+    const next = reconcileOrder(prev, [entry("A", "American Robin", 9)]);
+    expect(next).toEqual(["A", "B"]);
+    // And it is prev ITSELF when nothing is new, so a quiet poll re-renders
+    // nothing.
+    expect(next).toBe(prev);
+  });
+});
+
+describe("reconcileRail", () => {
+  const tile = (sci: string, common: string, count: number) => ({
+    species_sci: sci,
+    species_common: common,
+    count,
+  });
+  it("preserves pill order, lands counts in place, appends newcomers", () => {
+    const next = reconcileRail(
+      [tile("C", "Carolina Wren", 3), tile("A", "American Robin", 1)],
+      [
+        entry("A", "American Robin", 9, 2),
+        entry("B", "Blue Jay", 5, 1),
+        entry("C", "Carolina Wren", 5, 4),
+        entry("D", "Downy Woodpecker", 1, 2),
+      ],
+    );
+    expect(next).toEqual([
+      // Existing pills keep their seats, counts refreshed from the store.
+      tile("C", "Carolina Wren", 4),
+      tile("A", "American Robin", 2),
+      // Newcomers append, most-visited-today first among themselves.
+      tile("D", "Downy Woodpecker", 2),
+      tile("B", "Blue Jay", 1),
+    ]);
+  });
+  it("empties on a midnight rollover: an explicit today=0 retires a pill", () => {
+    const next = reconcileRail(
+      [tile("A", "American Robin", 7), tile("B", "Blue Jay", 2)],
+      [entry("A", "American Robin", 9, 0), entry("B", "Blue Jay", 5, 0)],
+    );
+    expect(next).toEqual([]);
+  });
+  it("keeps a pill the payload omitted -- unknown is not zero", () => {
+    // A just-minted lifer's row can trail its own bus event; the pill the
+    // live merge showed must not flicker out and back.
+    const next = reconcileRail(
+      [tile("A", "American Robin", 1)],
+      [entry("B", "Blue Jay", 5, 1)],
+    );
+    expect(next).toEqual([tile("A", "American Robin", 1), tile("B", "Blue Jay", 1)]);
+  });
+  it("picks up a common-name correction from the store", () => {
+    const next = reconcileRail(
+      [tile("A", "Amercan Robin", 1)],
+      [entry("A", "American Robin", 9, 1)],
+    );
+    expect(next).toEqual([tile("A", "American Robin", 1)]);
   });
 });
 
@@ -1422,5 +1747,26 @@ describe("newArrivals", () => {
   it("window constants say what they claim", () => {
     expect(ARRIVALS_24H_S).toBe(86400);
     expect(ARRIVALS_WEEK_S).toBe(7 * 86400);
+  });
+});
+
+describe("mastheadSub (#304, the station masthead)", () => {
+  it("home wears the line it always has", () => {
+    expect(mastheadSub()).toBe(
+      "earl with the ears · every bird the yard has announced",
+    );
+    expect(mastheadSub(null)).toBe(
+      "earl with the ears · every bird the yard has announced",
+    );
+  });
+  it("a station says whose yard it is", () => {
+    expect(mastheadSub("Karens Yard")).toBe(
+      "Karens Yard · every bird the yard has announced",
+    );
+  });
+  it("blank collapses to home, never a dangling separator", () => {
+    expect(mastheadSub("   ")).toBe(
+      "earl with the ears · every bird the yard has announced",
+    );
   });
 });

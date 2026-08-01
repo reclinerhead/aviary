@@ -16,5 +16,10 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
 export default async function SpeciesPage({ params }: Params) {
   const { species } = await params;
-  return <SpeciesProfile sci={decodeURIComponent(species)} />;
+  return (
+    <SpeciesProfile
+      sci={decodeURIComponent(species)}
+      stationName={process.env.MERLE_STATION_NAME}
+    />
+  );
 }

@@ -42,11 +42,21 @@
 # store does the pruning. Hourly, the frame_archiver pattern (pure selection,
 # injected clock), with one sacred exemption: every clip named in
 # life_list.first_clip survives FOREVER -- a lifer's first recording is part
-# of the permanent record. Day one measured ~0.70 GB/day pre-debounce (the
-# LV full in ~62 days); with the visit debounce and a 90-day horizon the
-# steady state is ~20 GB, comfortable beside the media-cache's other tenants.
-# Pruned rows keep their clip path -- append-only store, and a missing file
-# is an honest gap (the Field Journal's pruned-thumbnail precedent).
+# of the permanent record. Pruned rows keep their clip path -- append-only
+# store, and a missing file is an honest gap (the Field Journal's
+# pruned-thumbnail precedent).
+#
+# TWO ARMS, IN ORDER: the age horizon, then the DISK BUDGET (#330). The
+# horizon alone was never enough, and the numbers that once said otherwise
+# were wrong: this header used to promise "~20 GB steady state" against a
+# measured 2026-07-28 reality of ~1 GB/day (668 clips/day x 831 KB, doubled
+# by #325's automatic siblings) on a 47 GB LV shared with the music cache --
+# the volume fills in about a month and never reaches day 90. Every clip on
+# pearl was younger than 30 days, so the age sweep had never once fired in
+# production. budget_selection() evicts oldest-first until the tree fits,
+# and the lifer exemption is absolute under it: if the sacred set alone
+# busts the cap, the pass takes what it may and main() says so out loud
+# rather than deleting first-heard evidence to satisfy a disk number.
 #
 # Config (env):
 #   MERLE_MQTT                 the broker, REQUIRED (bus.py raises without it)
@@ -57,6 +67,12 @@
 #   MERLE_EARL_CLIPS           Earl's clip dir (same value as the earl unit's;
 #                              default "clips"). Missing dir = nothing pruned.
 #   MERLE_EARL_CLIPS_KEEP_DAYS retention horizon (default 90)
+#   MERLE_EARL_CLIPS_CAP_GB    the disk budget (#330). UNSET = no cap, the
+#                              pre-#330 behavior exactly, so no box changes
+#                              retention until someone picks a number.
+#                              Malformed fails LOUD (the env_float ethos): a
+#                              typo'd cap reading as "no cap" is how a
+#                              volume fills while the config claims safety.
 #   MERLE_LATLON               "lat,lon" -- used ONLY to seed location 1 (Home)
 #                              at first upgrade (issue #232). Unlike earl.py,
 #                              sightings does NOT require it: a consumer that
@@ -132,9 +148,29 @@ def db_path():
 
 
 def connect(path, home_latlon=None):
-    """weather_archive.connect(), same reasons: WAL so a future reader never
-    sees "database is locked", idempotent schema so a fresh pearl and an old
-    file take the same path. ":memory:" for tests.
+    """weather_archive.connect()'s shape, with one deliberate divergence:
+    WAL so a future reader never sees "database is locked", idempotent schema
+    so a fresh pearl and an old file take the same path -- but
+    **synchronous=FULL, not NORMAL** (issue #322). ":memory:" for tests.
+
+    Why this store syncs and the weather archive doesn't. Under NORMAL, a WAL
+    commit is not fsynced; durability arrives whenever a checkpoint does, and
+    auto-checkpoint waits for ~1000 pages. A yard writing a handful of tiny
+    rows a day can go DAYS between checkpoints, and a power cut in that window
+    discards every committed-but-unsynced frame. Losing minutes of weather to
+    that is a shrug -- the next poll refills the trail. Losing a first-heard
+    date is losing the one fact this file exists to hold and no API sells
+    back, and on a remote station (epic #212) a power cut isn't the exotic
+    failure, it's the expected one. Measured on birdhouse 2026-07-28: a cold
+    power-off took the whole day-one record with it.
+
+    Checkpointing at connect time is the second half. It bounds how old the
+    un-folded tail can get (every unit restart folds it into the main file),
+    and it forces the WAL-index recovery that an unclean shutdown leaves
+    pending -- the state that had a live writer and every reader disagreeing
+    about the store's contents for ten real minutes. Best-effort on purpose:
+    with no busy timeout set, a checkpoint blocked by a live reader returns
+    busy rather than waiting, so a slow prune sweep can never delay startup.
 
     `home_latlon` (a (lat, lon) tuple, or None) seeds location 1's coords the
     first time this runs against a store -- main() passes MERLE_LATLON; tests
@@ -145,10 +181,12 @@ def connect(path, home_latlon=None):
     conn.row_factory = sqlite3.Row
     if path != ":memory:":
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA synchronous=FULL")
     conn.executescript(SCHEMA)
     _upgrade(conn, home_latlon)
     conn.commit()
+    if path != ":memory:":
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return conn
 
 
@@ -221,11 +259,37 @@ def _ensure_home(conn, home_latlon):
             (lat, lon, HOME_LOCATION_ID))
 
 
+def is_other_kind(payload):
+    """True when this is a well-formed event of a kind this consumer simply
+    doesn't persist (issue #324).
+
+    `parse_event` answers None for two very different things -- "not ours"
+    and "garbage" -- and the caller could not tell them apart, so every
+    #174 sound event was announced as a "dropped malformed message". A
+    summer yard produces those all night (crickets, frogs, a passing
+    engine), which is the #35 journal-spam disease: the noise buries the
+    lines that matter, and the wording actively lies about a mechanism that
+    is working exactly as designed -- ignoring unknown kinds IS the two-tier
+    schema's forward-compatibility guard (#172).
+
+    So: anything that parses as a JSON object whose `kind` is not
+    "detection" is deliberately ours to ignore, silently, including kinds
+    invented after this code was written. Real garbage -- unparseable
+    bytes, or a "detection" missing the fields a detection must have --
+    still gets its loud line, because that one means something is wrong."""
+    try:
+        event = json.loads(payload)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(event, dict) and event.get("kind") != "detection"
+
+
 def parse_event(payload):
     """One audio/events message -> the row dict, or None for anything that
     isn't a well-formed detection (never trust the wire -- the frame_archiver
     rule; a malformed message is logged by the caller and dropped, never a
-    dead consumer)."""
+    dead consumer). The caller asks `is_other_kind` first, so only genuine
+    malformations reach that log line (#324)."""
     try:
         event = json.loads(payload)
         if event.get("kind") != "detection":
@@ -287,6 +351,28 @@ def record(conn, row):
 ENH_SUFFIX = "-enh.wav"
 
 
+def clips_cap_bytes():
+    """MERLE_EARL_CLIPS_CAP_GB -> bytes, or None when unset (no size cap:
+    the pre-#330 behavior, age horizon only -- so an existing box keeps its
+    exact current retention until someone chooses a number).
+
+    Fail-loud on garbage, the env_float ethos: a typo'd cap that quietly
+    read as "no cap" is precisely how a volume fills while the config
+    claims it is protected."""
+    raw = os.environ.get("MERLE_EARL_CLIPS_CAP_GB", "").strip()
+    if not raw:
+        return None
+    try:
+        gb = float(raw)
+    except ValueError:
+        raise RuntimeError("MERLE_EARL_CLIPS_CAP_GB is not a number: "
+                           f"{raw!r}")
+    if gb <= 0:
+        raise RuntimeError("MERLE_EARL_CLIPS_CAP_GB must be positive, got "
+                           f"{gb}")
+    return int(gb * 1e9)
+
+
 def prune_selection(files, now_ts, keep_days, exempt):
     """Which clips to delete: older than the horizon AND not a lifer's first
     recording. `files` is [(relpath, mtime_ts)]; pure with an injected clock
@@ -325,16 +411,88 @@ def prune_selection(files, now_ts, keep_days, exempt):
     return doomed
 
 
+def budget_selection(files, exempt, cap_bytes, already_doomed=()):
+    """Which FURTHER clips to delete so the tree fits `cap_bytes` (issue
+    #330). `files` is [(relpath, mtime, size)]; pure, the prune_selection
+    precedent one measurement over. Returns [] when the tree already fits.
+
+    Age cannot protect a volume it does not measure, which is the whole
+    reason this exists: pearl writes ~1 GB/day of clips-plus-siblings onto a
+    47 GB LV shared with the music cache, so it would fill the disk in about
+    a month and never reach the 90-day horizon -- measured 2026-07-28, with
+    every clip on the box younger than 30 days and the age sweep therefore
+    never once having fired in production.
+
+    Eviction is OLDEST FIRST, and three rules hold whatever the pressure:
+
+    * A lifer's first recording is NEVER evicted -- the exemption is
+      absolute under the budget exactly as it is under the horizon. If the
+      sacred set alone exceeds the cap, this returns everything it may take
+      and still leaves the tree over budget; the CALLER says so out loud.
+      Deleting first-heard evidence to satisfy a disk number would trade the
+      one irreplaceable thing here for the one cheapest thing.
+    * The species/ portrait shelf is never evicted either (permanent
+      collection, #184) -- but it DOES count toward usage, as do the exempt
+      clips. Measuring only the evictable half would make the cap a lie the
+      moment the permanent half grew.
+    * An enhanced sibling shares its original's fate (#190), evicted as one
+      unit and freeing both files' bytes -- the age arm's rule, restated
+      where the arithmetic happens."""
+    if not cap_bytes:
+        return []
+    doomed = set(already_doomed)
+    size = {relpath: nbytes for relpath, _, nbytes in files}
+    present = set(size)
+    total = sum(nbytes for relpath, _, nbytes in files if relpath not in doomed)
+    if total <= cap_bytes:
+        return []
+
+    candidates = []            # (mtime, [relpath, ...]) -- a clip and sibling
+    for relpath, mtime, _ in files:
+        if relpath in doomed or relpath in exempt:
+            continue
+        if relpath.startswith("species/"):
+            continue           # counted above, never evicted
+        if relpath.endswith(ENH_SUFFIX):
+            original = relpath[:-len(ENH_SUFFIX)] + ".wav"
+            if original in present:
+                continue       # rides with its original, below
+            candidates.append((mtime, [relpath]))      # orphan, on its own
+            continue
+        if not relpath.endswith(".wav"):
+            continue
+        sibling = relpath[:-len(".wav")] + ENH_SUFFIX
+        group = [relpath] + ([sibling] if sibling in present else [])
+        candidates.append((mtime, group))
+
+    evicted = []
+    for _, group in sorted(candidates, key=lambda c: c[0]):
+        if total <= cap_bytes:
+            break
+        for relpath in group:
+            if relpath in doomed:
+                continue
+            doomed.add(relpath)
+            evicted.append(relpath)
+            total -= size.get(relpath, 0)
+    return evicted
+
+
 def list_clips(clips_dir):
-    """Every file under the clips dir as (posix relpath, mtime). A missing
-    dir is an empty list -- a box that never wrote a clip has nothing to
-    prune, not an error."""
+    """Every file under the clips dir as (posix relpath, mtime, size). A
+    missing dir is an empty list -- a box that never wrote a clip has
+    nothing to prune, not an error. One stat() per file serves both arms:
+    the age sweep reads the mtime, the budget sweep the size."""
     out = []
     for root, _, names in os.walk(clips_dir):
         for f in names:
             full = os.path.join(root, f)
             rel = os.path.relpath(full, clips_dir).replace(os.sep, "/")
-            out.append((rel, os.path.getmtime(full)))
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue       # vanished under us; next pass sees the truth
+            out.append((rel, st.st_mtime, st.st_size))
     return out
 
 
@@ -349,24 +507,37 @@ def exempt_clips(conn):
             if r["first_clip"]}
 
 
-def prune_clips(clips_dir, store_path, keep_days, now_ts=None):
-    """One retention pass. Own short-lived read connection -- the paho
-    callback thread owns the writer, and two threads on one sqlite handle
-    is a fight not worth having. Returns how many files went."""
+def prune_clips(clips_dir, store_path, keep_days, now_ts=None,
+                cap_bytes=None):
+    """One retention pass: the age horizon first, then the disk budget on
+    whatever survived it (#330). Own short-lived read connection -- the paho
+    callback thread owns the writer, and two threads on one sqlite handle is
+    a fight not worth having.
+
+    Returns (aged, over_budget, still_over) -- the two counts the caller
+    logs separately (they mean different things: one is policy working, the
+    other is the yard outrunning the disk), and whether the tree is STILL
+    over cap after taking everything it was allowed to take."""
     conn = connect(store_path)
     try:
         exempt = exempt_clips(conn)
     finally:
         conn.close()
-    doomed = prune_selection(list_clips(clips_dir),
-                             now_ts if now_ts is not None else time.time(),
-                             keep_days, exempt)
-    for relpath in doomed:
+    sized = list_clips(clips_dir)
+    aged = prune_selection([(relpath, mtime) for relpath, mtime, _ in sized],
+                           now_ts if now_ts is not None else time.time(),
+                           keep_days, exempt)
+    over = budget_selection(sized, exempt, cap_bytes, aged)
+    gone = set(aged) | set(over)
+    for relpath in aged + over:
         try:
             os.remove(os.path.join(clips_dir, relpath))
         except OSError:
             pass   # already gone or busy; next hour's pass will retry
-    return len(doomed)
+    still_over = bool(cap_bytes) and sum(
+        nbytes for relpath, _, nbytes in sized if relpath not in gone
+    ) > cap_bytes
+    return len(aged), len(over), still_over
 
 
 def home_latlon_from_env():
@@ -377,8 +548,9 @@ def home_latlon_from_env():
     raw = os.environ.get("MERLE_LATLON", "").strip()
     if not raw:
         print("[sightings] MERLE_LATLON not set -- location 1 (Home) seeded "
-              "with placeholder coords; set it on this unit (Servers/Pearl.md) "
-              "so the import pass can mask Home correctly", flush=True)
+              "with placeholder coords; set it on this unit (this box's "
+              "runbook under Servers/) so the import pass can mask Home "
+              "correctly", flush=True)
         return None
     try:
         return gate.parse_latlon(raw)
@@ -395,8 +567,12 @@ def main():
     clips_dir = os.environ.get("MERLE_EARL_CLIPS", "").strip() or "clips"
     keep_days = float(os.environ.get("MERLE_EARL_CLIPS_KEEP_DAYS",
                                      DEFAULT_KEEP_DAYS))
+    cap_bytes = clips_cap_bytes()
+    cap_note = (f", cap {cap_bytes / 1e9:.0f} GB" if cap_bytes
+                else ", no size cap")
     print(f"[sightings] recording to {path}; pruning {clips_dir} past "
-          f"{keep_days:.0f} days (lifer first-clips exempt)", flush=True)
+          f"{keep_days:.0f} days{cap_note} (lifer first-clips exempt)",
+          flush=True)
 
     def on_connect(client, userdata, flags, reason_code, properties):
         client.subscribe(bus.AUDIO_EVENTS_TOPIC)
@@ -406,8 +582,12 @@ def main():
     def on_message(client, userdata, message):
         row = parse_event(message.payload)
         if row is None:
-            print(f"[sightings] dropped malformed message "
-                  f"({message.payload[:80]!r})", flush=True)
+            # A kind we don't persist is the designed common case, not an
+            # incident -- it leaves no trace here, exactly as the two-tier
+            # schema intends (#324). Only real malformations get ink.
+            if not is_other_kind(message.payload):
+                print(f"[sightings] dropped malformed message "
+                      f"({message.payload[:80]!r})", flush=True)
             return
         try:
             is_lifer = record(conn, row)
@@ -440,10 +620,25 @@ def main():
                 continue
             next_prune = time.time() + PRUNE_INTERVAL_S
             try:
-                pruned = prune_clips(clips_dir, path, keep_days)
-                if pruned:
-                    print(f"[sightings] pruned {pruned} clips past the "
+                aged, over, still_over = prune_clips(
+                    clips_dir, path, keep_days, cap_bytes=cap_bytes)
+                if aged:
+                    print(f"[sightings] pruned {aged} clips past the "
                           f"{keep_days:.0f}-day horizon", flush=True)
+                # Budget evictions are logged SEPARATELY and always: an age
+                # prune is policy working as designed, a budget prune means
+                # the yard is outrunning the disk and someone should know
+                # (the no-silent-caps rule -- this tree holds evidence).
+                if over:
+                    print(f"[sightings] evicted {over} more clips to fit the "
+                          f"{cap_bytes / 1e9:.0f} GB cap -- oldest first, "
+                          "lifer first-clips untouched", flush=True)
+                if still_over:
+                    print("[sightings] STILL over the clip cap after "
+                          "evicting everything evictable -- the exempt "
+                          "lifer clips and species portraits alone exceed "
+                          "it. Raise MERLE_EARL_CLIPS_CAP_GB or grow the "
+                          "volume; nothing sacred was deleted.", flush=True)
             except Exception as e:
                 print(f"[sightings] prune failed ({e}) -- retrying next "
                       "hour", flush=True)

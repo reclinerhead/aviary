@@ -2,23 +2,50 @@
 # =============================================================================
 # project-squirrel -- Servers/autodeploy.sh
 #
-# The deploy watcher (issue #95): a long-lived loop that checks origin/main
-# every MERLE_DEPLOY_INTERVAL_S and brings this box current when it moves --
-# pull, restart the units listed in MERLE_DEPLOY_UNITS, and (on pearl, where
-# MERLE_DEPLOY_MCC=1) rebuild + restart the MCC when the merge touched mcc/.
-# Merging a PR IS the deploy; nobody SSHes anywhere.
+# The deploy watcher (issue #95; role-generalized in #303): a long-lived
+# loop that checks origin/main every MERLE_DEPLOY_INTERVAL_S and brings this
+# box current when it moves -- pull, restart the units listed in
+# MERLE_DEPLOY_UNITS, and (where MERLE_DEPLOY_MCC=1) rebuild + restart the
+# MCC when the merge touched mcc/. Merging a PR IS the deploy; nobody SSHes
+# anywhere -- which is the whole fleet story of epic #212 principle 2: main
+# must stay deployable for boxes we can't walk over to.
 #
-# Pull-based on purpose: the repo is public, which rules out self-hosted
-# GitHub Actions runners (GitHub advises against them on public repos), and a
-# webhook receiver would need an inbound hole through the gateway -- this LAN
-# has never had one. A 60s poll is invisible traffic and merge-to-live in
-# under a minute.
+# One script, several unit names (#303's call, documented): pearl and merle
+# run this as `merle-autodeploy` (historical -- renaming a live unit on two
+# boxes buys nothing), stations as `station-autodeploy` with the unit list
+# arriving from the station env file (EnvironmentFile=/home/todd/station.env,
+# so the ROLE owns the list -- station.env.example documents it). The loop
+# itself is this one file everywhere; two forks of it is the outcome #303
+# exists to avoid.
+#
+# Pull-based on purpose: a webhook receiver would need an inbound hole
+# through the gateway -- no LAN this runs on has ever had one, and a station
+# on someone else's network never will. A 60s poll is invisible traffic and
+# merge-to-live in under a minute.
+#
+# The repo is PRIVATE (it was public when this shipped; discovered the hard
+# way 2026-07-27 when pearl sat silently unfetchable at #295 for days).
+# Every box authenticates its pull with a per-box READ-ONLY deploy key --
+# an ed25519 keypair generated on the box, its public half added at
+# github.com/<repo>/settings/keys with write access OFF, and origin set to
+# the ssh URL (git@github.com:...). Repo-scoped, revocable in one click,
+# and no account credential ever lives on a remote box -- the guest posture
+# a station demands, applied to the whole fleet.
 #
 # A LOOP SERVICE, not a systemd timer: a timer firing a oneshot every minute
 # writes start/finish journal lines forever -- thousands of lines a day
 # saying "nothing happened", the disease issue #35 cured in the MCC proxy.
 # This loop logs ONLY when it acts (or something breaks), so
-# `journalctl -u merle-autodeploy` reads as a deploy history.
+# `journalctl -u merle-autodeploy` (or `-u station-autodeploy`) reads as a
+# deploy history.
+#
+# Remote-failure posture (#303 -- a station is two hours from a keyboard):
+# deploys touch exactly two things, the checkout and systemctl restart.
+# Never earl.db, clips, or the station env file (all live outside the repo
+# or untracked -- a pull cannot reach them), and never sshd/tailscaled (not
+# in any MERLE_DEPLOY_UNITS), so a deploy that breaks a service leaves the
+# box reachable and the failure in the journal; the restart loop below logs
+# and continues rather than dying with the unit it restarted.
 #
 # Root/user split: the unit runs as ROOT -- the whole point is restarting
 # units without a sudo password -- but every git and pnpm step is demoted to
@@ -30,11 +57,15 @@
 # all, and --reset-env gives the demoted step the owner's HOME (so `bash -l`
 # finds the right profile, and pnpm the right PATH).
 #
-# Config (env, set in the unit):
+# Config (env -- Environment= lines in pearl/merle's unit, the station env
+# file on stations):
 #   MERLE_DEPLOY_UNITS       space-separated units to restart on any main
-#                            change (pearl: the three Python services;
-#                            merle: narrator-jim). Empty = restart nothing.
-#   MERLE_DEPLOY_MCC         "1" on pearl only: when the pulled range touches
+#                            change (pearl: the Python services; merle:
+#                            narrator-jim; stations: earl-listener
+#                            earl-sightings willard-weather). Empty =
+#                            restart nothing.
+#   MERLE_DEPLOY_MCC         "1" where the box serves the MCC (pearl and
+#                            every station): when the pulled range touches
 #                            mcc/, run install -> build -> restart for
 #                            mcc-dashboard (the deploy-mcc.sh order; a failed
 #                            build never restarts -- old code keeps serving)
@@ -45,8 +76,8 @@
 #   MERLE_DEPLOY_USER        checkout owner, default todd
 #   MERLE_REPO               checkout path, default /home/todd/project-squirrel
 #
-# Manual escape hatches: `systemctl stop merle-autodeploy` pauses it (manual
-# pulls and Servers/deploy-mcc.sh keep working exactly as before);
+# Manual escape hatches: `systemctl stop <the watcher unit>` pauses it
+# (manual pulls and Servers/deploy-mcc.sh keep working exactly as before);
 # `autodeploy.sh --once` runs a single tick by hand, no loop.
 #
 # Deliberately NOT `set -e`: the loop must survive a failed fetch, restart,

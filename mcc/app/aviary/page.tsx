@@ -12,5 +12,8 @@ export const metadata: Metadata = {
 };
 
 export default function AviaryPage() {
-  return <Aviary />;
+  // The station's display name (#304, epic #212), read server-side at
+  // request time -- a client component reading runtime env would hydrate
+  // to a mismatch. Absent at home; the masthead falls back to its old self.
+  return <Aviary stationName={process.env.MERLE_STATION_NAME} />;
 }

@@ -102,6 +102,18 @@
 #                         invariant is not configurable)
 #   MERLE_EARL_CLIPS      clip dir (default "clips" under WorkingDirectory;
 #                         the unit points it at /srv/media-cache/earl)
+#   MERLE_BIRDNET_LIBRARY birdnet.load(..., library=...) for BOTH model
+#                         sites (#299). Stations without AVX set "litert" --
+#                         the J5005 class SIGILLs on the default path's full
+#                         TF, and ai-edge-litert runs the same models at the
+#                         same measured speed. Unset omits the kwarg
+#                         entirely, so pearl's calls are byte-for-byte
+#                         untouched.
+#   MERLE_YAMNET_TFLITE   path to the yamnet.tflite classification model:
+#                         the gate's LiteRT arm (#300), for the same no-AVX
+#                         boxes -- the hub arm needs full TF. Unset runs the
+#                         hub arm exactly as before. Either arm failing to
+#                         load runs Earl UNGATED and loud, never dead.
 # =============================================================================
 
 import json
@@ -129,6 +141,9 @@ SILENT_RMS = 0.001
 WEATHER_STALE_S = 30 * 60             # the narrator's staleness rule
 GEO_MIN_CONFIDENCE = 0.03             # birdnet's own default, kept explicit
 YAMNET_HANDLE = "https://tfhub.dev/google/yamnet/1"   # hub caches locally
+YAMNET_FRAME_SAMPLES = 15600   # the tflite variant's FIXED input: 0.975 s @ 16 kHz
+YAMNET_HOP_SAMPLES = 7800      # half-frame hop, the variant's convention
+YAMNET_LABEL_MEMBER = "yamnet_label_list.txt"   # rides inside the .tflite (zip)
 GATE_TOP_K = 7                        # classes handed to gate.route per window
 GATE_STATS_WINDOWS = 100              # gate counter log cadence (~5 min)
 
@@ -243,23 +258,107 @@ def read_exact(stream, n, timeout=None):
     return b"".join(parts)
 
 
+def birdnet_load_kwargs(environ=None):
+    """Extra kwargs for both birdnet.load() sites, from MERLE_BIRDNET_LIBRARY
+    (issue #299). No-AVX stations (#212's birdhouse class) set "litert";
+    unset or blank returns {} so the kwarg is ABSENT, not library=None --
+    pearl's calls stay exactly what they were, and the package default
+    remains the package's business. Reads the env at call time: the load
+    happens in spawned workers, and spawn hands each child the parent's
+    environment."""
+    environ = os.environ if environ is None else environ
+    library = environ.get("MERLE_BIRDNET_LIBRARY", "").strip()
+    return {"library": library} if library else {}
+
+
 def allowed_species_set(lat, lon, week):
     """The D4 mask: geo-model species for here-and-now, as a set of
     scientific names. Raises on any failure -- the caller decides how loud
     to be and runs unmasked (never dead)."""
     import birdnet
-    geo = birdnet.load("geo", "2.4", "tf")
+    geo = birdnet.load("geo", "2.4", "tf", **birdnet_load_kwargs())
     df = geo.predict(lat, lon, week=week,
                      min_confidence=GEO_MIN_CONFIDENCE).to_dataframe()
     return {gate.split_label(label)[0] for label in df["species_name"]}
+
+
+def yamnet_frame_starts(n_samples):
+    """Start offsets of the full YAMNET_FRAME_SAMPLES-sized frames a 16 kHz
+    window yields at half-frame hop. Full frames only: the tail a fixed
+    framing can't cover (~75 ms of a 3 s window) goes unscored -- speech
+    longer than that cannot hide in it, and the hub model's own patch
+    framing drops partial patches too. Pure so the fencepost is testable."""
+    if n_samples < YAMNET_FRAME_SAMPLES:
+        return []
+    return list(range(0, n_samples - YAMNET_FRAME_SAMPLES + 1,
+                      YAMNET_HOP_SAMPLES))
+
+
+def yamnet_labels(model_path):
+    """The 521 display names ride INSIDE the .tflite, as zip member
+    yamnet_label_list.txt (a tflite file with metadata is also a valid zip
+    read from the end -- stdlib zipfile opens it as-is). One name per line,
+    same display-name vocabulary as the hub arm's CSV column, so the gate
+    map needs no translation."""
+    import io
+    import zipfile
+    with zipfile.ZipFile(model_path) as z:
+        with z.open(YAMNET_LABEL_MEMBER) as f:
+            return [line.strip()
+                    for line in io.TextIOWrapper(f, encoding="utf-8")
+                    if line.strip()]
+
+
+def _load_yamnet_litert(np, log, model_path):
+    """The seam's LiteRT arm (#300), for boxes where full TF cannot import
+    (#212's no-AVX stations). Same classify contract as the hub arm. The
+    tflite classification variant takes a FIXED 0.975 s frame, so the 3 s
+    window is framed at half-frame hop and per-class scores are MEANED over
+    frames -- the hub arm's scores.mean(axis=0) reproduced one level up, so
+    the gate's tuned floors keep their meaning. Measured on birdhouse:
+    9.7 ms per frame, ~50 ms per 3 s window -- pearl's hub-arm class."""
+    from ai_edge_litert.interpreter import Interpreter
+
+    names = yamnet_labels(model_path)
+    unknown = gate.unknown_gate_classes(names)
+    if unknown:
+        log(f"GATE MAP WARNING: routing entries the model doesn't know "
+            f"(they will never match): {unknown}")
+
+    interp = Interpreter(model_path=model_path)
+    interp.allocate_tensors()
+    inp = interp.get_input_details()[0]["index"]
+    out = interp.get_output_details()[0]["index"]
+
+    def classify(audio48k):
+        wave = (audio48k[: len(audio48k) // 3 * 3]
+                .reshape(-1, 3).mean(axis=1).astype(np.float32))
+        starts = yamnet_frame_starts(len(wave))
+        if not starts:
+            return []   # shorter than one frame -> no verdict; route() reads
+                        # an empty list as "listen", the do-no-harm arm
+        scores = None
+        for s in starts:
+            interp.set_tensor(inp, wave[s:s + YAMNET_FRAME_SAMPLES])
+            interp.invoke()
+            frame = np.array(interp.get_tensor(out)).reshape(-1)
+            scores = frame if scores is None else scores + frame
+        scores = scores / len(starts)
+        top = scores.argsort()[-GATE_TOP_K:][::-1]
+        return [(names[i], float(scores[i])) for i in top]
+
+    log(f"yamnet gate: litert arm ({model_path})")
+    return classify
 
 
 def load_yamnet(np, log):
     """The front gate, and the 2b seam (issue #174): returns
     classify(audio48k) -> [(class_name, score)] best-first, or None when the
     gate can't load -- Earl then runs UNGATED (Phase 1 behavior) and says so
-    in every stats line, never silently. The Coral phase (2b) swaps this
-    function's implementation for a TPU delegate; nothing upstream changes.
+    in every stats line, never silently. Two arms behind the one seam --
+    MERLE_YAMNET_TFLITE set routes to LiteRT (#300, the no-AVX stations);
+    unset is the hub arm, untouched. The Coral phase (2b) adds a third the
+    same way; nothing upstream changes.
 
     CPU cost, measured on pearl: ~56-80 ms warm per 3 s window -- a few
     percent of the budget, and additive now rather than a saving, since
@@ -268,6 +367,10 @@ def load_yamnet(np, log):
     good-enough low-pass for classification (BirdNET always sees the
     full-rate audio)."""
     try:
+        tflite_path = os.environ.get("MERLE_YAMNET_TFLITE", "").strip()
+        if tflite_path:
+            return _load_yamnet_litert(np, log, tflite_path)
+
         import csv
 
         import tensorflow as tf
@@ -310,7 +413,7 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
     log = lambda msg: print(f"[{name}] {msg}", flush=True)
     log(f"worker up: {redacted}")
 
-    model = birdnet.load("acoustic", "2.4", "tf")
+    model = birdnet.load("acoustic", "2.4", "tf", **birdnet_load_kwargs())
     classify = load_yamnet(np, log)
 
     week = birdnet_week()
@@ -444,23 +547,31 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                 # bird is singing.
                 if verdict == "notable":
                     for klass, score in hits:
-                        action, relpath = sound_visits.observe(
-                            klass, ts, score,
-                            gate.clip_relpath(name, ts, klass))
-                        if action == "extend":
+                        # A sound visit writes NO clip (#327). The tracker
+                        # still debounces and tracks the visit's best for
+                        # the "visit closed" line, but the candidate path is
+                        # None because nothing would ever read the file:
+                        # sightings.py never persists kind:"sound" (the #174
+                        # two-tier design), so once the live ticker moves on,
+                        # no route, table, or query can reach it. Measured on
+                        # birdhouse's first outdoor evening: crickets alone
+                        # were 43% of the clip tree, all of it unreachable.
+                        # The EVENT still flows -- class, confidence, rms --
+                        # so the ticker, gate stats, and the future training
+                        # loop (#278) keep every observation. Only the orphan
+                        # bytes stop. Clips return if sound events ever gain
+                        # a persistent consumer.
+                        action, _ = sound_visits.observe(
+                            klass, ts, score, None)
+                        if action != "open":
                             continue
-                        pending.append((relpath, list(context)))
-                        if action == "open":
-                            payload = gate.shape_sound_event(
-                                source=name, ts=ts, klass=klass,
-                                confidence=score, clip_relpath=relpath,
-                                windy=windy, rms=rms)
-                            queue.put(("event", name, payload))
-                            log(f"sound: {klass} {score:.2f}"
-                                f"{' (wind-suspect)' if windy else ''}")
-                        else:
-                            log(f"sound: {klass} {score:.2f} -- visit best, "
-                                f"clip upgraded")
+                        payload = gate.shape_sound_event(
+                            source=name, ts=ts, klass=klass,
+                            confidence=score, clip_relpath=None,
+                            windy=windy, rms=rms)
+                        queue.put(("event", name, payload))
+                        log(f"sound: {klass} {score:.2f}"
+                            f"{' (wind-suspect)' if windy else ''}")
 
                 # Every non-speech window reaches BirdNET -- the Phase 1
                 # path, byte-identical from here (including its own human

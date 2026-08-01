@@ -124,10 +124,14 @@ def profile_writer(description="A very red bird."):
 
     def fake(conn, media, sci):
         calls.append(sci)
+        # voice_version/voice_checked_ts mirror the real pass: written
+        # whether or not vocalization prose was found (#315, #317), which is
+        # what takes the species off the worklist for good.
         conn.execute(
             "INSERT OR REPLACE INTO species_profile (species_sci,"
-            " description, fetched_ts) VALUES (?,?,?)",
-            (sci, description, NOW))
+            " description, voice_version, voice_checked_ts, fetched_ts)"
+            " VALUES (?,?,?,?,?)",
+            (sci, description, species_profile.VOICE_VERSION, NOW, NOW))
         conn.commit()
         return "no-image"
 
@@ -186,12 +190,18 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
                                        ("B sci", "Bunting"),
                                        ("C sci", "Cardinal")]):
         seed(store, sci, common, [at(2026, 7, 18, 7 + i)])
-        # Pre-filled profiles keep the Wikipedia half off the wire entirely.
+        # Pre-filled profiles keep the Wikipedia half off the wire entirely
+        # -- which now requires voice_version at the CURRENT generation
+        # (#315, #317), or the voice backfill arm would put these three
+        # straight back on the worklist and this test would make real HTTP
+        # calls. Bumping VOICE_VERSION without updating this seed is exactly
+        # how that regresses, so it reads the constant rather than a literal.
         store.execute(
             "INSERT INTO species_profile (species_sci, description,"
-            " image_file, image_source, image_w, image_h, fetched_ts)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (sci, "prose", "x.jpg", "wikipedia", 900, 600, 1))
+            " image_file, image_source, image_w, image_h, voice_version,"
+            " voice_checked_ts, fetched_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+            (sci, "prose", "x.jpg", "wikipedia", 900, 600,
+             species_profile.VOICE_VERSION, 1, 1))
     store.commit()
     monkeypatch.setenv("MERLE_OLLAMA", "fakehost")
     monkeypatch.setenv("MERLE_ENRICH_CAP", "1")
@@ -219,6 +229,56 @@ def test_a_cap_of_zero_skips_the_host_entirely(store, monkeypatch, fake_llm):
 
     assert probed == []                               # not even a probe spent
     assert fake_llm == []
+
+
+def make_clip(clips_dir, relpath, seconds=9.0):
+    """A real little WAV under the clips tree -- quiet noise with a synthetic
+    warble in the event window, enough samples for the pass's FFT."""
+    import numpy as np
+    from listener import clip_enhance, gate
+    sr = gate.SAMPLE_RATE
+    t = np.arange(int(seconds * sr)) / sr
+    x = 0.01 * np.sin(2 * np.pi * 4000 * t) * (t > 3.0)
+    path = clips_dir / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clip_enhance.write_wav(str(path), x.astype(np.float64), sr)
+    return path
+
+
+def test_clip_pass_enhances_and_second_tick_is_quiet(store, monkeypatch,
+                                                     tmp_path, capsys):
+    """#325: a clip with no sibling gets one within a tick, via the same
+    per-clip function the CLI calls; the next tick finds a current sibling
+    and -- the journal rule -- says nothing at all."""
+    clips = tmp_path / "clips"
+    make_clip(clips, "window-mic/100-Blue_Jay.wav")
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: None)
+
+    results = loop.tick(now=NOW)
+
+    assert results["clips"] == {"enhanced": 1}
+    assert (clips / "window-mic/100-Blue_Jay-enh.wav").exists()
+    assert "clips: 1 enhanced" in capsys.readouterr().out
+
+    capsys.readouterr()
+    assert loop.tick(now=NOW)["clips"] == {}
+    assert capsys.readouterr().out == ""              # idempotent AND quiet
+
+
+def test_clip_pass_bounds_a_backlog_and_counts_the_deferred(store, monkeypatch,
+                                                            tmp_path):
+    """The first drain of a weeks-deep backlog must not own the tick: the
+    cap defers the rest LOUDLY (no silent caps), and the idempotent worklist
+    hands the remainder to the next tick."""
+    clips = tmp_path / "clips"
+    for i in range(3):
+        make_clip(clips, f"window-mic/{i}-Wren.wav")
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: None)
+    monkeypatch.setattr(loop, "CLIP_TICK_CAP", 2)
+
+    first = loop.tick(now=NOW)["clips"]
+    assert first == {"enhanced": 2, "deferred": 1}
+    assert loop.tick(now=NOW)["clips"] == {"enhanced": 1}
 
 
 def test_no_page_species_retry_daily_not_per_tick(store, monkeypatch):
