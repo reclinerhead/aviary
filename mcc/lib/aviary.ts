@@ -298,6 +298,55 @@ export function portraitAspect(
 
 // --- Route parameter parsing (the parseRange discipline) --------------------
 
+/** A satisfiable single byte range, inclusive on both ends (RFC 7233's own
+ * convention -- `bytes 0-1/12345` is TWO bytes). */
+export type ByteRange = { start: number; end: number };
+
+/** Parse an HTTP `Range` header against a resource of `size` bytes (#377).
+ *
+ * This exists because WebKit refuses media served without it: iOS/iPadOS
+ * Safari probes `<audio>` sources with `Range: bytes=0-1` and treats a
+ * 200-with-full-body answer as a FAILED load -- which made every Aviary clip
+ * on an iPhone error out, exhaust the enh->raw fallback, and wear the
+ * "faded" stamp meant for pruned files. Desktop engines tolerate the bare
+ * 200, which is why the bug shipped invisibly in #183.
+ *
+ * Three answers, mirroring the spec's three postures:
+ *   null              -- no header, or nothing this parser is willing to
+ *                        honor (malformed, multi-range, non-bytes units,
+ *                        end before start). RFC 7233 lets a server IGNORE
+ *                        such a header, so the route serves the full 200 --
+ *                        always correct, never a lie.
+ *   "unsatisfiable"   -- well-formed but askable of no byte this file has
+ *                        (start past EOF, empty suffix, any range of an
+ *                        empty file) -> 416 with `bytes *  /total`.
+ *   {start, end}      -- the slice to serve as a 206. The end clamps to
+ *                        EOF (asking past the end is fine; starting past
+ *                        it is not) -- the spec's rule, not a kindness.
+ */
+export function parseRange(
+  header: string | null,
+  size: number,
+): ByteRange | "unsatisfiable" | null {
+  if (header === null) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m) return null;
+  const [, startRaw, endRaw] = m;
+  if (startRaw === "" && endRaw === "") return null; // "bytes=-": nonsense
+  if (startRaw === "") {
+    // Suffix range: the LAST n bytes. A zero-length suffix names no byte.
+    const n = Number(endRaw);
+    if (n === 0 || size === 0) return "unsatisfiable";
+    return { start: Math.max(0, size - n), end: size - 1 };
+  }
+  const start = Number(startRaw);
+  if (start >= size) return "unsatisfiable"; // incl. any range of size 0
+  if (endRaw === "") return { start, end: size - 1 };
+  const end = Number(endRaw);
+  if (end < start) return null; // malformed -> ignore, serve the 200
+  return { start, end: Math.min(end, size - 1) };
+}
+
 /** The recent-events limit, clamped at both ends of the wire: a missing or
  * malformed value takes the default, and no request can ask the store for
  * ten thousand rows because of a typo. */
