@@ -76,19 +76,24 @@ export async function GET(
       headers: { ...BASE_HEADERS, "content-length": String(total) },
     });
 
-  // A view, not a copy -- byteOffset because fs may hand back a Buffer into
-  // a shared pool whose view doesn't start at 0.
-  const length = range.end - range.start + 1;
-  const body = new Uint8Array(
-    bytes.buffer,
-    bytes.byteOffset + range.start,
-    length,
-  );
+  // `subarray` first (a view, and it handles the byteOffset a pooled Buffer
+  // may carry), then COPY into an ArrayBuffer-backed Uint8Array. The copy is
+  // not incidental: a zero-copy `new Uint8Array(bytes.buffer, ...)` view is
+  // typed `Uint8Array<ArrayBufferLike>` -- its backing store could be a
+  // SharedArrayBuffer -- which is not a `BodyInit`, and `next build` rejects
+  // it even though it runs fine. Broke pearl's deploy once (#377); a memcpy
+  // of a ~9 s WAV slice is not worth a cast.
+  const slice = bytes.subarray(range.start, range.end + 1);
+  const body = new Uint8Array(slice);
   return new Response(body, {
     status: 206,
     headers: {
       ...BASE_HEADERS,
-      "content-length": String(length),
+      // byteLength off the body itself, never a separately-computed `length`:
+      // the DOM lib declares a global `length` (window.length), so a stale
+      // reference to one type-checks in server code and throws only at
+      // runtime -- which is exactly how this line shipped a 500 once.
+      "content-length": String(body.byteLength),
       "content-range": `bytes ${range.start}-${range.end}/${total}`,
     },
   });
