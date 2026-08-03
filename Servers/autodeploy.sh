@@ -78,7 +78,11 @@
 #
 # Manual escape hatches: `systemctl stop <the watcher unit>` pauses it
 # (manual pulls and Servers/deploy-mcc.sh keep working exactly as before);
-# `autodeploy.sh --once` runs a single tick by hand, no loop.
+# `autodeploy.sh --once` runs a single tick by hand, no loop. And the
+# SANCTIONED way to pin a box for field-testing unmerged work is simply to
+# check out the branch: the branch guard in tick() pauses deploys while the
+# checkout is off main (transition-logged, issue #392) and resumes them the
+# moment main is checked out again -- no watcher stop/start to remember.
 #
 # Deliberately NOT `set -e`: the loop must survive a failed fetch, restart,
 # or build -- every step checks and logs its own failure, and the next tick
@@ -97,6 +101,7 @@ INTERVAL="${MERLE_DEPLOY_INTERVAL_S:-60}"
 OWNER="${MERLE_DEPLOY_USER:-todd}"
 
 fetch_down=0    # fetch failures are transition-logged (the #35 convention)
+off_main=0      # branch checkouts too -- one line entering, one leaving
 self_changed=0  # set by tick(); the loop hands over to the new copy
 
 log() { echo "[autodeploy] $*"; }
@@ -130,6 +135,30 @@ deploy_next_app() {
 
 tick() {
     self_changed=0
+
+    # THE BRANCH GUARD (issue #392): a checkout on a feature branch is a box
+    # someone deliberately pinned -- field-testing unmerged work is the
+    # sanctioned use. Without this guard the loop below is a disaster there:
+    # HEAD never equals origin/main, `pull --ff-only` "succeeds" against the
+    # BRANCH's own upstream, and every watched unit restarts every tick,
+    # forever. Measured on merle 2026-08-02: fieldmode killed every ~60s,
+    # three park recording sessions dead at 6min/0s/60s -- and paused only
+    # while the network was down, so recording worked precisely when the
+    # internet didn't. Before the fetch on purpose: a pinned box generates
+    # no deploy traffic at all. Checking out main resumes deploys by itself.
+    local branch
+    branch=$(repo_git rev-parse --abbrev-ref HEAD) || return 0
+    if [ "$branch" != "main" ]; then
+        if [ "$off_main" -eq 0 ]; then
+            off_main=1
+            log "checkout is on '$branch', not main -- deploys paused until it returns"
+        fi
+        return 0
+    fi
+    if [ "$off_main" -eq 1 ]; then
+        off_main=0
+        log "back on main -- deploys resume"
+    fi
 
     if ! repo_git fetch --quiet origin main; then
         # One line when the fetch starts failing, one when it recovers --
@@ -202,7 +231,11 @@ main() {
         tick   # a single hand-run tick: desk-testing, no loop, no self-exec
         return
     fi
-    log "watching origin/main every ${INTERVAL}s -- units: [${UNITS:-none}] mcc: $DEPLOY_MCC repo: $REPO"
+    # Branch in the startup line so `journalctl -u <watcher> | head` answers
+    # "why is this box not deploying" in one read (issue #392).
+    log "watching origin/main every ${INTERVAL}s -- units: [${UNITS:-none}]" \
+        "mcc: $DEPLOY_MCC repo: $REPO" \
+        "branch: $(repo_git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
     while true; do
         tick
         if [ "$self_changed" -eq 1 ]; then
