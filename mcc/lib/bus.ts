@@ -2,8 +2,11 @@
 // HTTP traffic -- which rides the /daemon/* proxy route -- the browser connects
 // to the broker DIRECTLY: the HTTP proxy can't carry WebSockets. The broker
 // lives on pearl (192.168.1.64, config at /etc/mosquitto/conf.d/squirrel.conf)
-// and listens on ws://192.168.1.64:9001 -- NEXT_PUBLIC_MERLE_MQTT_WS in
-// mcc/.env.local points there, and a phone on the LAN reaches it directly.
+// and listens on :9001. Since #399 the browser does NOT dial that port
+// directly: these pages are HTTPS, and an HTTPS page cannot open a plain
+// ws:// socket, so NEXT_PUBLIC_MERLE_MQTT_WS in mcc/.env.local names the
+// front door's wss://pearl.lan/bus route and Caddy carries the upgrade to
+// :9001. Stations, whose porches are still plain HTTP, keep dialing the port.
 
 export type NarrationLine = {
   ts: string;
