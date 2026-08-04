@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   NARRATION_JOURNAL_WILDCARD,
+  SOURCE_CAPTURING_S,
   audioEventKey,
   busUrl,
   journalTopicId,
   mergeJournals,
   parseAudioEvent,
+  parseAudioSources,
   parseJournal,
   parseLine,
   pickVoice,
+  sourceListenLabel,
   statusTopicId,
   toJournalEntries,
   voiceColor,
@@ -262,6 +265,75 @@ describe("pickVoice", () => {
   it("returns null when nothing matches or the hint is empty", () => {
     expect(pickVoice(voices, "Attenborough")).toBeNull();
     expect(pickVoice(voices, "")).toBeNull();
+  });
+});
+
+describe("parseAudioSources", () => {
+  const payload = {
+    ts: 1752861234,
+    sources: {
+      "house-rear": { state: "online", last_window_ts: 1752861200 },
+      "house-front": { state: "silent", last_window_ts: 1752861000 },
+      rover: { state: "offline", last_window_ts: null },
+    },
+  };
+  it("parses every source and sorts by name for a stable masthead line", () => {
+    expect(parseAudioSources(JSON.stringify(payload))).toEqual([
+      { name: "house-front", state: "silent", last_window_ts: 1752861000 },
+      { name: "house-rear", state: "online", last_window_ts: 1752861200 },
+      { name: "rover", state: "offline", last_window_ts: null },
+    ]);
+  });
+  it("tolerates a missing last_window_ts as null", () => {
+    const one = parseAudioSources(
+      JSON.stringify({
+        ts: 1,
+        sources: { "house-rear": { state: "starting" } },
+      }),
+    );
+    expect(one).toEqual([
+      { name: "house-rear", state: "starting", last_window_ts: null },
+    ]);
+  });
+  it("rejects malformed payloads rather than inventing a roster", () => {
+    expect(parseAudioSources("{nope")).toBeNull();
+    expect(parseAudioSources("42")).toBeNull();
+    expect(parseAudioSources(JSON.stringify({ ts: 1 }))).toBeNull();
+    expect(
+      parseAudioSources(JSON.stringify({ sources: ["house-rear"] })),
+    ).toBeNull();
+  });
+});
+
+describe("sourceListenLabel", () => {
+  const online = {
+    name: "house-rear",
+    state: "online",
+    last_window_ts: 1000,
+  };
+  it("promotes a fresh online source to capturing", () => {
+    expect(sourceListenLabel(online, 1000 + SOURCE_CAPTURING_S)).toBe(
+      "capturing",
+    );
+  });
+  it("leaves an online source alone once the capturing window passes", () => {
+    expect(sourceListenLabel(online, 1000 + SOURCE_CAPTURING_S + 1)).toBe(
+      "online",
+    );
+  });
+  it("never calls a silent or offline source capturing", () => {
+    expect(
+      sourceListenLabel(
+        { name: "a", state: "silent", last_window_ts: 1000 },
+        1000,
+      ),
+    ).toBe("silent");
+    expect(
+      sourceListenLabel(
+        { name: "b", state: "offline", last_window_ts: 1000 },
+        1000,
+      ),
+    ).toBe("offline");
   });
 });
 

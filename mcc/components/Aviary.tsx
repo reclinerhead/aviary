@@ -30,13 +30,17 @@ import {
 } from "react";
 import {
   AUDIO_EVENTS_TOPIC,
+  AUDIO_SOURCES_TOPIC,
   AUDIO_STATUS_TOPIC,
   AudioEvent,
+  AudioSource,
   BirdEvent,
   audioEventFrom,
   audioEventKey,
   busUrl,
   parseAudioEvent,
+  parseAudioSources,
+  sourceListenLabel,
 } from "@/lib/bus";
 import {
   ARRIVALS_24H_S,
@@ -879,35 +883,90 @@ function PanelLabel({
   );
 }
 
+/** Tone for one source status word on the masthead line. capturing is the
+ * warm accent (something just landed); online is the live green; offline
+ * fades out; silent/starting stay readable without claiming either extreme. */
+function sourceStatusClass(label: string): string {
+  if (label === "capturing") return "text-turkey";
+  if (label === "online") return "text-led";
+  if (label === "offline") return "text-inkfaint";
+  if (label === "silent" || label === "starting") return "text-inkdim";
+  return "text-inkdim";
+}
+
 /** Earl's presence, off the retained audio/status ("online"/"offline" with
  * Last Will -- the weather/status contract): the masthead lamp that lets the
  * ticker's empty state mean what it says. Any other retained string renders
- * verbatim -- a future Earl can be "on coffee break" too. */
-function EarlLamp({ busUp, status }: { busUp: boolean; status: string | null }) {
+ * verbatim -- a future Earl can be "on coffee break" too. Beneath the lamp,
+ * a single line of per-source health from retained audio/sources (name +
+ * [status], comma-separated) so the yard's ears are visible without a
+ * second panel. */
+function EarlLamp({
+  busUp,
+  status,
+  sources,
+}: {
+  busUp: boolean;
+  status: string | null;
+  sources: AudioSource[] | null;
+}) {
+  let lamp: ReactNode;
   if (!busUp)
-    return <span className="stamp text-xs text-inkfaint">bus quiet</span>;
-  if (status === "online")
-    return (
+    lamp = <span className="stamp text-xs text-inkfaint">bus quiet</span>;
+  else if (status === "online")
+    lamp = (
       <span className="flex items-center gap-1.5">
         <span className="lamp h-2 w-2 rounded-full bg-led" />
         <span className="stamp text-xs text-led">earl, on the air</span>
       </span>
     );
-  if (status === "offline")
-    return (
+  else if (status === "offline")
+    lamp = (
       <span className="flex items-center gap-1.5">
         <span className="h-2 w-2 rounded-full bg-inkfaint opacity-60" />
         <span className="stamp text-xs text-inkfaint">earl, off the air</span>
       </span>
     );
-  if (status)
-    return (
+  else if (status)
+    lamp = (
       <span className="flex items-center gap-1.5">
         <span className="breathe h-2 w-2 rounded-full bg-turkey" />
         <span className="stamp text-xs text-inkdim">earl · {status}</span>
       </span>
     );
-  return <span className="stamp text-xs text-inkfaint">no word from earl</span>;
+  else
+    lamp = (
+      <span className="stamp text-xs text-inkfaint">no word from earl</span>
+    );
+
+  // Sources only matter while the bus is up and Earl has published a
+  // roster -- an empty list is a legitimate "no workers configured" and
+  // stays quiet rather than inventing a line. Capturing needs a clock;
+  // client-only, so Date.now here is fine (the masthead is not SSR'd with
+  // live source state).
+  const now = Math.floor(Date.now() / 1000);
+  const sourceLine =
+    busUp && sources && sources.length > 0 ? (
+      <div className="max-w-[min(100vw-2rem,28rem)] text-right stamp text-[10px] leading-snug">
+        {sources.map((s, i) => {
+          const label = sourceListenLabel(s, now);
+          return (
+            <span key={s.name}>
+              {i > 0 && <span className="text-inkfaint">, </span>}
+              <span className="text-inkdim">{s.name}</span>{" "}
+              <span className={sourceStatusClass(label)}>[{label}]</span>
+            </span>
+          );
+        })}
+      </div>
+    ) : null;
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      {lamp}
+      {sourceLine}
+    </div>
+  );
 }
 
 /** The tab bar's roster (#357). Tabs are earned by real pages, not
@@ -931,7 +990,11 @@ function AviaryMasthead({
   stationName,
   tab = "aviary",
 }: {
-  lamp?: { busUp: boolean; status: string | null };
+  lamp?: {
+    busUp: boolean;
+    status: string | null;
+    sources: AudioSource[] | null;
+  };
   /** Small-viewport anchor chips in the tab bar (#265) -- only the main
    * page has the stacked-columns problem (and the sections) they jump to,
    * so only it passes them; the lamp precedent. Plain hash anchors on
@@ -973,7 +1036,13 @@ function AviaryMasthead({
             link out was a misclick that closed the yard rather than a
             route anyone wanted. The Aviary's masthead now offers only the
             lamp and the tab bar -- moves inside the module. */}
-        {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
+        {lamp && (
+          <EarlLamp
+            busUp={lamp.busUp}
+            status={lamp.status}
+            sources={lamp.sources}
+          />
+        )}
       </div>
       <p className="stamp mt-1 text-xs text-inkfaint">
         {mastheadSub(stationName)}
@@ -1171,6 +1240,9 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   const [events, setEvents] = useState<TickerEvent[]>([]);
   const [busUp, setBusUp] = useState(false);
   const [earlStatus, setEarlStatus] = useState<string | null>(null);
+  // Retained audio/sources -- null until the first good payload (or forever
+  // if Earl pre-dates the topic); empty array is a real "no sources".
+  const [earlSources, setEarlSources] = useState<AudioSource[] | null>(null);
   const [midnight, setMidnight] = useState<number | null>(null);
   // New Arrivals' clock (#224): set at mount, advanced only by the
   // reconciliation poll (#352) -- so a card ages out of its window at a
@@ -1243,7 +1315,11 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
     const client = mqtt.connect(url, { reconnectPeriod: 3000 });
     client.on("connect", () => {
       setBusUp(true);
-      client.subscribe([AUDIO_EVENTS_TOPIC, AUDIO_STATUS_TOPIC]);
+      client.subscribe([
+        AUDIO_EVENTS_TOPIC,
+        AUDIO_STATUS_TOPIC,
+        AUDIO_SOURCES_TOPIC,
+      ]);
     });
     client.on("close", () => setBusUp(false));
     // Mandatory: an unhandled mqtt.js "error" throws and wedges reconnect.
@@ -1253,6 +1329,11 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
     client.on("message", (topic, payload) => {
       if (topic === AUDIO_STATUS_TOPIC) {
         setEarlStatus(payload.toString());
+        return;
+      }
+      if (topic === AUDIO_SOURCES_TOPIC) {
+        const next = parseAudioSources(payload.toString());
+        if (next) setEarlSources(next);
         return;
       }
       const event = parseAudioEvent(payload.toString());
@@ -1411,7 +1492,7 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
       <AviaryMasthead
-        lamp={{ busUp, status: earlStatus }}
+        lamp={{ busUp, status: earlStatus, sources: earlSources }}
         stationName={stationName}
         jumps={[
           { href: "#latest-events", label: "events ↓" },
