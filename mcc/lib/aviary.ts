@@ -746,6 +746,14 @@ export type ArchiveStats = {
   /** Local calendar days on the air, first record's day through today
    * INCLUSIVE -- day one reads "1 day", not "0 days". */
   days: number | null;
+  /** Mean visits per week over the days-on-air span (`visits * 7 / days`).
+   * Null when there is no span (empty archive, or `now` unknown). The
+   * hero's fourth tile leads with this so the calendar start date can
+   * stay present without reading as "today's date". */
+  visitsPerWeek: number | null;
+  /** Mean visits per 30-day month over the same span (`visits * 30 / days`).
+   * Same null rules as visitsPerWeek. */
+  visitsPerMonth: number | null;
 };
 
 /** The hero band's numbers (#260), read entirely off the roster the page
@@ -757,8 +765,10 @@ export type ArchiveStats = {
  * hydration rule). The day count rounds the local-midnight difference --
  * a DST-stretched day skews the division by at most an hour -- and floors
  * at 1: a first-ever bird landing after a mounted tab's midnight is day
- * one, not day zero. All zeros and nulls on an empty archive: exactly the
- * values the fresh-aviary state keys off. */
+ * one, not day zero. Pace rates (visits per week / per month) are the same
+ * span's arithmetic -- not a rolling window of their own. All zeros and
+ * nulls on an empty archive: exactly the values the fresh-aviary state
+ * keys off. */
 export function archiveStats(
   entries: RosterEntry[],
   now: number | null,
@@ -777,7 +787,21 @@ export function archiveStats(
     since !== null && now !== null
       ? Math.max(1, Math.round((dayStart(now) - dayStart(since)) / 86400) + 1)
       : null;
-  return { species: entries.length, visits, week, today, since, days };
+  // Pace over the whole record, not a rolling 7/30-day window -- the hero
+  // already has species-today/week tiles for "right now"; this answers
+  // "how busy has the yard been since the record began".
+  const visitsPerWeek = days !== null ? (visits * 7) / days : null;
+  const visitsPerMonth = days !== null ? (visits * 30) / days : null;
+  return {
+    species: entries.length,
+    visits,
+    week,
+    today,
+    since,
+    days,
+    visitsPerWeek,
+    visitsPerMonth,
+  };
 }
 
 // --- The visits-over-time chart (issue #185) ---------------------------------

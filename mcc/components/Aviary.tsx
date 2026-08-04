@@ -30,13 +30,17 @@ import {
 } from "react";
 import {
   AUDIO_EVENTS_TOPIC,
+  AUDIO_SOURCES_TOPIC,
   AUDIO_STATUS_TOPIC,
   AudioEvent,
+  AudioSource,
   BirdEvent,
   audioEventFrom,
   audioEventKey,
   busUrl,
   parseAudioEvent,
+  parseAudioSources,
+  sourceListenLabel,
 } from "@/lib/bus";
 import {
   ARRIVALS_24H_S,
@@ -879,35 +883,90 @@ function PanelLabel({
   );
 }
 
+/** Tone for one source status word on the masthead line. capturing is the
+ * warm accent (something just landed); online is the live green; offline
+ * fades out; silent/starting stay readable without claiming either extreme. */
+function sourceStatusClass(label: string): string {
+  if (label === "capturing") return "text-turkey";
+  if (label === "online") return "text-led";
+  if (label === "offline") return "text-inkfaint";
+  if (label === "silent" || label === "starting") return "text-inkdim";
+  return "text-inkdim";
+}
+
 /** Earl's presence, off the retained audio/status ("online"/"offline" with
  * Last Will -- the weather/status contract): the masthead lamp that lets the
  * ticker's empty state mean what it says. Any other retained string renders
- * verbatim -- a future Earl can be "on coffee break" too. */
-function EarlLamp({ busUp, status }: { busUp: boolean; status: string | null }) {
+ * verbatim -- a future Earl can be "on coffee break" too. Beneath the lamp,
+ * a single line of per-source health from retained audio/sources (name +
+ * [status], comma-separated) so the yard's ears are visible without a
+ * second panel. */
+function EarlLamp({
+  busUp,
+  status,
+  sources,
+}: {
+  busUp: boolean;
+  status: string | null;
+  sources: AudioSource[] | null;
+}) {
+  let lamp: ReactNode;
   if (!busUp)
-    return <span className="stamp text-xs text-inkfaint">bus quiet</span>;
-  if (status === "online")
-    return (
+    lamp = <span className="stamp text-xs text-inkfaint">bus quiet</span>;
+  else if (status === "online")
+    lamp = (
       <span className="flex items-center gap-1.5">
         <span className="lamp h-2 w-2 rounded-full bg-led" />
         <span className="stamp text-xs text-led">earl, on the air</span>
       </span>
     );
-  if (status === "offline")
-    return (
+  else if (status === "offline")
+    lamp = (
       <span className="flex items-center gap-1.5">
         <span className="h-2 w-2 rounded-full bg-inkfaint opacity-60" />
         <span className="stamp text-xs text-inkfaint">earl, off the air</span>
       </span>
     );
-  if (status)
-    return (
+  else if (status)
+    lamp = (
       <span className="flex items-center gap-1.5">
         <span className="breathe h-2 w-2 rounded-full bg-turkey" />
         <span className="stamp text-xs text-inkdim">earl · {status}</span>
       </span>
     );
-  return <span className="stamp text-xs text-inkfaint">no word from earl</span>;
+  else
+    lamp = (
+      <span className="stamp text-xs text-inkfaint">no word from earl</span>
+    );
+
+  // Sources only matter while the bus is up and Earl has published a
+  // roster -- an empty list is a legitimate "no workers configured" and
+  // stays quiet rather than inventing a line. Capturing needs a clock;
+  // client-only, so Date.now here is fine (the masthead is not SSR'd with
+  // live source state).
+  const now = Math.floor(Date.now() / 1000);
+  const sourceLine =
+    busUp && sources && sources.length > 0 ? (
+      <div className="max-w-[min(100vw-2rem,28rem)] text-right stamp text-[10px] leading-snug">
+        {sources.map((s, i) => {
+          const label = sourceListenLabel(s, now);
+          return (
+            <span key={s.name}>
+              {i > 0 && <span className="text-inkfaint">, </span>}
+              <span className="text-inkdim">{s.name}</span>{" "}
+              <span className={sourceStatusClass(label)}>[{label}]</span>
+            </span>
+          );
+        })}
+      </div>
+    ) : null;
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      {lamp}
+      {sourceLine}
+    </div>
+  );
 }
 
 /** The tab bar's roster (#357). Tabs are earned by real pages, not
@@ -931,7 +990,11 @@ function AviaryMasthead({
   stationName,
   tab = "aviary",
 }: {
-  lamp?: { busUp: boolean; status: string | null };
+  lamp?: {
+    busUp: boolean;
+    status: string | null;
+    sources: AudioSource[] | null;
+  };
   /** Small-viewport anchor chips in the tab bar (#265) -- only the main
    * page has the stacked-columns problem (and the sections) they jump to,
    * so only it passes them; the lamp precedent. Plain hash anchors on
@@ -973,7 +1036,13 @@ function AviaryMasthead({
             link out was a misclick that closed the yard rather than a
             route anyone wanted. The Aviary's masthead now offers only the
             lamp and the tab bar -- moves inside the module. */}
-        {lamp && <EarlLamp busUp={lamp.busUp} status={lamp.status} />}
+        {lamp && (
+          <EarlLamp
+            busUp={lamp.busUp}
+            status={lamp.status}
+            sources={lamp.sources}
+          />
+        )}
       </div>
       <p className="stamp mt-1 text-xs text-inkfaint">
         {mastheadSub(stationName)}
@@ -1028,42 +1097,55 @@ function HeroTile({
   label,
   value,
   sub,
-  // The date tile's escape hatch: "Jun 20, 2026" is wider than any count
-  // and clips a phone-width column at the default scale, so it alone steps
-  // down one size below sm. Every row keeps a default-scale count tile
-  // beside it, and the grid row is sized by the tallest cell -- so the
-  // band's height (the fresh overlay's footprint) never moves.
-  valueClass = "text-2xl sm:text-3xl xl:text-4xl",
+  // Second line under the sub -- the pace tile's de-emphasized listening-
+  // since. Every tile reserves the slot (empty on the first three) so the
+  // four cells share one footprint and the fresh-overlay height never
+  // depends on which tile is showing a foot.
+  foot = "",
 }: {
   label: string;
   value: string;
   sub: string;
-  valueClass?: string;
+  foot?: string;
 }) {
   return (
     <div className="panel rounded-sm border border-line bg-panel p-4">
       <div className="stamp text-[10px] text-inkfaint">{label}</div>
       <div
-        className={`mt-1 whitespace-nowrap text-ink ${valueClass}`}
+        className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
         {value}
       </div>
       <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">{sub}</div>
+      <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
+        {foot || "\u00a0"}
+      </div>
     </div>
   );
+}
+
+/** Whole-number pace for the hero -- rates are means over days-on-air, so
+ * a half-visit is noise and a long archive already rounds cleanly. */
+function paceOf(n: number | null, loaded: boolean, dash: string): string {
+  if (!loaded || n === null) return dash;
+  return String(Math.round(n));
 }
 
 /** The archive hero (#260): the whole record's numbers above both columns.
  * Everything derives from the roster state the page already maintains --
  * zero fetches of its own, so live detections and lifers tick the numbers
- * in place for free. Three states: dashes while the roster is in flight (a
- * populated archive must never flash the day-one message during hydration),
- * the FRESH-AVIARY hero once loaded-and-empty, the four tiles otherwise.
- * The fresh state is an overlay on the tile grid rendered invisible: the
- * tiles keep defining the band's height at every breakpoint, so the flip to
- * a live scoreboard -- this band's whole payoff on day one -- changes
- * content only and can never shift the page below (house rule #1; the New
+ * in place for free. Tile order leads with the near-term windows (today,
+ * this week), then the archive total, then yard pace -- visits/week as the
+ * display figure, visits/month on the sub, listening-since de-emphasized
+ * as a stamp footer so a calendar date never reads as "today". Three
+ * states: dashes while the roster is in flight (a populated archive must
+ * never flash the day-one message during hydration), the FRESH-AVIARY
+ * hero once loaded-and-empty, the four tiles otherwise. The fresh state
+ * is an overlay on the tile grid rendered invisible: the tiles keep
+ * defining the band's height at every breakpoint, so the flip to a live
+ * scoreboard -- this band's whole payoff on day one -- changes content
+ * only and can never shift the page below (house rule #1; the New
  * Arrivals reserved-footprint move at page scale). */
 function ArchiveHero({
   roster,
@@ -1077,6 +1159,12 @@ function ArchiveHero({
   const stats = archiveStats(Object.values(roster), now);
   const fresh = loaded && stats.species === 0;
   const dash = "—";
+  const paceFoot =
+    loaded && stats.since !== null && stats.days !== null
+      ? stats.days === 1
+        ? `listening since ${sinceOf(stats.since)} · 1 day`
+        : `listening since ${sinceOf(stats.since)} · ${stats.days} days`
+      : dash;
   return (
     <section className="relative mb-4">
       {/* At lg the band adopts the page grid's own tracks -- three fluid
@@ -1089,6 +1177,16 @@ function ArchiveHero({
         className={`grid grid-cols-2 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_340px] ${fresh ? "invisible" : ""}`}
       >
         <HeroTile
+          label="species today"
+          value={loaded ? String(stats.today) : dash}
+          sub={loaded ? `of ${stats.week} this week` : dash}
+        />
+        <HeroTile
+          label="species this week"
+          value={loaded ? String(stats.week) : dash}
+          sub={loaded ? `of ${stats.species} on record` : dash}
+        />
+        <HeroTile
           label="species on record"
           value={loaded ? String(stats.species) : dash}
           sub={
@@ -1098,26 +1196,14 @@ function ArchiveHero({
           }
         />
         <HeroTile
-          label="species this week"
-          value={loaded ? String(stats.week) : dash}
-          sub={loaded ? `of ${stats.species} on record` : dash}
-        />
-        <HeroTile
-          label="species today"
-          value={loaded ? String(stats.today) : dash}
-          sub={loaded ? `of ${stats.week} this week` : dash}
-        />
-        <HeroTile
-          label="listening since"
-          valueClass="text-xl sm:text-3xl xl:text-4xl"
-          value={loaded && stats.since !== null ? sinceOf(stats.since) : dash}
+          label="visits / week"
+          value={paceOf(stats.visitsPerWeek, loaded, dash)}
           sub={
-            loaded && stats.days !== null
-              ? stats.days === 1
-                ? "1 day on the air"
-                : `${stats.days} days on the air`
+            loaded && stats.visitsPerMonth !== null
+              ? `${paceOf(stats.visitsPerMonth, loaded, dash)} / mo avg`
               : dash
           }
+          foot={paceFoot}
         />
       </div>
       {fresh && (
@@ -1154,6 +1240,9 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   const [events, setEvents] = useState<TickerEvent[]>([]);
   const [busUp, setBusUp] = useState(false);
   const [earlStatus, setEarlStatus] = useState<string | null>(null);
+  // Retained audio/sources -- null until the first good payload (or forever
+  // if Earl pre-dates the topic); empty array is a real "no sources".
+  const [earlSources, setEarlSources] = useState<AudioSource[] | null>(null);
   const [midnight, setMidnight] = useState<number | null>(null);
   // New Arrivals' clock (#224): set at mount, advanced only by the
   // reconciliation poll (#352) -- so a card ages out of its window at a
@@ -1226,7 +1315,11 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
     const client = mqtt.connect(url, { reconnectPeriod: 3000 });
     client.on("connect", () => {
       setBusUp(true);
-      client.subscribe([AUDIO_EVENTS_TOPIC, AUDIO_STATUS_TOPIC]);
+      client.subscribe([
+        AUDIO_EVENTS_TOPIC,
+        AUDIO_STATUS_TOPIC,
+        AUDIO_SOURCES_TOPIC,
+      ]);
     });
     client.on("close", () => setBusUp(false));
     // Mandatory: an unhandled mqtt.js "error" throws and wedges reconnect.
@@ -1236,6 +1329,11 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
     client.on("message", (topic, payload) => {
       if (topic === AUDIO_STATUS_TOPIC) {
         setEarlStatus(payload.toString());
+        return;
+      }
+      if (topic === AUDIO_SOURCES_TOPIC) {
+        const next = parseAudioSources(payload.toString());
+        if (next) setEarlSources(next);
         return;
       }
       const event = parseAudioEvent(payload.toString());
@@ -1394,7 +1492,7 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
       <AviaryMasthead
-        lamp={{ busUp, status: earlStatus }}
+        lamp={{ busUp, status: earlStatus, sources: earlSources }}
         stationName={stationName}
         jumps={[
           { href: "#latest-events", label: "events ↓" },

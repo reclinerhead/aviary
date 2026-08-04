@@ -872,6 +872,8 @@ describe("archiveStats", () => {
       today: 0,
       since: null,
       days: null,
+      visitsPerWeek: null,
+      visitsPerMonth: null,
     });
   });
   it("counts distinct species per window and sums visits", () => {
@@ -930,6 +932,32 @@ describe("archiveStats", () => {
     );
     expect(stats.since).toBe(5000);
     expect(stats.days).toBeNull();
+    expect(stats.visitsPerWeek).toBeNull();
+    expect(stats.visitsPerMonth).toBeNull();
+  });
+  it("rates visits per week and per month over the days-on-air span", () => {
+    // 70 visits across exactly 7 inclusive calendar days -> 70/wk, 300/mo.
+    const first = JUL_18_NOON;
+    const now = JUL_18_NOON + 6 * 86400;
+    const stats = archiveStats(
+      [entry("A", "American Robin", 70, 1, 5, first)],
+      now,
+    );
+    expect(stats.days).toBe(7);
+    expect(stats.visitsPerWeek).toBe(70);
+    expect(stats.visitsPerMonth).toBe(300);
+  });
+  it("scales pace with the archive span, not a rolling window", () => {
+    // Same 70 visits over 14 days: half the weekly pace.
+    const first = JUL_18_NOON;
+    const now = JUL_18_NOON + 13 * 86400;
+    const stats = archiveStats(
+      [entry("A", "American Robin", 70, 0, 0, first)],
+      now,
+    );
+    expect(stats.days).toBe(14);
+    expect(stats.visitsPerWeek).toBe(35);
+    expect(stats.visitsPerMonth).toBe(150);
   });
 });
 

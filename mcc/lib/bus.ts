@@ -118,6 +118,69 @@ export const AUDIO_EVENTS_TOPIC = "audio/events";
 // Raw "online"/"offline" string with Last Will -- the weather/status contract
 // verbatim; the Aviary masthead renders it as Earl's presence lamp.
 export const AUDIO_STATUS_TOPIC = "audio/status";
+// Per-source health, RETAINED JSON -- the detail audio/status deliberately
+// does not carry (earl.py). The masthead lists each source under the lamp.
+export const AUDIO_SOURCES_TOPIC = "audio/sources";
+
+/** A window of recent last_window_ts inside which an online source is shown
+ * as "capturing" (something just landed) rather than the steady "online".
+ * last_window_ts advances on state->online and on each published event, not
+ * on every quiet window -- so this is "active right now", not "mic works". */
+export const SOURCE_CAPTURING_S = 60;
+
+/** One mic/feed under Earl, as the masthead wants it -- name stable for a
+ * key, raw wire state kept, last_window_ts for the capturing window. */
+export type AudioSource = {
+  name: string;
+  state: string;
+  last_window_ts: number | null;
+};
+
+/** Parse audio/sources retained JSON. Null for anything malformed; sources
+ * sorted by name so the masthead line never reshuffles on republish. */
+export function parseAudioSources(payload: string): AudioSource[] | null {
+  try {
+    const o = JSON.parse(payload) as { sources?: unknown };
+    if (!o || typeof o !== "object" || o.sources == null) return null;
+    if (typeof o.sources !== "object" || Array.isArray(o.sources)) return null;
+    const out: AudioSource[] = [];
+    for (const [name, raw] of Object.entries(
+      o.sources as Record<string, unknown>,
+    )) {
+      if (typeof name !== "string" || name === "") continue;
+      const s = raw as Record<string, unknown> | null;
+      if (!s || typeof s !== "object") continue;
+      if (typeof s.state !== "string" || s.state === "") continue;
+      const last =
+        typeof s.last_window_ts === "number" && Number.isFinite(s.last_window_ts)
+          ? Math.trunc(s.last_window_ts)
+          : null;
+      out.push({ name, state: s.state, last_window_ts: last });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Display label for one source: "capturing" when online and its last window
+ * is fresh enough to mean activity right now; otherwise the raw wire state
+ * (online / silent / offline / starting). */
+export function sourceListenLabel(
+  source: AudioSource,
+  now: number,
+  capturingS: number = SOURCE_CAPTURING_S,
+): string {
+  if (
+    source.state === "online" &&
+    source.last_window_ts !== null &&
+    now - source.last_window_ts <= capturingS
+  ) {
+    return "capturing";
+  }
+  return source.state;
+}
 
 /** A bird detection from Earl (gate.shape_event): one per VISIT since #175 --
  * the listener publishes only the visit-opening window, so a live event is
