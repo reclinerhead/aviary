@@ -71,10 +71,12 @@ import {
   reconcileRail,
   rhythmStrip,
   mastheadSub,
+  readLifeListQuery,
   rivalLine,
   rosterOrder,
   speciesMatches,
   shareOfYard,
+  writeLifeListQuery,
   standingFor,
   todayVisitors,
   voiceProse,
@@ -1236,6 +1238,8 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [rail, setRail] = useState<TodayTile[]>([]);
   // The search box (#352): a filter over `order`, never a re-sort of it.
+  // Starts empty for SSR/hydration parity (#189 gain lesson); session restore
+  // lands post-mount (#410).
   const [query, setQuery] = useState("");
   const [events, setEvents] = useState<TickerEvent[]>([]);
   const [busUp, setBusUp] = useState(false);
@@ -1256,6 +1260,19 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
   const hydratedKeys = useRef<Set<string>>(new Set());
   const midnightRef = useRef<number | null>(null);
   const player = useClipPlayer();
+
+  // Session-persist the life-list query (#410): same post-mount pattern as
+  // clip gain -- sessionStorage is not available on the server render, so
+  // an initializer read would hydration-mismatch. Empty first paint, then
+  // the stored fragment re-filters the grid in place (content only).
+  useEffect(() => {
+    setQuery(readLifeListQuery(sessionStorage));
+  }, []);
+
+  const setLifeListQuery = useCallback((next: string) => {
+    setQuery(next);
+    writeLifeListQuery(sessionStorage, next);
+  }, []);
 
   useEffect(() => {
     // Local midnight, computed client-side: the server can't know the
@@ -1530,7 +1547,7 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
                   <input
                     type="text"
                     value={query}
-                    onChange={(ev) => setQuery(ev.target.value)}
+                    onChange={(ev) => setLifeListQuery(ev.target.value)}
                     placeholder="find a bird"
                     aria-label="Search the life list"
                     // w-40, not w-32: at 128px the stamp lettering ran the
@@ -1547,7 +1564,7 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
                       text as it appears. */}
                   <button
                     type="button"
-                    onClick={() => setQuery("")}
+                    onClick={() => setLifeListQuery("")}
                     aria-label="Clear search"
                     tabIndex={query === "" ? -1 : 0}
                     className={`absolute right-1.5 text-[10px] transition-colors ${
