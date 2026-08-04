@@ -1028,42 +1028,55 @@ function HeroTile({
   label,
   value,
   sub,
-  // The date tile's escape hatch: "Jun 20, 2026" is wider than any count
-  // and clips a phone-width column at the default scale, so it alone steps
-  // down one size below sm. Every row keeps a default-scale count tile
-  // beside it, and the grid row is sized by the tallest cell -- so the
-  // band's height (the fresh overlay's footprint) never moves.
-  valueClass = "text-2xl sm:text-3xl xl:text-4xl",
+  // Second line under the sub -- the pace tile's de-emphasized listening-
+  // since. Every tile reserves the slot (empty on the first three) so the
+  // four cells share one footprint and the fresh-overlay height never
+  // depends on which tile is showing a foot.
+  foot = "",
 }: {
   label: string;
   value: string;
   sub: string;
-  valueClass?: string;
+  foot?: string;
 }) {
   return (
     <div className="panel rounded-sm border border-line bg-panel p-4">
       <div className="stamp text-[10px] text-inkfaint">{label}</div>
       <div
-        className={`mt-1 whitespace-nowrap text-ink ${valueClass}`}
+        className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
         style={{ fontFamily: "var(--font-display)" }}
       >
         {value}
       </div>
       <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">{sub}</div>
+      <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
+        {foot || "\u00a0"}
+      </div>
     </div>
   );
+}
+
+/** Whole-number pace for the hero -- rates are means over days-on-air, so
+ * a half-visit is noise and a long archive already rounds cleanly. */
+function paceOf(n: number | null, loaded: boolean, dash: string): string {
+  if (!loaded || n === null) return dash;
+  return String(Math.round(n));
 }
 
 /** The archive hero (#260): the whole record's numbers above both columns.
  * Everything derives from the roster state the page already maintains --
  * zero fetches of its own, so live detections and lifers tick the numbers
- * in place for free. Three states: dashes while the roster is in flight (a
- * populated archive must never flash the day-one message during hydration),
- * the FRESH-AVIARY hero once loaded-and-empty, the four tiles otherwise.
- * The fresh state is an overlay on the tile grid rendered invisible: the
- * tiles keep defining the band's height at every breakpoint, so the flip to
- * a live scoreboard -- this band's whole payoff on day one -- changes
- * content only and can never shift the page below (house rule #1; the New
+ * in place for free. Tile order leads with the near-term windows (today,
+ * this week), then the archive total, then yard pace -- visits/week as the
+ * display figure, visits/month on the sub, listening-since de-emphasized
+ * as a stamp footer so a calendar date never reads as "today". Three
+ * states: dashes while the roster is in flight (a populated archive must
+ * never flash the day-one message during hydration), the FRESH-AVIARY
+ * hero once loaded-and-empty, the four tiles otherwise. The fresh state
+ * is an overlay on the tile grid rendered invisible: the tiles keep
+ * defining the band's height at every breakpoint, so the flip to a live
+ * scoreboard -- this band's whole payoff on day one -- changes content
+ * only and can never shift the page below (house rule #1; the New
  * Arrivals reserved-footprint move at page scale). */
 function ArchiveHero({
   roster,
@@ -1077,6 +1090,12 @@ function ArchiveHero({
   const stats = archiveStats(Object.values(roster), now);
   const fresh = loaded && stats.species === 0;
   const dash = "—";
+  const paceFoot =
+    loaded && stats.since !== null && stats.days !== null
+      ? stats.days === 1
+        ? `listening since ${sinceOf(stats.since)} · 1 day`
+        : `listening since ${sinceOf(stats.since)} · ${stats.days} days`
+      : dash;
   return (
     <section className="relative mb-4">
       {/* At lg the band adopts the page grid's own tracks -- three fluid
@@ -1089,6 +1108,16 @@ function ArchiveHero({
         className={`grid grid-cols-2 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_340px] ${fresh ? "invisible" : ""}`}
       >
         <HeroTile
+          label="species today"
+          value={loaded ? String(stats.today) : dash}
+          sub={loaded ? `of ${stats.week} this week` : dash}
+        />
+        <HeroTile
+          label="species this week"
+          value={loaded ? String(stats.week) : dash}
+          sub={loaded ? `of ${stats.species} on record` : dash}
+        />
+        <HeroTile
           label="species on record"
           value={loaded ? String(stats.species) : dash}
           sub={
@@ -1098,26 +1127,14 @@ function ArchiveHero({
           }
         />
         <HeroTile
-          label="species this week"
-          value={loaded ? String(stats.week) : dash}
-          sub={loaded ? `of ${stats.species} on record` : dash}
-        />
-        <HeroTile
-          label="species today"
-          value={loaded ? String(stats.today) : dash}
-          sub={loaded ? `of ${stats.week} this week` : dash}
-        />
-        <HeroTile
-          label="listening since"
-          valueClass="text-xl sm:text-3xl xl:text-4xl"
-          value={loaded && stats.since !== null ? sinceOf(stats.since) : dash}
+          label="visits / week"
+          value={paceOf(stats.visitsPerWeek, loaded, dash)}
           sub={
-            loaded && stats.days !== null
-              ? stats.days === 1
-                ? "1 day on the air"
-                : `${stats.days} days on the air`
+            loaded && stats.visitsPerMonth !== null
+              ? `${paceOf(stats.visitsPerMonth, loaded, dash)} / mo avg`
               : dash
           }
+          foot={paceFoot}
         />
       </div>
       {fresh && (
