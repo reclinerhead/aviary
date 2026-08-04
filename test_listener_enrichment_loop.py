@@ -189,7 +189,9 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
     for i, (sci, common) in enumerate([("A sci", "Avocet"),
                                        ("B sci", "Bunting"),
                                        ("C sci", "Cardinal")]):
-        seed(store, sci, common, [at(2026, 7, 18, 7 + i)])
+        # #407: above the analysis visit floor so all three are notes-eligible.
+        seed(store, sci, common,
+             [at(2026, 7, 18 + d, 7 + i) for d in range(3)])
         # Pre-filled profiles keep the Wikipedia half off the wire entirely
         # -- which now requires voice_version at the CURRENT generation
         # (#315, #317), or the voice backfill arm would put these three
@@ -216,7 +218,8 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
 
 
 def test_a_cap_of_zero_skips_the_host_entirely(store, monkeypatch, fake_llm):
-    seed(store, "A sci", "Avocet", [at(2026, 7, 18, 7)])
+    seed(store, "A sci", "Avocet",
+         [at(2026, 7, 18 + d, 7) for d in range(3)])
     fake_enrich, _ = profile_writer()
     monkeypatch.setattr(loop.species_profile, "enrich_species", fake_enrich)
     monkeypatch.setenv("MERLE_OLLAMA", "fakehost")
