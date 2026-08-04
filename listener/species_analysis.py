@@ -93,6 +93,14 @@ MIN_BUCKET_VISITS = 3
 MIN_BUCKET_HOURS = 6.0
 # Below this, the weather block says so instead of pretending.
 MIN_VISITS_FOR_WEATHER = 12
+# Floor before a species is eligible for ANY field-notes generation
+# (issue #407). The worklist's "never written" arm used to fire on first
+# contact, which spun Ollama for one-and-done low-confidence false
+# positives. Three grouped visits is enough to skip flukes without
+# starving a real morning visitor of notes. Separate from
+# MIN_BUCKET_VISITS (bucket thinness) on purpose -- same number, different
+# job. --refresh / force still bypasses; this is worklist-only.
+MIN_VISITS_FOR_ANALYSIS = 3
 # Regenerate once a species has this many new visits since its last write.
 # Dropped from 20 with issue #217: the fingerprint gate below catches
 # anything this wider net lets through before an LLM call is spent, so the
@@ -708,7 +716,8 @@ def profile_fetch_times(conn):
         return {}
 
 
-def worklist(conn, step=WATERMARK_STEP, model=None):
+def worklist(conn, step=WATERMARK_STEP, model=None,
+             min_visits=MIN_VISITS_FOR_ANALYSIS):
     """Species needing an analysis. The watermark is a visit COUNT rather
     than an age -- a bird nobody has heard since June has nothing new to say
     about itself, and regenerating it would just burn a paragraph.
@@ -716,7 +725,10 @@ def worklist(conn, step=WATERMARK_STEP, model=None):
     This is the CHEAP pre-filter of #217's two-stage gate, so its arms are
     deliberately over-inclusive -- anything it lets through still has to get
     past the stats fingerprint in analyze_species() before an LLM call is
-    spent. The arms:
+    spent. The arms (only considered once `visits >= min_visits`, #407):
+      (0) visit floor -- fewer than MIN_VISITS_FOR_ANALYSIS grouped visits
+          means not a candidate at all (one-off false positives must not
+          spin Ollama; --refresh / force still analyzes by hand)
       (1) never written
       (2) grown by `step` visits since the last write (the original arm)
       (3) stored prompt_version differs from PROMPT_VERSION (includes the
@@ -741,6 +753,11 @@ def worklist(conn, step=WATERMARK_STEP, model=None):
             [s["ts"] for s in conn.execute(
                 "SELECT ts FROM sightings WHERE species_sci = ? ORDER BY ts",
                 (r["species_sci"],))]))
+        # Floor first (#407): sub-floor species never enter the arms, so a
+        # prompt_version / model / profile-touch row with only one visit
+        # still does not burn a generation.
+        if visits < min_visits:
+            continue
         mark = r["visits_watermark"]
         settled_ts = max(r["generated_ts"] or 0, r["checked_ts"] or 0)
         due = (mark is None

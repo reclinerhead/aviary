@@ -347,9 +347,38 @@ def seed(conn, sci, common, visit_times):
     conn.commit()
 
 
+def spaced_visits(n, base=None):
+    """n visit openings a day apart -- above the gap, so each is its own visit."""
+    base = base if base is not None else at(2026, 7, 18, 7)
+    return [base + d * 86400 for d in range(n)]
+
+
 def test_worklist_picks_up_a_species_with_no_analysis(conn):
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
     assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
+
+
+def test_worklist_ignores_species_below_the_visit_floor(conn):
+    # Issue #407: first contact (and two-window flukes) must not spin Ollama.
+    # Floor is on grouped visits, and applies to every arm -- not just
+    # "never written".
+    base = at(2026, 7, 18, 7)
+    seed(conn, "A sci", "Robin", [base])                          # 1 visit
+    assert sa.worklist(conn) == []
+    seed(conn, "A sci", "Robin", [base + 86400])                  # 2 visits
+    assert sa.worklist(conn) == []
+    # Even a prompt_version mismatch must not put a sub-floor species on
+    # the list (otherwise a pre-#217 one-visit row would still burn GPU).
+    note(conn, "A sci", watermark=1, version=sa.PROMPT_VERSION + 1)
+    assert sa.worklist(conn) == []
+    # Crossing the floor unlocks the existing arms (never written here
+    # after clearing the mismatched row for a clean first-write case).
+    conn.execute("DELETE FROM species_analysis WHERE species_sci = ?",
+                 ("A sci",))
+    conn.commit()
+    seed(conn, "A sci", "Robin", [base + 2 * 86400])              # 3 visits
+    assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
+    assert sa.worklist(conn)[0][2] == sa.MIN_VISITS_FOR_ANALYSIS
 
 
 def test_worklist_is_a_noop_until_the_watermark_is_passed(conn):
@@ -373,10 +402,21 @@ def test_worklist_is_a_noop_until_the_watermark_is_passed(conn):
 
 
 def test_worklist_counts_visits_not_rows(conn):
-    # A pre-#175 burst is one visit, so it must not trip the watermark.
+    # A pre-#175 burst is one visit per cluster. Three bursts far apart
+    # are three visits despite many rows -- and only then clear the floor.
     base = at(2026, 7, 18, 7)
-    seed(conn, "A sci", "Robin", [base + i * 4 for i in range(30)])
-    assert sa.worklist(conn)[0][2] == 1
+    rows = []
+    for v in range(sa.MIN_VISITS_FOR_ANALYSIS):
+        b = base + v * 86400
+        rows.extend(b + i * 4 for i in range(30))
+    seed(conn, "A sci", "Robin", rows)
+    assert sa.worklist(conn)[0][2] == sa.MIN_VISITS_FOR_ANALYSIS
+    # A single burst alone stays off the list (one visit, under the floor).
+    conn.execute("DELETE FROM sightings")
+    conn.execute("DELETE FROM life_list")
+    conn.commit()
+    seed(conn, "B sci", "Jay", [base + i * 4 for i in range(30)])
+    assert sa.worklist(conn) == []
 
 
 def test_analyze_species_writes_nothing_without_visits(conn):
@@ -511,22 +551,22 @@ def test_stats_fingerprint_covers_the_description_snippet():
 
 
 def test_worklist_flags_a_prompt_version_mismatch(conn):
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
-    note(conn, "A sci", watermark=1, version=sa.PROMPT_VERSION + 1)
+    seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
+    note(conn, "A sci", watermark=3, version=sa.PROMPT_VERSION + 1)
     assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
     # Including the honest-NULL rows a pre-#217 store carries.
-    note(conn, "A sci", watermark=1, version=None)
+    note(conn, "A sci", watermark=3, version=None)
     assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
 
 
 def test_worklist_flags_only_an_outranking_model(conn, monkeypatch):
     monkeypatch.setenv("MERLE_MODEL_RANK", "big,small")
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
-    note(conn, "A sci", watermark=1, model="small")
+    seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
+    note(conn, "A sci", watermark=3, model="small")
     assert [w[0] for w in sa.worklist(conn, model="big")] == ["A sci"]
     # Same model: settled. Lower-ranked host: settled (the no-thrash rule).
     assert sa.worklist(conn, model="small") == []
-    note(conn, "A sci", watermark=1, model="big")
+    note(conn, "A sci", watermark=3, model="big")
     assert sa.worklist(conn, model="small") == []
     # No model in play (dry-run / no LLM) disables the arm entirely.
     assert sa.worklist(conn) == []
@@ -535,8 +575,8 @@ def test_worklist_flags_only_an_outranking_model(conn, monkeypatch):
 def test_worklist_flags_a_profile_touched_after_the_note(conn):
     from listener import species_profile
     conn.executescript(species_profile.SCHEMA)
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
-    note(conn, "A sci", watermark=1, generated_ts=1000)
+    seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
+    note(conn, "A sci", watermark=3, generated_ts=1000)
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, fetched_ts)"
         " VALUES (?,?,?)", ("A sci", "A red bird.", 2000))
@@ -547,14 +587,14 @@ def test_worklist_flags_a_profile_touched_after_the_note(conn):
     # A gate-check that found nothing changed settles it (checked_ts) --
     # without this, a dimensions-only backfill would park the species on
     # the worklist forever.
-    note(conn, "A sci", watermark=1, generated_ts=1000, checked_ts=3000)
+    note(conn, "A sci", watermark=3, generated_ts=1000, checked_ts=3000)
     assert sa.worklist(conn) == []
 
 
 def test_worklist_leaves_a_settled_species_alone(conn):
-    # The negative case: every arm quiet.
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
-    note(conn, "A sci", watermark=1)
+    # The negative case: every arm quiet (and above the visit floor).
+    seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
+    note(conn, "A sci", watermark=3)
     assert sa.worklist(conn, model="gemma3:12b") == []
 
 
@@ -653,13 +693,13 @@ def test_a_written_row_carries_its_provenance(conn):
 
 def test_a_pre217_row_regenerates_once_then_settles(conn):
     now = at(2026, 7, 20, 12)
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
+    seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
     # A #186-era row: no fingerprint, no version -- honest NULLs.
     conn.execute(
         "INSERT INTO species_analysis (species_sci, rhythm_text,"
         " weather_text, stats_json, visits_watermark, model, generated_ts)"
         " VALUES (?,?,?,?,?,?,?)",
-        ("A sci", "old prose", "old weather", "{}", 1, "gemma3:12b", 99))
+        ("A sci", "old prose", "old weather", "{}", 3, "gemma3:12b", 99))
     conn.commit()
     assert [w[0] for w in sa.worklist(conn)] == ["A sci"]   # version arm
     llm = FakeOllama()
