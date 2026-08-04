@@ -51,8 +51,11 @@ import {
   smoothPath,
   smoothSegments,
   speciesImageName,
+  LIFE_LIST_QUERY_KEY,
+  readLifeListQuery,
   speciesMatches,
   standingFor,
+  writeLifeListQuery,
   tallyVisits,
   todayVisitors,
   visitHourTicks,
@@ -779,6 +782,62 @@ describe("speciesMatches", () => {
   });
   it("trims the query -- ' wood ' is 'wood'", () => {
     expect(speciesMatches(downy, "  wood  ")).toBe(true);
+  });
+});
+
+// --- Life-list query session persistence (#410) ------------------------------
+
+function memoryStore(seed: Record<string, string> = {}) {
+  const map = new Map(Object.entries(seed));
+  return {
+    getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+    setItem: (k: string, v: string) => {
+      map.set(k, v);
+    },
+    removeItem: (k: string) => {
+      map.delete(k);
+    },
+    // Test introspection only.
+    _map: map,
+  };
+}
+
+describe("life-list query session storage (#410)", () => {
+  it("reads empty when the key is missing or the store is null", () => {
+    expect(readLifeListQuery(null)).toBe("");
+    expect(readLifeListQuery(memoryStore())).toBe("");
+  });
+  it("round-trips a query through the fixed key", () => {
+    const store = memoryStore();
+    writeLifeListQuery(store, "finch");
+    expect(store.getItem(LIFE_LIST_QUERY_KEY)).toBe("finch");
+    expect(readLifeListQuery(store)).toBe("finch");
+  });
+  it("clear removes the key rather than leaving an empty string", () => {
+    const store = memoryStore({ [LIFE_LIST_QUERY_KEY]: "finch" });
+    writeLifeListQuery(store, "");
+    expect(store.getItem(LIFE_LIST_QUERY_KEY)).toBeNull();
+    expect(readLifeListQuery(store)).toBe("");
+  });
+  it("preserves whitespace as typed -- matching still trims at filter time", () => {
+    const store = memoryStore();
+    writeLifeListQuery(store, "  wood  ");
+    expect(readLifeListQuery(store)).toBe("  wood  ");
+  });
+  it("survives a throwing store without raising", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("denied");
+      },
+      setItem: () => {
+        throw new Error("denied");
+      },
+      removeItem: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(readLifeListQuery(broken)).toBe("");
+    expect(() => writeLifeListQuery(broken, "finch")).not.toThrow();
   });
 });
 

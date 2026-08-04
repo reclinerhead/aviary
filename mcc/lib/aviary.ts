@@ -644,6 +644,40 @@ export function todayVisitors(
 
 // --- Life-list search (issue #352) -------------------------------------------
 
+/** sessionStorage key for the main-page life-list query (#410). Session-
+ * scoped on purpose: survives Back / masthead dashboard / refresh in the
+ * same tab; dies with the tab. Not localStorage (clip-gain is permanent). */
+export const LIFE_LIST_QUERY_KEY = "aviary.life-list-query";
+
+/** Read the persisted life-list query. Missing key, null store, or a
+ * storage throw (private mode) all return "" -- the unfiltered grid. */
+export function readLifeListQuery(
+  store: Pick<Storage, "getItem"> | null | undefined,
+): string {
+  if (!store) return "";
+  try {
+    const v = store.getItem(LIFE_LIST_QUERY_KEY);
+    return typeof v === "string" ? v : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Write the life-list query. Empty string removes the key so a clear
+ * leaves no stale entry for the next mount in this session. */
+export function writeLifeListQuery(
+  store: Pick<Storage, "setItem" | "removeItem"> | null | undefined,
+  query: string,
+): void {
+  if (!store) return;
+  try {
+    if (query === "") store.removeItem(LIFE_LIST_QUERY_KEY);
+    else store.setItem(LIFE_LIST_QUERY_KEY, query);
+  } catch {
+    // Quota / private mode: fail quiet; the in-memory box still works.
+  }
+}
+
 /** Does this roster entry answer the search box? Case-insensitive substring
  * over the common AND scientific name -- `wood` finds every woodpecker,
  * `finc` the finches, and a Latin fragment works for whoever thinks in sci
