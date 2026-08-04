@@ -2462,12 +2462,32 @@ export function SpeciesProfile({
             <div className="relative">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <h2
-                  className="text-2xl text-ink"
-                  style={{ fontFamily: "var(--font-display)" }}
-                >
-                  {entry?.species_common ?? "…"}
-                </h2>
+                {/* Breadcrumb home (#412-shaped, desk request): the masthead
+                    "dashboard" tab is real navigation but small and easy to
+                    miss for less web-fluent readers. Lead the hero name with
+                    a quieter "all species" link back to /aviary, then an
+                    arrow and the bird -- same hierarchy as a field notebook
+                    path (collection → specimen), not a second masthead. */}
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <Link
+                    href="/aviary"
+                    className="stamp shrink-0 text-xs text-inkdim transition-colors hover:text-squirrel"
+                  >
+                    all species
+                  </Link>
+                  <span
+                    className="stamp shrink-0 text-xs text-inkfaint"
+                    aria-hidden
+                  >
+                    →
+                  </span>
+                  <h2
+                    className="min-w-0 text-2xl text-ink"
+                    style={{ fontFamily: "var(--font-display)" }}
+                  >
+                    {entry?.species_common ?? "…"}
+                  </h2>
+                </div>
                 <p className="text-sm italic text-inkdim">{sci}</p>
               </div>
               {/* Species removal (#216): the misidentification eraser, worn
