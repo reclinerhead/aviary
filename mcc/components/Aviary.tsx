@@ -1092,22 +1092,20 @@ function AviaryMasthead({
 // --- The /aviary page --------------------------------------------------------
 
 /** One hero tile (#260): the StandingTile idiom scaled up for the page hero
- * -- stamp label, display-font value, sub line. Deliberately its own shape
- * rather than a StandingTile prop: the standings band (#220) keeps its look
- * untouched, and the hero's values earn a responsive step up. */
+ * -- stamp label, display-font value, optional sub. Deliberately its own
+ * shape rather than a StandingTile prop: the standings band (#220) keeps
+ * its look untouched, and the hero's values earn a responsive step up.
+ * Sub and foot always reserve height (empty = nbsp) so single and split
+ * tiles share one footprint. */
 function HeroTile({
   label,
   value,
-  sub,
-  // Second line under the sub -- the pace tile's de-emphasized listening-
-  // since. Every tile reserves the slot (empty on the first three) so the
-  // four cells share one footprint and the fresh-overlay height never
-  // depends on which tile is showing a foot.
+  sub = "",
   foot = "",
 }: {
   label: string;
   value: string;
-  sub: string;
+  sub?: string;
   foot?: string;
 }) {
   return (
@@ -1119,7 +1117,60 @@ function HeroTile({
       >
         {value}
       </div>
-      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">{sub}</div>
+      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
+        {sub || "\u00a0"}
+      </div>
+      <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
+        {foot || "\u00a0"}
+      </div>
+    </div>
+  );
+}
+
+/** One half of a split hero panel (#413 / #415): stamp + value + reserved
+ * sub. No border of its own -- the parent panel owns the chrome. */
+function HeroHalf({
+  label,
+  value,
+  sub = "",
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="stamp text-[10px] text-inkfaint">{label}</div>
+      <div
+        className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
+        style={{ fontFamily: "var(--font-display)" }}
+      >
+        {value}
+      </div>
+      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
+        {sub || "\u00a0"}
+      </div>
+    </div>
+  );
+}
+
+/** Dual hero tile: two halves, one panel, no inner divider (#413 tile 1,
+ * #415 tile 4). Foot spans the full width under both stacks. */
+function HeroSplitTile({
+  left,
+  right,
+  foot = "",
+}: {
+  left: { label: string; value: string; sub?: string };
+  right: { label: string; value: string; sub?: string };
+  foot?: string;
+}) {
+  return (
+    <div className="panel rounded-sm border border-line bg-panel p-4">
+      <div className="grid grid-cols-2 gap-x-3">
+        <HeroHalf {...left} />
+        <HeroHalf {...right} />
+      </div>
       <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
         {foot || "\u00a0"}
       </div>
@@ -1135,22 +1186,27 @@ function paceOf(n: number | null, loaded: boolean, dash: string): string {
   return Math.round(n).toLocaleString("en-US");
 }
 
-/** The archive hero (#260, dual today tile in #413): the whole record's
+/** Whole-record count for the hero (#415 total visits): same thousands
+ * separators as paceOf, no rounding (visits are already integers). */
+function countOf(n: number, loaded: boolean, dash: string): string {
+  if (!loaded) return dash;
+  return n.toLocaleString("en-US");
+}
+
+/** The archive hero (#260; dual tiles in #413/#415): the whole record's
  * numbers above both columns. Everything derives from the roster state the
  * page already maintains -- zero fetches of its own, so live detections and
- * lifers tick the numbers in place for free. Tile order leads with the
- * near-term windows (today split: species + detections, then this week),
- * then the archive total, then yard pace -- visits/week as the display
- * figure, visits/month on the sub, listening-since de-emphasized as a stamp
- * footer so a calendar date never reads as "today". Three states: dashes
- * while the roster is in flight (a populated archive must never flash the
- * day-one message during hydration), the FRESH-AVIARY hero once loaded-
- * and-empty, the four tiles otherwise. The fresh state is an overlay on
- * the tile grid rendered invisible: the tiles keep defining the band's
- * height at every breakpoint, so the flip to a live scoreboard -- this
- * band's whole payoff on day one -- changes content only and can never
- * shift the page below (house rule #1; the New Arrivals reserved-footprint
- * move at page scale). */
+ * lifers tick the numbers in place for free. Tile order: today (species |
+ * detections), species this week, species on record, then yard volume
+ * (visits/week | total visits) with visits/month under the pace half and
+ * listening-since as a full-width foot. Redundant "of N …" subs that only
+ * restated the next tile's main figure were dropped (#415). Three states:
+ * dashes while the roster is in flight (a populated archive must never
+ * flash the day-one message during hydration), the FRESH-AVIARY hero once
+ * loaded-and-empty, the four tiles otherwise. The fresh state is an
+ * overlay on the tile grid rendered invisible: the tiles keep defining
+ * the band's height at every breakpoint, so the flip to a live scoreboard
+ * changes content only and can never shift the page below (house rule #1). */
 function ArchiveHero({
   roster,
   loaded,
@@ -1180,72 +1236,47 @@ function ArchiveHero({
         aria-hidden={fresh}
         className={`grid grid-cols-2 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_340px] ${fresh ? "invisible" : ""}`}
       >
-        {/* Tile 1 (#413): species today | detections today, half-and-half
-            inside one panel. No inner border or rule -- two stamp+value
-            stacks share the cell the single HeroTile used to own. The
-            detections figure is sum(today) across the roster (visit
-            openings since midnight), not a raw BirdNET window count. */}
-        <div className="panel rounded-sm border border-line bg-panel p-4">
-          <div className="grid grid-cols-2 gap-x-3">
-            <div className="min-w-0">
-              <div className="stamp text-[10px] text-inkfaint">
-                species today
-              </div>
-              <div
-                className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                {loaded ? String(stats.today) : dash}
-              </div>
-              <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
-                {loaded ? `of ${stats.week} this week` : dash}
-              </div>
-            </div>
-            <div className="min-w-0">
-              <div className="stamp text-[10px] text-inkfaint">
-                detections today
-              </div>
-              <div
-                className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                {loaded
-                  ? stats.detectionsToday.toLocaleString("en-US")
-                  : dash}
-              </div>
-              <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
-                {"\u00a0"}
-              </div>
-            </div>
-          </div>
-          {/* Foot reserved so this cell matches the other three tiles'
-              footprint (HeroTile always reserves the slot). */}
-          <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
-            {"\u00a0"}
-          </div>
-        </div>
+        {/* Tile 1 (#413): species today | detections today. detections =
+            sum(today) across the roster (visit openings since midnight).
+            No "of N this week" sub -- that N is tile 2's main figure (#415). */}
+        <HeroSplitTile
+          left={{
+            label: "species today",
+            value: loaded ? String(stats.today) : dash,
+          }}
+          right={{
+            label: "detections today",
+            value: loaded
+              ? stats.detectionsToday.toLocaleString("en-US")
+              : dash,
+          }}
+        />
+        {/* Tiles 2–3: label + number only. The old "of N on record" /
+            "across N visits" lines restated the next cell (#415). */}
         <HeroTile
           label="species this week"
           value={loaded ? String(stats.week) : dash}
-          sub={loaded ? `of ${stats.species} on record` : dash}
         />
         <HeroTile
           label="species on record"
           value={loaded ? String(stats.species) : dash}
-          sub={
-            loaded
-              ? `across ${stats.visits === 1 ? "1 visit" : `${stats.visits} visits`}`
-              : dash
-          }
         />
-        <HeroTile
-          label="visits / week"
-          value={paceOf(stats.visitsPerWeek, loaded, dash)}
-          sub={
-            loaded && stats.visitsPerMonth !== null
-              ? `${paceOf(stats.visitsPerMonth, loaded, dash)} / mo avg`
-              : dash
-          }
+        {/* Tile 4 (#415): visits/week | total visits. Total used to ride
+            under species-on-record; pace half keeps the monthly mean sub;
+            listening-since still spans the full panel as the foot. */}
+        <HeroSplitTile
+          left={{
+            label: "visits / week",
+            value: paceOf(stats.visitsPerWeek, loaded, dash),
+            sub:
+              loaded && stats.visitsPerMonth !== null
+                ? `${paceOf(stats.visitsPerMonth, loaded, dash)} / mo avg`
+                : dash,
+          }}
+          right={{
+            label: "total visits",
+            value: countOf(stats.visits, loaded, dash),
+          }}
           foot={paceFoot}
         />
       </div>
