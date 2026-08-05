@@ -1252,10 +1252,10 @@ function ArchiveHero({
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <ReadoutGroup label="pace">
                   <ReadoutVal>{perWeek}</ReadoutVal>
-                  <ReadoutUnit>week</ReadoutUnit>
+                  <ReadoutUnit>per week</ReadoutUnit>
                   <ReadoutDot />
                   <ReadoutVal>{perMonth}</ReadoutVal>
-                  <ReadoutUnit>month</ReadoutUnit>
+                  <ReadoutUnit>per month</ReadoutUnit>
                 </ReadoutGroup>
                 <span className="stamp text-[9px] text-inkfaint">
                   {sinceLine}
