@@ -1143,11 +1143,11 @@ function ReadoutVal({ children }: { children: ReactNode }) {
   );
 }
 
-/** Unit words (species / detections / visits) — same size as the figures so
- * they stay readable in the dense strip. */
+/** Unit words (species / detections / visits / week / month). One step up
+ * from the old 11px stamp (too small), not full figure size (too loud). */
 function ReadoutUnit({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[15px] leading-none text-inkdim sm:text-base">
+    <span className="text-[13px] leading-none text-inkdim sm:text-sm">
       {children}
     </span>
   );
@@ -1155,7 +1155,7 @@ function ReadoutUnit({ children }: { children: ReactNode }) {
 
 function ReadoutDot() {
   return (
-    <span className="text-[15px] text-inkfaint sm:text-base" aria-hidden>
+    <span className="text-[13px] text-inkfaint sm:text-sm" aria-hidden>
       ·
     </span>
   );
@@ -1252,10 +1252,10 @@ function ArchiveHero({
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <ReadoutGroup label="pace">
                   <ReadoutVal>{perWeek}</ReadoutVal>
-                  <ReadoutUnit>/ wk</ReadoutUnit>
+                  <ReadoutUnit>week</ReadoutUnit>
                   <ReadoutDot />
                   <ReadoutVal>{perMonth}</ReadoutVal>
-                  <ReadoutUnit>/ mo</ReadoutUnit>
+                  <ReadoutUnit>month</ReadoutUnit>
                 </ReadoutGroup>
                 <span className="stamp text-[9px] text-inkfaint">
                   {sinceLine}
