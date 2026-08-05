@@ -100,6 +100,7 @@
 # =============================================================================
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -294,28 +295,76 @@ def merge_current(station, garnish, signal):
     """One weather/current payload: the station's measurements, OWM's sky
     garnish (Nones until the first garnish fetch lands), the radio-link
     health. The station half always wins -- measured fields NEVER come from
-    OpenWeather."""
+    OpenWeather. `source` is always "ecowitt" here (issue #428): the UI
+    uses it to know the hardware panel is real, vs OWM-only station mode."""
     current = dict(station)
     for field in GARNISH_FIELDS:
         current[field] = (garnish or {}).get(field)
     current.update(signal or {"station_signal": None})
+    current["source"] = "ecowitt"
     return current
+
+
+def hpa_to_inhg(hpa):
+    """OpenWeather sea-level pressure (hPa) -> inches of mercury, or None.
+    Same unit as the gateway's relative barometer so the station view's
+    baro stat can light up in OWM-only mode (#428) without a second field."""
+    if hpa is None:
+        return None
+    try:
+        return round(float(hpa) * 0.0295299830714, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def dew_point_f(temp_f, humidity_pct):
+    """Dew point °F from dry-bulb °F and relative humidity % (Magnus), or
+    None. Free OWM /weather does not publish dew point; station mode (#428)
+    derives it so the stat is not a permanent em-dash next to real humidity.
+    Clamps RH into (0, 100]; refuses non-positive humidity (log undefined)."""
+    if temp_f is None or humidity_pct is None:
+        return None
+    try:
+        t_f = float(temp_f)
+        rh = float(humidity_pct)
+    except (TypeError, ValueError):
+        return None
+    if rh <= 0:
+        return None
+    rh = min(rh, 100.0)
+    t_c = (t_f - 32.0) * 5.0 / 9.0
+    # Magnus over water (a=17.27, b=237.7 °C) -- good enough for yard weather
+    a, b = 17.27, 237.7
+    gamma = (a * t_c) / (b + t_c) + math.log(rh / 100.0)
+    if a - gamma == 0:
+        return None
+    td_c = (b * gamma) / (a - gamma)
+    return round(td_c * 9.0 / 5.0 + 32.0, 1)
 
 
 def parse_current(raw):
     """OpenWeather /weather response -> the weather/current bus payload.
     Field names carry their units so no consumer has to guess. `ts` is
-    OpenWeather's own observation time, not our fetch time."""
+    OpenWeather's own observation time, not our fetch time.
+
+    Since #428 also carries what free /weather can honestly fill for
+    station mode: sea-level pressure (as pressure_rel_inhg) and a computed
+    dew_point_f. UV is not on this endpoint -- stays absent. `source` is
+    always "owm" here; merge_current overwrites to "ecowitt" at home."""
     main = raw.get("main") or {}
     wind = raw.get("wind") or {}
     sys = raw.get("sys") or {}
     coord = raw.get("coord") or {}
     weather = (raw.get("weather") or [{}])[0]
+    temp_f = main.get("temp")
+    humidity_pct = main.get("humidity")
     return {
         "ts": raw.get("dt"),
-        "temp_f": main.get("temp"),
+        "temp_f": temp_f,
         "feels_like_f": main.get("feels_like"),
-        "humidity_pct": main.get("humidity"),
+        "humidity_pct": humidity_pct,
+        "dew_point_f": dew_point_f(temp_f, humidity_pct),
+        "pressure_rel_inhg": hpa_to_inhg(main.get("pressure")),
         "wind_mph": wind.get("speed"),
         "wind_gust_mph": wind.get("gust"),   # absent on calm reads -> None
         "wind_deg": wind.get("deg"),
@@ -329,6 +378,7 @@ def parse_current(raw):
         # response -> None, which the dashboard reads as "draw no bands".
         "lat": coord.get("lat"),
         "lon": coord.get("lon"),
+        "source": "owm",
     }
 
 
@@ -805,9 +855,10 @@ def main():
                     garnish = parse_current(raw)
                     next_garnish_at = time.time() + GARNISH_INTERVAL_S
                     if station_mode:
-                        # OWM-only (#301): the /weather report IS the
+                        # OWM-only (#301/#428): the /weather report IS the
                         # observation -- parse_current's payload published
-                        # verbatim, instrument-only fields honestly absent.
+                        # verbatim (incl. source=owm, dew, sea-level baro);
+                        # piezo/solar/UV/indoor/battery stay honestly absent.
                         # ts is OWM's own observation time, so the 5-min
                         # history step records each genuinely fresh report
                         # and dedupes a re-served one.

@@ -33,6 +33,7 @@ import {
   nightBands,
   sunTimes,
   parseCurrent,
+  weatherInstrumentsAvailable,
   parsePoints,
   parseReport,
   parseStatus,
@@ -129,6 +130,33 @@ describe("parseCurrent", () => {
     expect(parseCurrent(JSON.stringify({ temp_f: 70 }))).toBeNull();
     expect(parseCurrent("{not json")).toBeNull();
     expect(parseCurrent("null")).toBeNull();
+  });
+  it("reads source for station vs home (#428)", () => {
+    expect(
+      parseCurrent(JSON.stringify({ ts: 1, source: "owm" }))?.source,
+    ).toBe("owm");
+    expect(
+      parseCurrent(JSON.stringify({ ts: 1, source: "ecowitt" }))?.source,
+    ).toBe("ecowitt");
+    expect(parseCurrent(JSON.stringify({ ts: 1 }))?.source).toBeNull();
+    expect(
+      parseCurrent(JSON.stringify({ ts: 1, source: "nope" }))?.source,
+    ).toBeNull();
+  });
+});
+
+describe("weatherInstrumentsAvailable (#428)", () => {
+  it("dims only when source is owm", () => {
+    expect(weatherInstrumentsAvailable(null)).toBe(true);
+    expect(
+      weatherInstrumentsAvailable({ source: null } as CurrentWeather),
+    ).toBe(true);
+    expect(
+      weatherInstrumentsAvailable({ source: "ecowitt" } as CurrentWeather),
+    ).toBe(true);
+    expect(
+      weatherInstrumentsAvailable({ source: "owm" } as CurrentWeather),
+    ).toBe(false);
   });
 });
 

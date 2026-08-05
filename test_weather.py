@@ -271,21 +271,39 @@ def test_merge_current_before_first_garnish_or_roster():
 
 def test_parse_current_maps_the_report():
     got = weather.parse_current(OWM_CURRENT)
-    assert got == {
-        "ts": 1752148800,
-        "temp_f": 78.3,
-        "feels_like_f": 79.1,
-        "humidity_pct": 62,
-        "wind_mph": 8.5,
-        "wind_gust_mph": 17.2,
-        "wind_deg": 240,
-        "condition": "Clouds",
-        "description": "broken clouds",
-        "sunrise": 1752116400,
-        "sunset": 1752170700,
-        "lat": 42.29,
-        "lon": -85.59,
-    }
+    # Free /weather: pressure hPa + computed dew (#428); no UV on this endpoint.
+    assert got["ts"] == 1752148800
+    assert got["temp_f"] == 78.3
+    assert got["feels_like_f"] == 79.1
+    assert got["humidity_pct"] == 62
+    assert got["wind_mph"] == 8.5
+    assert got["wind_gust_mph"] == 17.2
+    assert got["wind_deg"] == 240
+    assert got["condition"] == "Clouds"
+    assert got["description"] == "broken clouds"
+    assert got["sunrise"] == 1752116400
+    assert got["sunset"] == 1752170700
+    assert got["lat"] == 42.29
+    assert got["lon"] == -85.59
+    assert got["source"] == "owm"
+    assert got["pressure_rel_inhg"] == weather.hpa_to_inhg(1014)
+    assert got["dew_point_f"] == weather.dew_point_f(78.3, 62)
+
+
+def test_hpa_to_inhg():
+    assert weather.hpa_to_inhg(None) is None
+    assert weather.hpa_to_inhg(1013.25) == 29.92
+    assert weather.hpa_to_inhg("bad") is None
+
+
+def test_dew_point_f_magnus():
+    assert weather.dew_point_f(None, 50) is None
+    assert weather.dew_point_f(70, None) is None
+    assert weather.dew_point_f(70, 0) is None
+    # Saturated air: dew point equals dry-bulb (within rounding)
+    assert weather.dew_point_f(70.0, 100) == 70.0
+    # 78.3°F / 62% RH -- a yard-shaped mid-summer reading; pin the formula
+    assert weather.dew_point_f(78.3, 62) == 64.2
 
 
 def test_parse_current_tolerates_missing_sections():
@@ -312,15 +330,24 @@ def test_station_mode_payload_carries_wind_for_earls_gate():
 
 def test_station_mode_payload_feeds_the_history_window_honestly():
     """history_point() over an OWM-only payload: every HISTORY_FIELDS key
-    present, instrument-only fields honestly None (the pre-#51 posture),
-    no KeyError anywhere -- rain, solar and company chart as gaps, never
-    as zeros."""
+    present; piezo/solar/UV honestly None; dew + sea-level pressure filled
+    from free /weather (#428). No zeros for missing instruments."""
     point = weather.history_point(weather.parse_current(OWM_CURRENT))
     assert set(point) == set(weather.HISTORY_FIELDS)
     assert point["temp_f"] is not None and point["wind_mph"] is not None
-    for absent in ("rain_rate_inhr", "rain_day_in", "solar_wm2", "uv_index",
-                   "dew_point_f", "pressure_rel_inhg"):
+    assert point["dew_point_f"] is not None
+    assert point["pressure_rel_inhg"] is not None
+    for absent in ("rain_rate_inhr", "rain_day_in", "solar_wm2", "uv_index"):
         assert point[absent] is None
+
+
+def test_merge_current_marks_ecowitt_source():
+    station = weather.parse_station(ECOWITT_LIVE, ts=100)
+    garnish = weather.parse_current(OWM_CURRENT)
+    got = weather.merge_current(station, garnish, {"station_signal": 4})
+    assert got["source"] == "ecowitt"
+    # Station dew wins over any OWM-derived garnish field (not in GARNISH_FIELDS)
+    assert got["dew_point_f"] == station["dew_point_f"]
 
 
 def test_parse_forecast_shapes_chart_points():
@@ -629,9 +656,12 @@ def test_current_facts_station_extras():
 
 
 def test_current_facts_extras_skipped_when_absent():
-    # an OWM-shaped report (no station fields) reads exactly as before
+    # OWM-shaped (#428): dew + barometer ride free /weather; piezo rain and
+    # UV stay instrument-only and must not invent zeros in Willard's copy.
     facts = weather.current_facts(fresh_current())
-    for word in ("Dew point", "raining", "Rainfall", "UV", "Barometer"):
+    assert "Dew point" in facts
+    assert "Barometer" in facts
+    for word in ("raining", "Rainfall", "UV"):
         assert word not in facts
 
 

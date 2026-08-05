@@ -55,6 +55,11 @@ export type CurrentWeather = {
   station_battery: number | null; // 0-5, the WH90's own scale
   station_voltage: number | null;
   station_signal: number | null; // 0-4 radio bars, from the sensor roster
+  // Issue #428: "ecowitt" = home gateway is truth; "owm" = remote station
+  // mode (no hardware). Null/missing on pre-#428 retained payloads -- treat
+  // as instruments present (home) so a half-deployed stack does not dim
+  // pearl's hardware panel by accident.
+  source: "ecowitt" | "owm" | null;
 };
 
 /** One point of the trend chart -- the shape shared by weather/forecast and
@@ -234,10 +239,20 @@ export function parseCurrent(payload: string): CurrentWeather | null {
       station_battery: num(o.station_battery),
       station_voltage: num(o.station_voltage),
       station_signal: num(o.station_signal),
+      source:
+        o.source === "ecowitt" || o.source === "owm" ? o.source : null,
     };
   } catch {
     return null;
   }
+}
+
+/** True when the bus says this report came from OpenWeather only (#428) —
+ * no gateway/WH90. Missing source (old retain) counts as instruments on. */
+export function weatherInstrumentsAvailable(
+  current: CurrentWeather | null | undefined,
+): boolean {
+  return current?.source !== "owm";
 }
 
 /** Parse a weather/report payload; null for anything malformed or empty --
