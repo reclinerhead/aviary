@@ -1128,27 +1128,29 @@ function HeroTile({
 }
 
 /** Whole-number pace for the hero -- rates are means over days-on-air, so
- * a half-visit is noise and a long archive already rounds cleanly. */
+ * a half-visit is noise and a long archive already rounds cleanly. Thousands
+ * separators (#413) keep four-digit yard paces readable. */
 function paceOf(n: number | null, loaded: boolean, dash: string): string {
   if (!loaded || n === null) return dash;
-  return String(Math.round(n));
+  return Math.round(n).toLocaleString("en-US");
 }
 
-/** The archive hero (#260): the whole record's numbers above both columns.
- * Everything derives from the roster state the page already maintains --
- * zero fetches of its own, so live detections and lifers tick the numbers
- * in place for free. Tile order leads with the near-term windows (today,
- * this week), then the archive total, then yard pace -- visits/week as the
- * display figure, visits/month on the sub, listening-since de-emphasized
- * as a stamp footer so a calendar date never reads as "today". Three
- * states: dashes while the roster is in flight (a populated archive must
- * never flash the day-one message during hydration), the FRESH-AVIARY
- * hero once loaded-and-empty, the four tiles otherwise. The fresh state
- * is an overlay on the tile grid rendered invisible: the tiles keep
- * defining the band's height at every breakpoint, so the flip to a live
- * scoreboard -- this band's whole payoff on day one -- changes content
- * only and can never shift the page below (house rule #1; the New
- * Arrivals reserved-footprint move at page scale). */
+/** The archive hero (#260, dual today tile in #413): the whole record's
+ * numbers above both columns. Everything derives from the roster state the
+ * page already maintains -- zero fetches of its own, so live detections and
+ * lifers tick the numbers in place for free. Tile order leads with the
+ * near-term windows (today split: species + detections, then this week),
+ * then the archive total, then yard pace -- visits/week as the display
+ * figure, visits/month on the sub, listening-since de-emphasized as a stamp
+ * footer so a calendar date never reads as "today". Three states: dashes
+ * while the roster is in flight (a populated archive must never flash the
+ * day-one message during hydration), the FRESH-AVIARY hero once loaded-
+ * and-empty, the four tiles otherwise. The fresh state is an overlay on
+ * the tile grid rendered invisible: the tiles keep defining the band's
+ * height at every breakpoint, so the flip to a live scoreboard -- this
+ * band's whole payoff on day one -- changes content only and can never
+ * shift the page below (house rule #1; the New Arrivals reserved-footprint
+ * move at page scale). */
 function ArchiveHero({
   roster,
   loaded,
@@ -1178,11 +1180,50 @@ function ArchiveHero({
         aria-hidden={fresh}
         className={`grid grid-cols-2 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_340px] ${fresh ? "invisible" : ""}`}
       >
-        <HeroTile
-          label="species today"
-          value={loaded ? String(stats.today) : dash}
-          sub={loaded ? `of ${stats.week} this week` : dash}
-        />
+        {/* Tile 1 (#413): species today | detections today, half-and-half
+            inside one panel. No inner border or rule -- two stamp+value
+            stacks share the cell the single HeroTile used to own. The
+            detections figure is sum(today) across the roster (visit
+            openings since midnight), not a raw BirdNET window count. */}
+        <div className="panel rounded-sm border border-line bg-panel p-4">
+          <div className="grid grid-cols-2 gap-x-3">
+            <div className="min-w-0">
+              <div className="stamp text-[10px] text-inkfaint">
+                species today
+              </div>
+              <div
+                className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {loaded ? String(stats.today) : dash}
+              </div>
+              <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
+                {loaded ? `of ${stats.week} this week` : dash}
+              </div>
+            </div>
+            <div className="min-w-0">
+              <div className="stamp text-[10px] text-inkfaint">
+                detections today
+              </div>
+              <div
+                className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {loaded
+                  ? stats.detectionsToday.toLocaleString("en-US")
+                  : dash}
+              </div>
+              <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
+                {"\u00a0"}
+              </div>
+            </div>
+          </div>
+          {/* Foot reserved so this cell matches the other three tiles'
+              footprint (HeroTile always reserves the slot). */}
+          <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
+            {"\u00a0"}
+          </div>
+        </div>
         <HeroTile
           label="species this week"
           value={loaded ? String(stats.week) : dash}
