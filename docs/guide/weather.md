@@ -2,9 +2,14 @@
 
 > Spoke of the [Merle Technical Guide](../../TechnicalGuide.md) — read the hub first for the machine roster, quick start, and cross-cutting conventions.
 >
-> **Covers:** `weatherpost/` — `weather.py` (Willard: gateway + forecast polling, the 48h window, the on-air segment) and `weather_archive.py` (the seasonal archive)
-> **Runs on:** pearl (`willard-weather`)
-> **Related:** issues #25 #45 #51 #56 #105
+> **Covers:** `weatherpost/` — `weather.py` (Willard: gateway + forecast polling, the 48h window, the on-air segment) and `weather_archive.py` (the seasonal archive); UI station view in `mcc/` at `/weather`
+> **Runs on:** pearl (`willard-weather` + MCC process for the GUI)
+> **Front door:** `https://weather.lan/` (Caddy → same `:3000` as MCC; `/` → `/weather`)
+> **Related:** issues #25 #45 #51 #56 #105 #142
+
+### Product URL vs process
+
+The full station view is a **peer hostname** at the front door (`weather.lan` / `weather` — Pi-hole → pearl). It is still served by the `mcc-dashboard` Next process (Option A: named doors, one build). Homestead opens `https://weather.lan/`. The small Weather Post **panel** on the Merle Control Center stays on `mcc.lan` (MQTT-driven rail widget). Paths under the weather host remain `/weather` and `/weather/history`.
 
 ### The weather post (`weather.py`)
 
