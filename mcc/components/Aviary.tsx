@@ -1091,122 +1091,71 @@ function AviaryMasthead({
 
 // --- The /aviary page --------------------------------------------------------
 
-/** One hero tile (#260): the StandingTile idiom scaled up for the page hero
- * -- stamp label, display-font value, optional sub. Deliberately its own
- * shape rather than a StandingTile prop: the standings band (#220) keeps
- * its look untouched, and the hero's values earn a responsive step up.
- * Sub and foot always reserve height (empty = nbsp) so single and split
- * tiles share one footprint. */
-function HeroTile({
-  label,
-  value,
-  sub = "",
-  foot = "",
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  foot?: string;
-}) {
-  return (
-    <div className="panel rounded-sm border border-line bg-panel p-4">
-      <div className="stamp text-[10px] text-inkfaint">{label}</div>
-      <div
-        className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
-        style={{ fontFamily: "var(--font-display)" }}
-      >
-        {value}
-      </div>
-      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
-        {sub || "\u00a0"}
-      </div>
-      <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
-        {foot || "\u00a0"}
-      </div>
-    </div>
-  );
-}
-
-/** One half of a split hero panel (#413 / #415): stamp + value + reserved
- * sub. No border of its own -- the parent panel owns the chrome. */
-function HeroHalf({
-  label,
-  value,
-  sub = "",
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="stamp text-[10px] text-inkfaint">{label}</div>
-      <div
-        className="mt-1 whitespace-nowrap text-2xl text-ink sm:text-3xl xl:text-4xl"
-        style={{ fontFamily: "var(--font-display)" }}
-      >
-        {value}
-      </div>
-      <div className="mt-0.5 min-h-[1rem] text-xs text-inkdim">
-        {sub || "\u00a0"}
-      </div>
-    </div>
-  );
-}
-
-/** Dual hero tile: two halves, one panel, no inner divider (#413 tile 1,
- * #415 tile 4). Foot spans the full width under both stacks. */
-function HeroSplitTile({
-  left,
-  right,
-  foot = "",
-}: {
-  left: { label: string; value: string; sub?: string };
-  right: { label: string; value: string; sub?: string };
-  foot?: string;
-}) {
-  return (
-    <div className="panel rounded-sm border border-line bg-panel p-4">
-      <div className="grid grid-cols-2 gap-x-3">
-        <HeroHalf {...left} />
-        <HeroHalf {...right} />
-      </div>
-      <div className="mt-1 min-h-[0.875rem] stamp text-[10px] text-inkfaint">
-        {foot || "\u00a0"}
-      </div>
-    </div>
-  );
-}
-
-/** Whole-number pace for the hero -- rates are means over days-on-air, so
- * a half-visit is noise and a long archive already rounds cleanly. Thousands
- * separators (#413) keep four-digit yard paces readable. */
+/** Whole-number pace for the archive readout -- rates are means over
+ * days-on-air, so a half-visit is noise. Thousands separators keep
+ * four-digit paces scannable. */
 function paceOf(n: number | null, loaded: boolean, dash: string): string {
   if (!loaded || n === null) return dash;
   return Math.round(n).toLocaleString("en-US");
 }
 
-/** Whole-record count for the hero (#415 total visits): same thousands
- * separators as paceOf, no rounding (visits are already integers). */
+/** Whole-record count: same separators as paceOf, no rounding. */
 function countOf(n: number, loaded: boolean, dash: string): string {
   if (!loaded) return dash;
   return n.toLocaleString("en-US");
 }
 
-/** The archive hero (#260; dual tiles in #413/#415): the whole record's
- * numbers above both columns. Everything derives from the roster state the
- * page already maintains -- zero fetches of its own, so live detections and
- * lifers tick the numbers in place for free. Tile order: today (species |
- * detections), species this week, species on record, then yard volume
- * (visits/week | total visits) with visits/month under the pace half and
- * listening-since as a full-width foot. Redundant "of N …" subs that only
- * restated the next tile's main figure were dropped (#415). Three states:
- * dashes while the roster is in flight (a populated archive must never
- * flash the day-one message during hydration), the FRESH-AVIARY hero once
- * loaded-and-empty, the four tiles otherwise. The fresh state is an
- * overlay on the tile grid rendered invisible: the tiles keep defining
- * the band's height at every breakpoint, so the flip to a live scoreboard
- * changes content only and can never shift the page below (house rule #1). */
+/** One labeled cluster inside the archive readout strip (#418). */
+function ReadoutGroup({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
+      <span className="stamp text-[9px] text-inkfaint">{label}</span>
+      {children}
+    </span>
+  );
+}
+
+/** Modest display figure -- denser than the old tile heroes, still a step
+ * above body so the strip reads as an instrument, not a paragraph. */
+function ReadoutVal({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className="tabular-nums text-[15px] leading-none text-ink sm:text-base"
+      style={{ fontFamily: "var(--font-display)" }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function ReadoutUnit({ children }: { children: ReactNode }) {
+  return <span className="text-[11px] leading-none text-inkdim">{children}</span>;
+}
+
+function ReadoutDot() {
+  return (
+    <span className="text-[11px] text-inkfaint" aria-hidden>
+      ·
+    </span>
+  );
+}
+
+/** The archive hero (#260; readout strip in #418): the whole record's
+ * numbers in one compact band above both columns. Everything derives from
+ * the roster the page already maintains -- zero fetches of its own, so
+ * live detections and lifers tick the figures in place. Two dense lines
+ * (near-term + record, then pace + listening-since) replace the four-tile
+ * KPI scoreboard: same facts, stamp labels, modest type, no reserved empty
+ * sub/foot rows. Three states share one min-height footprint: dashes while
+ * the roster is in flight, the fresh-aviary sentence once loaded-and-empty,
+ * the strip otherwise -- so the first bird landing never shifts the page
+ * below (house rule #1). */
 function ArchiveHero({
   roster,
   loaded,
@@ -1219,83 +1168,82 @@ function ArchiveHero({
   const stats = archiveStats(Object.values(roster), now);
   const fresh = loaded && stats.species === 0;
   const dash = "—";
-  const paceFoot =
+  const todaySpp = loaded ? String(stats.today) : dash;
+  const todayDet = loaded
+    ? stats.detectionsToday.toLocaleString("en-US")
+    : dash;
+  const weekSpp = loaded ? String(stats.week) : dash;
+  const recordSpp = loaded ? String(stats.species) : dash;
+  const visits = countOf(stats.visits, loaded, dash);
+  const perWeek = paceOf(stats.visitsPerWeek, loaded, dash);
+  const perMonth = paceOf(stats.visitsPerMonth, loaded, dash);
+  const sinceLine =
     loaded && stats.since !== null && stats.days !== null
       ? stats.days === 1
         ? `listening since ${sinceOf(stats.since)} · 1 day`
         : `listening since ${sinceOf(stats.since)} · ${stats.days} days`
       : dash;
+
   return (
-    <section className="relative mb-4">
-      {/* At lg the band adopts the page grid's own tracks -- three fluid
-          columns plus the rail's 340px -- so with the shared gap-4 the
-          fourth tile's left edge IS the rail's and the third tile's right
-          edge IS the Life List's, by construction (#265 addendum). An even
-          grid-cols-4 missed both seams: the rail is fixed-width, not 25%. */}
-      <div
-        aria-hidden={fresh}
-        className={`grid grid-cols-2 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_340px] ${fresh ? "invisible" : ""}`}
-      >
-        {/* Tile 1 (#413): species today | detections today. detections =
-            sum(today) across the roster (visit openings since midnight).
-            No "of N this week" sub -- that N is tile 2's main figure (#415). */}
-        <HeroSplitTile
-          left={{
-            label: "species today",
-            value: loaded ? String(stats.today) : dash,
-          }}
-          right={{
-            label: "detections today",
-            value: loaded
-              ? stats.detectionsToday.toLocaleString("en-US")
-              : dash,
-          }}
-        />
-        {/* Tiles 2–3: label + number only. The old "of N on record" /
-            "across N visits" lines restated the next cell (#415). */}
-        <HeroTile
-          label="species this week"
-          value={loaded ? String(stats.week) : dash}
-        />
-        <HeroTile
-          label="species on record"
-          value={loaded ? String(stats.species) : dash}
-        />
-        {/* Tile 4 (#415): visits/week | total visits. Total used to ride
-            under species-on-record; pace half keeps the monthly mean sub;
-            listening-since still spans the full panel as the foot. */}
-        <HeroSplitTile
-          left={{
-            label: "visits / week",
-            value: paceOf(stats.visitsPerWeek, loaded, dash),
-            sub:
-              loaded && stats.visitsPerMonth !== null
-                ? `${paceOf(stats.visitsPerMonth, loaded, dash)} / mo avg`
-                : dash,
-          }}
-          right={{
-            label: "total visits",
-            value: countOf(stats.visits, loaded, dash),
-          }}
-          foot={paceFoot}
-        />
-      </div>
-      {fresh && (
-        <div className="panel absolute inset-0 flex flex-col items-center justify-center gap-1 rounded-sm border border-line bg-panel px-4 text-center">
-          <span className="stamp text-[10px] text-inkfaint">
-            a brand new aviary
-          </span>
-          <span
-            className="text-2xl text-ink sm:text-3xl"
-            style={{ fontFamily: "var(--font-display)" }}
-          >
-            waiting for the first visitor
-          </span>
-          <span className="stamp text-[10px] text-inkdim">
-            the record starts with the next bird
-          </span>
+    <section className="mb-4">
+      <div className="panel rounded-sm border border-line bg-panel px-3 py-2.5 sm:px-4">
+        {/* Shared min-height: strip and fresh message swap content only. */}
+        <div className="flex min-h-[3rem] flex-col justify-center sm:min-h-[3.25rem]">
+          {fresh ? (
+            <div className="flex flex-col items-center justify-center gap-0.5 text-center">
+              <span className="stamp text-[9px] text-inkfaint">
+                a brand new aviary
+              </span>
+              <span
+                className="text-base leading-tight text-ink sm:text-lg"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                waiting for the first visitor
+              </span>
+              <span className="stamp text-[9px] text-inkdim">
+                the record starts with the next bird
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {/* Line 1: near-term glance, then archive depth. */}
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                <ReadoutGroup label="today">
+                  <ReadoutVal>{todaySpp}</ReadoutVal>
+                  <ReadoutUnit>species</ReadoutUnit>
+                  <ReadoutDot />
+                  <ReadoutVal>{todayDet}</ReadoutVal>
+                  <ReadoutUnit>detections</ReadoutUnit>
+                </ReadoutGroup>
+                <ReadoutGroup label="week">
+                  <ReadoutVal>{weekSpp}</ReadoutVal>
+                  <ReadoutUnit>species</ReadoutUnit>
+                </ReadoutGroup>
+                <ReadoutGroup label="record">
+                  <ReadoutVal>{recordSpp}</ReadoutVal>
+                  <ReadoutUnit>species</ReadoutUnit>
+                  <ReadoutDot />
+                  <ReadoutVal>{visits}</ReadoutVal>
+                  <ReadoutUnit>visits</ReadoutUnit>
+                </ReadoutGroup>
+              </div>
+              {/* Line 2: yard pace + listening since (quiet). */}
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <ReadoutGroup label="pace">
+                  <ReadoutVal>{perWeek}</ReadoutVal>
+                  <ReadoutUnit>/ wk</ReadoutUnit>
+                  <ReadoutDot />
+                  <ReadoutVal>{perMonth}</ReadoutVal>
+                  <ReadoutUnit>/ mo</ReadoutUnit>
+                </ReadoutGroup>
+                <span className="stamp text-[9px] text-inkfaint">
+                  {sinceLine}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </section>
   );
 }
