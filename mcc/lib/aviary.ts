@@ -1595,3 +1595,31 @@ export function mastheadSub(stationName?: string | null): string {
   const name = (stationName ?? "").trim();
   return name || "earl with the ears";
 }
+
+/**
+ * Display title for the Aviary H1. Default "The Aviary"; stations set
+ * MERLE_AVIARY_TITLE (e.g. "Karen's Aviary") in station.env.
+ */
+export function aviaryTitle(title?: string | null): string {
+  const t = (title ?? "").trim();
+  return t || "The Aviary";
+}
+
+/**
+ * Runtime station branding from process.env.
+ *
+ * Next inlines `process.env.FOO` at **build** time when FOO is a static
+ * property access. Birdhouse builds without MERLE_STATION_NAME set, so the
+ * compiled page baked `undefined` forever and the masthead stayed
+ * "earl with the ears" even after station.env was filled and mcc restarted.
+ * Bracket access + force-dynamic pages read the live systemd EnvironmentFile.
+ */
+export function stationBrandingFromEnv(): {
+  stationName: string | undefined;
+  title: string;
+} {
+  const env = process.env;
+  const stationName = (env["MERLE_STATION_NAME"] ?? "").trim() || undefined;
+  const title = aviaryTitle(env["MERLE_AVIARY_TITLE"]);
+  return { stationName, title };
+}
