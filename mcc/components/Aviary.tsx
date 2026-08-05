@@ -1115,7 +1115,7 @@ function ReadoutGroup({
 }) {
   return (
     <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
-      <span className="stamp text-[11px] text-inkfaint">{label}</span>
+      <span className="stamp text-xs text-inkfaint">{label}</span>
       {children}
     </span>
   );
@@ -1173,6 +1173,9 @@ function ArchiveHero({
     ? stats.detectionsToday.toLocaleString("en-US")
     : dash;
   const weekSpp = loaded ? String(stats.week) : dash;
+  const weekDet = loaded
+    ? stats.detectionsWeek.toLocaleString("en-US")
+    : dash;
   const recordSpp = loaded ? String(stats.species) : dash;
   const visits = countOf(stats.visits, loaded, dash);
   const perWeek = paceOf(stats.visitsPerWeek, loaded, dash);
@@ -1218,6 +1221,9 @@ function ArchiveHero({
                 <ReadoutGroup label="week">
                   <ReadoutVal>{weekSpp}</ReadoutVal>
                   <ReadoutUnit>species</ReadoutUnit>
+                  <ReadoutDot />
+                  <ReadoutVal>{weekDet}</ReadoutVal>
+                  <ReadoutUnit>detections</ReadoutUnit>
                 </ReadoutGroup>
                 <ReadoutGroup label="record">
                   <ReadoutVal>{recordSpp}</ReadoutVal>

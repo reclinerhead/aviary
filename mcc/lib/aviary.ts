@@ -778,6 +778,10 @@ export type ArchiveStats = {
    * the client's local midnight, across every species. The hero's "detections
    * today" figure (#413); same unit Today's Visitors already shows per pill. */
   detectionsToday: number;
+  /** Sum of per-species `week` visit tallies -- total visit openings inside
+   * the trailing local week, across every species. Same unit as
+   * detectionsToday; the readout's week cluster mirrors today's pair. */
+  detectionsWeek: number;
   /** The earliest first-heard moment on record -- "listening since". Null on
    * an empty archive: no record means no since, never a guess. */
   since: number | null;
@@ -798,16 +802,17 @@ export type ArchiveStats = {
  * read entirely off the roster the page already holds -- zero fetches of its
  * own, and live roster updates flow through for free. "This week"/"today"
  * count DISTINCT SPECIES heard in the roster's own windows (week/today > 0
- * -- no third definition of either boundary); `detectionsToday` is the SUM
- * of those per-species `today` tallies (activity volume, not diversity).
- * New lifers are New Arrivals' job, not this band's. `now` is the page's
- * mount-time clock, passed in rather than read here (the SSR/hydration
- * rule). The day count rounds the local-midnight difference -- a DST-
- * stretched day skews the division by at most an hour -- and floors at 1:
- * a first-ever bird landing after a mounted tab's midnight is day one, not
- * day zero. Pace rates (visits per week / per month) are the same span's
- * arithmetic -- not a rolling window of their own. All zeros and nulls on
- * an empty archive: exactly the values the fresh-aviary state keys off. */
+ * -- no third definition of either boundary); `detectionsToday` /
+ * `detectionsWeek` are the SUMs of those per-species `today` / `week`
+ * tallies (activity volume, not diversity). New lifers are New Arrivals'
+ * job, not this band's. `now` is the page's mount-time clock, passed in
+ * rather than read here (the SSR/hydration rule). The day count rounds the
+ * local-midnight difference -- a DST-stretched day skews the division by at
+ * most an hour -- and floors at 1: a first-ever bird landing after a
+ * mounted tab's midnight is day one, not day zero. Pace rates (visits per
+ * week / per month) are the same span's arithmetic -- not a rolling window
+ * of their own. All zeros and nulls on an empty archive: exactly the values
+ * the fresh-aviary state keys off. */
 export function archiveStats(
   entries: RosterEntry[],
   now: number | null,
@@ -816,12 +821,14 @@ export function archiveStats(
   let week = 0;
   let today = 0;
   let detectionsToday = 0;
+  let detectionsWeek = 0;
   let since: number | null = null;
   for (const e of entries) {
     visits += e.visits;
     if (e.week > 0) week++;
     if (e.today > 0) today++;
     detectionsToday += e.today;
+    detectionsWeek += e.week;
     if (since === null || e.first_ts < since) since = e.first_ts;
   }
   const days =
@@ -839,6 +846,7 @@ export function archiveStats(
     week,
     today,
     detectionsToday,
+    detectionsWeek,
     since,
     days,
     visitsPerWeek,
