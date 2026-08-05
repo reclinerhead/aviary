@@ -1901,22 +1901,14 @@ describe("newArrivals", () => {
 });
 
 describe("mastheadSub (#304, the station masthead)", () => {
-  it("home wears the line it always has", () => {
-    expect(mastheadSub()).toBe(
-      "earl with the ears · every bird the yard has announced",
-    );
-    expect(mastheadSub(null)).toBe(
-      "earl with the ears · every bird the yard has announced",
-    );
+  it("home wears the station-less line", () => {
+    expect(mastheadSub()).toBe("earl with the ears");
+    expect(mastheadSub(null)).toBe("earl with the ears");
   });
   it("a station says whose yard it is", () => {
-    expect(mastheadSub("Karens Yard")).toBe(
-      "Karens Yard · every bird the yard has announced",
-    );
+    expect(mastheadSub("Karens Yard")).toBe("Karens Yard");
   });
   it("blank collapses to home, never a dangling separator", () => {
-    expect(mastheadSub("   ")).toBe(
-      "earl with the ears · every bird the yard has announced",
-    );
+    expect(mastheadSub("   ")).toBe("earl with the ears");
   });
 });
