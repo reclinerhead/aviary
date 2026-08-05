@@ -70,6 +70,7 @@ import {
   reconcileOrder,
   reconcileRail,
   rhythmStrip,
+  aviaryTitle,
   mastheadSub,
   readLifeListQuery,
   rivalLine,
@@ -990,6 +991,7 @@ function AviaryMasthead({
   lamp,
   jumps,
   stationName,
+  title,
   tab = "aviary",
 }: {
   lamp?: {
@@ -1008,6 +1010,8 @@ function AviaryMasthead({
    * mismatch); absent means home, and the sub line is exactly what it has
    * always been. */
   stationName?: string;
+  /** H1 text (MERLE_AVIARY_TITLE on stations). Default "The Aviary". */
+  title?: string;
   /** Which tab is underlined (#357, resemanticed by #359): the current
    * *section*, not the current page -- every tab is a live link, the
    * underlined one included (the GitHub-tabs model), so a drill-down keeps
@@ -1017,6 +1021,7 @@ function AviaryMasthead({
    * its own module -- so only the events page overrides the default. */
   tab?: (typeof MASTHEAD_TABS)[number]["key"];
 }) {
+  const heading = aviaryTitle(title);
   return (
     <header className="mb-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -1030,7 +1035,7 @@ function AviaryMasthead({
             href="/aviary"
             className="transition-colors hover:text-squirrel"
           >
-            The Aviary
+            {heading}
           </Link>
         </h1>
         {/* No way back to the MCC dashboard from here, on purpose (#361):
@@ -1254,7 +1259,13 @@ function ArchiveHero({
   );
 }
 
-export function Aviary({ stationName }: { stationName?: string } = {}) {
+export function Aviary({
+  stationName,
+  title,
+}: {
+  stationName?: string;
+  title?: string;
+} = {}) {
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
   // live count updates land in place and nothing reshuffles on its own.
@@ -1537,6 +1548,7 @@ export function Aviary({ stationName }: { stationName?: string } = {}) {
       <AviaryMasthead
         lamp={{ busUp, status: earlStatus, sources: earlSources }}
         stationName={stationName}
+        title={title}
         jumps={[
           { href: "#latest-events", label: "events ↓" },
           { href: "#new-arrivals", label: "arrivals ↓" },
@@ -2236,9 +2248,11 @@ type Analysis = {
 export function SpeciesProfile({
   sci,
   stationName,
+  title,
 }: {
   sci: string;
   stationName?: string;
+  title?: string;
 }) {
   const [entry, setEntry] = useState<RosterEntry | null>(null);
   // The whole roster rides along (#220): the standings band ranks this bird
@@ -2429,7 +2443,7 @@ export function SpeciesProfile({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead stationName={stationName} />
+      <AviaryMasthead stationName={stationName} title={title} />
       {loaded && !entry ? (
         <section className="panel flex min-h-[200px] items-center justify-center rounded-sm border border-line bg-panel">
           <span className="stamp text-xs text-inkfaint">
@@ -2964,8 +2978,10 @@ export function SpeciesProfile({
  * LIMIT -- so `exhausted` needs no second opinion. */
 export function AviaryEvents({
   stationName,
+  title,
 }: {
   stationName?: string;
+  title?: string;
 } = {}) {
   const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
   // Pill order: most-visited first, computed once at load (rosterOrder --
@@ -3188,7 +3204,7 @@ export function AviaryEvents({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead stationName={stationName} tab="record" />
+      <AviaryMasthead stationName={stationName} title={title} tab="record" />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Full Record"

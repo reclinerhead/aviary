@@ -21,6 +21,7 @@ import {
   dayAnchor,
   dayBuckets,
   mastheadSub,
+  aviaryTitle,
   dayGroups,
   dayStart,
   detectionFromRow,
@@ -1925,8 +1926,20 @@ describe("mastheadSub (#304, the station masthead)", () => {
   });
   it("a station says whose yard it is", () => {
     expect(mastheadSub("Karens Yard")).toBe("Karens Yard");
+    expect(mastheadSub("Karen's Yard")).toBe("Karen's Yard");
   });
   it("blank collapses to home, never a dangling separator", () => {
     expect(mastheadSub("   ")).toBe("earl with the ears");
+  });
+});
+
+describe("aviaryTitle (station H1)", () => {
+  it("defaults to The Aviary", () => {
+    expect(aviaryTitle()).toBe("The Aviary");
+    expect(aviaryTitle(null)).toBe("The Aviary");
+    expect(aviaryTitle("  ")).toBe("The Aviary");
+  });
+  it("uses a configured title", () => {
+    expect(aviaryTitle("Karen's Aviary")).toBe("Karen's Aviary");
   });
 });
