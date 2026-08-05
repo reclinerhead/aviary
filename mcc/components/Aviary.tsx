@@ -1024,20 +1024,32 @@ function AviaryMasthead({
   const heading = aviaryTitle(title);
   return (
     <header className="mb-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1
-          className="text-3xl text-ink"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
-          {/* The title is the way home (#357) -- same rest look as the old
-              plain text, only the hover admits it's a link. */}
-          <Link
-            href="/aviary"
-            className="transition-colors hover:text-squirrel"
+      {/* Title + station sub are one left stack; the lamp is a pure right
+          column. Previously the sub sat *below* the whole flex row, and
+          items-baseline + a two-line lamp made that row taller on the
+          dashboard than on the species/events pages (no lamp) -- so
+          "Karen's Yard" and the tab bar jumped when drilling in and back
+          (house rule #1). Nested under the h1, the sub's offset is always
+          mt-1 from the title whether or not Earl is showing. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+        <div className="min-w-0">
+          <h1
+            className="text-3xl text-ink"
+            style={{ fontFamily: "var(--font-display)" }}
           >
-            {heading}
-          </Link>
-        </h1>
+            {/* The title is the way home (#357) -- same rest look as the old
+                plain text, only the hover admits it's a link. */}
+            <Link
+              href="/aviary"
+              className="transition-colors hover:text-squirrel"
+            >
+              {heading}
+            </Link>
+          </h1>
+          <p className="stamp mt-1 text-xs text-inkfaint">
+            {mastheadSub(stationName)}
+          </p>
+        </div>
         {/* No way back to the MCC dashboard from here, on purpose (#361):
             the launchpad opens each module in its own window, so a corner
             link out was a misclick that closed the yard rather than a
@@ -1051,9 +1063,6 @@ function AviaryMasthead({
           />
         )}
       </div>
-      <p className="stamp mt-1 text-xs text-inkfaint">
-        {mastheadSub(stationName)}
-      </p>
       <nav className="mt-3 flex flex-wrap items-baseline">
         {/* The tabs own a full-width row, and the rule rides with them
             (#359). The longer labels no longer leave phone-width room for
