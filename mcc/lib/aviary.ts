@@ -1580,9 +1580,10 @@ export function dayAnchor(value: string): number | null {
 
 /** The masthead's second line, station-aware (#304, epic #212): a remote
  * station says whose yard it is; at home (no name configured) the line is
- * byte-for-byte the one the Aviary has always worn. Blank and whitespace
- * collapse to home -- half-configured is not a third voice. */
+ * "earl with the ears". Blank and whitespace collapse to home --
+ * half-configured is not a third voice. The trailing tagline was dropped
+ * so the line stays single-row on phone widths. */
 export function mastheadSub(stationName?: string | null): string {
   const name = (stationName ?? "").trim();
-  return `${name || "earl with the ears"} · every bird the yard has announced`;
+  return name || "earl with the ears";
 }

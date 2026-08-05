@@ -1115,7 +1115,7 @@ function ReadoutGroup({
 }) {
   return (
     <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
-      <span className="stamp text-[9px] text-inkfaint">{label}</span>
+      <span className="stamp text-[11px] text-inkfaint">{label}</span>
       {children}
     </span>
   );
