@@ -1110,7 +1110,9 @@ function countOf(n: number, loaded: boolean, dash: string): string {
   return n.toLocaleString("en-US");
 }
 
-/** One labeled cluster inside the archive readout strip (#418). */
+/** One labeled cluster inside the archive readout strip (#418).
+ * Labels match the figure size (desk: stamp labels were too small to read
+ * next to the numbers). */
 function ReadoutGroup({
   label,
   children,
@@ -1120,7 +1122,9 @@ function ReadoutGroup({
 }) {
   return (
     <span className="inline-flex flex-wrap items-baseline gap-x-1.5">
-      <span className="stamp text-xs text-inkfaint">{label}</span>
+      <span className="stamp text-[15px] leading-none text-inkfaint sm:text-base">
+        {label}
+      </span>
       {children}
     </span>
   );
@@ -1139,13 +1143,19 @@ function ReadoutVal({ children }: { children: ReactNode }) {
   );
 }
 
+/** Unit words (species / detections / visits) — same size as the figures so
+ * they stay readable in the dense strip. */
 function ReadoutUnit({ children }: { children: ReactNode }) {
-  return <span className="text-[11px] leading-none text-inkdim">{children}</span>;
+  return (
+    <span className="text-[15px] leading-none text-inkdim sm:text-base">
+      {children}
+    </span>
+  );
 }
 
 function ReadoutDot() {
   return (
-    <span className="text-[11px] text-inkfaint" aria-hidden>
+    <span className="text-[15px] text-inkfaint sm:text-base" aria-hidden>
       ·
     </span>
   );
@@ -2511,12 +2521,14 @@ export function SpeciesProfile({
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                   <Link
                     href="/aviary"
-                    className="stamp shrink-0 text-xs text-inkdim transition-colors hover:text-squirrel"
+                    className="shrink-0 text-2xl text-inkdim transition-colors hover:text-squirrel"
+                    style={{ fontFamily: "var(--font-display)" }}
                   >
                     all species
                   </Link>
                   <span
-                    className="stamp shrink-0 text-xs text-inkfaint"
+                    className="shrink-0 text-2xl text-inkfaint"
+                    style={{ fontFamily: "var(--font-display)" }}
                     aria-hidden
                   >
                     →
