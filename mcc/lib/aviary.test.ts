@@ -930,6 +930,7 @@ describe("archiveStats", () => {
       week: 0,
       today: 0,
       detectionsToday: 0,
+      detectionsWeek: 0,
       since: null,
       days: null,
       visitsPerWeek: null,
@@ -955,6 +956,9 @@ describe("archiveStats", () => {
     // detectionsToday sums the per-species today tallies (volume, not
     // diversity) -- robin's 2, jay and wren contribute 0 (#413).
     expect(stats.detectionsToday).toBe(2);
+    // detectionsWeek sums the per-species week tallies the same way:
+    // robin 9 + jay 3 + wren 0.
+    expect(stats.detectionsWeek).toBe(12);
   });
   it("sums detectionsToday across every species with activity today", () => {
     const stats = archiveStats(
@@ -968,6 +972,20 @@ describe("archiveStats", () => {
     // Distinct species today is 2; activity volume is 3+7.
     expect(stats.today).toBe(2);
     expect(stats.detectionsToday).toBe(10);
+  });
+  it("sums detectionsWeek across every species with activity this week", () => {
+    const stats = archiveStats(
+      [
+        entry("A", "American Robin", 10, 3, 5, 5000),
+        entry("B", "Blue Jay", 8, 7, 8, 2000),
+        entry("C", "Carolina Wren", 1, 0, 1, 9000),
+        entry("D", "Downy Woodpecker", 4, 0, 0, 1000),
+      ],
+      JUL_18_NOON,
+    );
+    // Distinct species this week is 3; volume is 5+8+1 (woodpecker at 0).
+    expect(stats.week).toBe(3);
+    expect(stats.detectionsWeek).toBe(14);
   });
   it("takes the EARLIEST first_ts as since, wherever it sits in the list", () => {
     const stats = archiveStats(
