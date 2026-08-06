@@ -12,11 +12,13 @@
 // the client never constructs paths and hostile input scrubs flat before it
 // touches the filesystem.
 //
-// Cache: no-store, the clips route's reasoning one shelf over -- a
-// portrait's bytes change on --refresh and will change again when an owner
-// photo replaces a fetched one; ~17 LAN-local images per grid view is
-// nothing worth lying to the browser over. Revalidation caching is a noted
-// follow-up if the life list ever makes this chatty.
+// Cache (#432 / #433): portraits are a durable shelf, not clips. Clips stay
+// no-store because best-clip rewrites the same path in place; portraits
+// change only on rare enrichment refresh. no-store forced every grid revisit
+// to re-download every JPEG -- free on the home LAN, painful on a station
+// Wi‑Fi link. public + day-long max-age + week-long SWR, with an ETag from
+// mtime+size so a replaced file revalidates to 304/200 correctly. Missing
+// portraits stay uncached 404 so a pending tile can appear after the pass.
 
 import { promises as fs } from "fs";
 import path from "path";
@@ -24,8 +26,17 @@ import { speciesImageName } from "@/lib/aviary";
 
 const SPECIES_DIR = "species";
 
+/** Long-lived browser cache; revalidate cheaply via ETag when the file changes. */
+const CACHE_CONTROL =
+  "public, max-age=86400, stale-while-revalidate=604800";
+
+/** Strong ETag from mtime (ms) + size — changes whenever enrichment rewrites the bytes. */
+function portraitEtag(mtimeMs: number, size: number): string {
+  return `"${Math.round(mtimeMs)}-${size}"`;
+}
+
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ species: string }> },
 ) {
   const { species } = await ctx.params;
@@ -33,16 +44,36 @@ export async function GET(
   const name = speciesImageName(decodeURIComponent(species));
   if (!dir || !name) return new Response(null, { status: 404 });
 
-  let bytes: Buffer;
+  const filePath = path.join(dir, SPECIES_DIR, name);
+  let st: { mtimeMs: number; size: number };
   try {
-    bytes = await fs.readFile(path.join(dir, SPECIES_DIR, name));
+    st = await fs.stat(filePath);
   } catch {
     return new Response(null, { status: 404 }); // not enriched yet
+  }
+
+  const etag = portraitEtag(st.mtimeMs, st.size);
+  if (req.headers.get("if-none-match") === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: {
+        etag,
+        "cache-control": CACHE_CONTROL,
+      },
+    });
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(filePath);
+  } catch {
+    return new Response(null, { status: 404 });
   }
   return new Response(new Uint8Array(bytes), {
     headers: {
       "content-type": "image/jpeg",
-      "cache-control": "no-store",
+      etag,
+      "cache-control": CACHE_CONTROL,
     },
   });
 }
