@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# deploy-mcc.sh -- THE way to deploy the MCC dashboard on pearl.
+# deploy-mcc.sh -- THE way to deploy the MCC dashboard (pearl historically;
+# orchid after epic #371 Phase 3 / issue #435).
 #
 # "git pull + systemctl restart" is not a deploy: `next start` serves the
 # compiled .next/, not source, so a restart without a build re-serves the old
@@ -8,12 +9,12 @@
 # order -- pull -> install -> build -> restart -- and set -e fails loudly at
 # the first broken step, so a failed build never restarts the service.
 #
-# Run it on pearl, from anywhere:  ~/project-squirrel/Servers/deploy-mcc.sh
+# Run it on the MCC host, from anywhere:  ~/project-squirrel/Servers/deploy-mcc.sh
 #
 # Since issue #95 this is the MANUAL path -- merle-autodeploy (autodeploy.sh)
 # watches origin/main and runs this same pull -> install -> build -> restart
-# order on its own. Keep the two in step: the order rule lives here, and the
-# watcher mirrors it.
+# order on its own when MERLE_DEPLOY_MCC=1. Keep the two in step: the order
+# rule lives here, and the watcher mirrors it.
 
 set -euo pipefail
 
