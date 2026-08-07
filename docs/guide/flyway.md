@@ -8,7 +8,7 @@
 
 ## What the Flyway is
 
-The network layer of epic #212: everything on pearl that concerns the
+The network layer of epic #212: everything on the house orchestrator (orchid after #371 Phase 3; was pearl) that concerns the
 *remote* stations (birdhouse now; the Kalamazoo box someday). A station is
 fully self-contained by principle — own broker, own `earl.db`, own dashboard
 — so nothing here is load-bearing for a station. The Flyway is where the

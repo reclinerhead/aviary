@@ -475,6 +475,26 @@ def test_load_history_wrong_shape(tmp_path):
     assert weather.load_history(path) == []
 
 
+def test_merge_history_windows_seeds_empty_file_from_archive():
+    # Host move: weather.db arrived, weather_history.json did not.
+    archived = [pt(100), pt(200), pt(300)]
+    assert weather.merge_history_windows([], archived) == archived
+
+
+def test_merge_history_windows_file_wins_on_ts_collision():
+    file_w = [pt(200, temp=71.0)]
+    archived = [pt(100), pt(200, temp=70.0), pt(300)]
+    merged = weather.merge_history_windows(file_w, archived)
+    assert [p["ts"] for p in merged] == [100, 200, 300]
+    assert merged[1]["temp_f"] == 71.0  # file point, not archive
+
+
+def test_merge_history_windows_either_side_empty():
+    assert weather.merge_history_windows([], []) == []
+    assert weather.merge_history_windows([pt(1)], []) == [pt(1)]
+    assert weather.merge_history_windows(None, [pt(1)]) == [pt(1)]
+
+
 # --- willard's on-air segment (issue #45) --------------------------------------
 # Pure prompt assembly and sanitation only; the live Ollama call is I/O and
 # stays desk-tested (the narrator's testing policy). Sun-time strings render

@@ -468,6 +468,29 @@ def load_history(path):
         return []
 
 
+def merge_history_windows(file_window, archive_points):
+    """Union of the JSON rolling window and recent archive rows, keyed by ts.
+
+    Pure. The archive is the durable source of truth for past observations;
+    the JSON file is only a cache of the retained bus payload. After a host
+    move (epic #371) weather.db travels by sqlite .backup while
+    weather_history.json often does not -- without this merge the bus
+    republishes a near-empty trail and the station chart looks blank until
+    the viewer pans (which hits /weather/history and reads the archive).
+    Archive rows fill gaps; on a ts collision the file point wins (it is
+    whatever this process last wrote to the bus)."""
+    by_ts = {}
+    for p in archive_points or []:
+        ts = p.get("ts") if isinstance(p, dict) else None
+        if ts is not None:
+            by_ts[ts] = p
+    for p in file_window or []:
+        ts = p.get("ts") if isinstance(p, dict) else None
+        if ts is not None:
+            by_ts[ts] = p
+    return [by_ts[ts] for ts in sorted(by_ts)]
+
+
 def save_history(path, window):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(window, f)
@@ -810,6 +833,17 @@ def main():
     # nothing (the PK dedupes) and hands a fresh archive up to 48h of real
     # readings instead of starting it from empty.
     archive = weather_archive.connect(weather_archive.db_path())
+    # Rehydrate the rolling window from the archive before we publish. The
+    # JSON file is often empty on a moved box; weather.db is not.
+    now_seed = int(time.time())
+    from_archive = weather_archive.observations(
+        archive, now_seed - HISTORY_WINDOW_S, now_seed)
+    before = len(window)
+    window = merge_history_windows(window, from_archive)
+    if len(window) > before:
+        save_history(history_path, window)
+        print(f"[weather] seeded rolling window from archive: "
+              f"{before} -> {len(window)} points")
     filed = weather_archive.backfill(archive, window)
     # status_topic gives Willard the narrator presence contract (issue #31):
     # retained online/offline with the Last Will covering crashes AND
@@ -817,6 +851,11 @@ def main():
     # of waiting out the 30-minute staleness window.
     publisher = bus.EventPublisher(
         "weather", status_topic=bus.WEATHER_STATUS_TOPIC).start()
+    # Republish retained history on every start so a seeded window reaches
+    # the bus without waiting for the next should_record tick.
+    if window:
+        publisher.publish(bus.WEATHER_HISTORY_TOPIC,
+                          {"points": window}, retain=True)
     if station_mode:
         # Loud on purpose: at home this line appearing means someone lost
         # MERLE_ECOWITT, not that a station was born.
