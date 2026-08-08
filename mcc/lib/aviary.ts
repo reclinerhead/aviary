@@ -507,7 +507,18 @@ export function voiceProse(
   return null;
 }
 
-/** The best-sounding recording of each species (#333).
+/**
+ * Confidence window for composite best-recording rank (#442). Among visits
+ * within this many points of the species' max confidence (or at/above
+ * BEST_CLIP_CONF_FLOOR), prefer the higher vocal_fill. Outside the window a
+ * low-confidence long song cannot steal the crown from a 0.98 chirp.
+ */
+export const BEST_CLIP_CONF_WINDOW = 0.05;
+/** Absolute confidence floor that always competes for best, even when below
+ * cMax − window (rare when cMax is very high). */
+export const BEST_CLIP_CONF_FLOOR = 0.9;
+
+/** The best-sounding recording of each species (#333, composite rank #442).
  *
  * Earl has curated this since #175 and nothing ever showed it: a window that
  * beats its visit's best REWRITES that visit's clip in place, so every clip
@@ -525,6 +536,12 @@ export function voiceProse(
  * improved. The clip the listener actually hears is best-of-visit either way,
  * which is why option A beat adding an UPDATE path to an append-only store.
  *
+ * #442 adds a second axis: `vocal_fill` (bird-band song fraction on the
+ * clip, 0..1, from the listener pass). When any candidate for a species has
+ * a fill, ranking is composite — maximize fill among visits near the top
+ * confidence — so a fuller song beats a single high-confidence warble.
+ * Unscored stores (every fill null) keep pure confidence ranking.
+ *
  * A clip-less row can never win: a failed clip write is an honest gap, and
  * crowning it would hand the page a confident number attached to silence. */
 export function bestClips(
@@ -533,18 +550,73 @@ export function bestClips(
     ts: number;
     confidence?: number;
     clip?: string | null;
+    vocal_fill?: number | null;
   }[],
 ): Record<string, { clip: string; confidence: number; ts: number }> {
-  const out: Record<string, { clip: string; confidence: number; ts: number }> =
-    {};
+  type Cand = {
+    clip: string;
+    confidence: number;
+    ts: number;
+    fill: number | null;
+  };
+  const bySci = new Map<string, Cand[]>();
   for (const r of rows) {
     if (!r.clip || typeof r.confidence !== "number") continue;
-    const best = out[r.species_sci];
-    // Strictly greater, so a tie keeps the EARLIER take (rows arrive ts-
-    // ordered): given two equally good recordings, the older one has already
-    // survived a retention sweep the newer one hasn't faced.
-    if (!best || r.confidence > best.confidence)
-      out[r.species_sci] = { clip: r.clip, confidence: r.confidence, ts: r.ts };
+    const fill =
+      typeof r.vocal_fill === "number" && Number.isFinite(r.vocal_fill)
+        ? r.vocal_fill
+        : null;
+    const list = bySci.get(r.species_sci);
+    const cand: Cand = {
+      clip: r.clip,
+      confidence: r.confidence,
+      ts: r.ts,
+      fill,
+    };
+    if (list) list.push(cand);
+    else bySci.set(r.species_sci, [cand]);
+  }
+
+  const out: Record<string, { clip: string; confidence: number; ts: number }> =
+    {};
+  for (const [sci, cands] of bySci) {
+    const anyFill = cands.some((c) => c.fill !== null);
+    let best: Cand;
+    if (!anyFill) {
+      // Pure confidence (#333): strictly greater wins; equal conf keeps the
+      // earlier take (older file has already survived retention).
+      best = cands[0];
+      for (const c of cands) {
+        if (
+          c.confidence > best.confidence ||
+          (c.confidence === best.confidence && c.ts < best.ts)
+        )
+          best = c;
+      }
+    } else {
+      const cMax = Math.max(...cands.map((c) => c.confidence));
+      const eligible = cands.filter(
+        (c) =>
+          c.confidence >= cMax - BEST_CLIP_CONF_WINDOW ||
+          c.confidence >= BEST_CLIP_CONF_FLOOR,
+      );
+      // Prefer scored rows; unscored fill ranks as -1 so a partial backfill
+      // does not invent a champion out of thin air — re-run the pass.
+      best = eligible[0];
+      for (const c of eligible) {
+        const f = c.fill ?? -1;
+        const bf = best.fill ?? -1;
+        if (f > bf) best = c;
+        else if (f === bf) {
+          if (
+            c.confidence > best.confidence ||
+            (c.confidence === best.confidence && c.ts < best.ts)
+          )
+            best = c;
+        }
+      }
+    }
+    out[sci] = { clip: best.clip, confidence: best.confidence, ts: best.ts };
   }
   return out;
 }
@@ -571,6 +643,7 @@ export function shapeRoster(
     ts: number;
     confidence?: number;
     clip?: string | null;
+    vocal_fill?: number | null;
   }[],
   todayStart: number | null,
 ): RosterEntry[] {

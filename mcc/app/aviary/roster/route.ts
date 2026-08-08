@@ -76,11 +76,16 @@ const LIFE_JOINED_PRE185_SQL = `${LIFE_COLS}${JOIN_TAIL}`;
 // gaps, not a LIMIT's arbitrary edge. Post-debounce this table grows a few
 // hundred rows a day; a full scan is milliseconds for years.
 //
-// `confidence` and `clip` ride along for the best-recording pick (#333):
-// shapeRoster finds each species' best while walking rows it already had, so
-// exposing the good take costs no second query and no second scan. Both
-// columns have existed since #172, so this needs no fallback rung.
+// `confidence` and `clip` ride along for the best-recording pick (#333);
+// `vocal_fill` for the composite rank (#442). shapeRoster finds each
+// species' best while walking rows it already had, so exposing the good
+// take costs no second query and no second scan. conf+clip have existed
+// since #172; vocal_fill needs a pre-#442 fallback rung so an un-upgraded
+// store still lists birds (confidence-only ranking).
 const SIGHTINGS_SQL =
+  "SELECT species_sci, ts, confidence, clip, vocal_fill FROM sightings" +
+  " ORDER BY ts";
+const SIGHTINGS_PRE442_SQL =
   "SELECT species_sci, ts, confidence, clip FROM sightings ORDER BY ts";
 
 const empty = () => species([]);
@@ -136,9 +141,14 @@ export async function GET(req: NextRequest) {
     // store without life_list at all is "no birds yet", which the outer
     // catch already answers quietly.
     if (life === null) life = db.prepare(LIFE_SQL).all() as LifeRows;
-    const rows = db.prepare(SIGHTINGS_SQL).all() as Parameters<
-      typeof shapeRoster
-    >[1];
+    type SightRows = Parameters<typeof shapeRoster>[1];
+    let rows: SightRows;
+    try {
+      rows = db.prepare(SIGHTINGS_SQL).all() as SightRows;
+    } catch {
+      // Store predates #442's vocal_fill column — confidence-only best.
+      rows = db.prepare(SIGHTINGS_PRE442_SQL).all() as SightRows;
+    }
     return species(shapeRoster(life, rows, today));
   } catch {
     return empty(); // a store without the tables yet: still just no birds

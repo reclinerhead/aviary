@@ -121,7 +121,10 @@ CREATE TABLE IF NOT EXISTS sightings (
     clip           TEXT,
     wind_suspect   INTEGER NOT NULL DEFAULT 0,
     rms            REAL,
-    location_id    INTEGER NOT NULL DEFAULT 1
+    location_id    INTEGER NOT NULL DEFAULT 1,
+    -- Issue #442: bird-band song fraction for best-recording rank. NULL
+    -- means unscored (confidence-only ranking); 0.0 means scored silence.
+    vocal_fill     REAL
 );
 CREATE INDEX IF NOT EXISTS sightings_ts ON sightings(ts);
 CREATE INDEX IF NOT EXISTS sightings_species ON sightings(species_sci, ts);
@@ -208,6 +211,11 @@ def _upgrade(conn, home_latlon):
                      "INTEGER NOT NULL DEFAULT 1")
     conn.execute("CREATE INDEX IF NOT EXISTS sightings_location "
                  "ON sightings(location_id, ts)")
+    # Issue #442: vocal_fill for best-recording composite rank. NULL until
+    # the clip_vocal_fill pass scores the row — unscored stores keep the
+    # confidence-only champion.
+    if "vocal_fill" not in scols:
+        conn.execute("ALTER TABLE sightings ADD COLUMN vocal_fill REAL")
 
     # Issue #232: re-key life_list to (species_sci, location_id). An old file's
     # life_list has species_sci as the sole PRIMARY KEY and no location_id, and
