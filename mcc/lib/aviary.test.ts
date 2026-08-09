@@ -541,15 +541,16 @@ describe("parseSince", () => {
   });
 });
 
-describe("bestClips (#333)", () => {
+describe("bestClips (#333 / #442)", () => {
   const row = (
     ts: number,
     confidence: number,
     clip: string | null,
     sci = "Cardinalis cardinalis",
-  ) => ({ species_sci: sci, ts, confidence, clip });
+    vocal_fill: number | null = null,
+  ) => ({ species_sci: sci, ts, confidence, clip, vocal_fill });
 
-  it("picks the highest-confidence recording per species", () => {
+  it("picks the highest-confidence recording per species when unscored", () => {
     expect(
       bestClips([row(100, 0.7, "a.wav"), row(200, 0.95, "b.wav"), row(300, 0.8, "c.wav")]),
     ).toEqual({
@@ -566,7 +567,7 @@ describe("bestClips (#333)", () => {
     expect(bestClips([row(100, 0.99, null)])).toEqual({});
   });
 
-  it("keeps the earlier take on a tie", () => {
+  it("keeps the earlier take on a confidence tie", () => {
     // Two equally good recordings: the older one has already survived a
     // retention sweep the newer one hasn't faced.
     expect(
@@ -589,6 +590,48 @@ describe("bestClips (#333)", () => {
     expect(bestClips([{ species_sci: "Cardinalis cardinalis", ts: 100 }])).toEqual(
       {},
     );
+  });
+
+  it("prefers fuller song inside the confidence window (#442)", () => {
+    // 0.98 chirp vs 0.94 full song — both eligible; fill decides.
+    expect(
+      bestClips([
+        row(100, 0.98, "chirp.wav", "Cardinalis cardinalis", 0.08),
+        row(200, 0.94, "song.wav", "Cardinalis cardinalis", 0.72),
+      ]),
+    ).toMatchObject({
+      "Cardinalis cardinalis": { clip: "song.wav", confidence: 0.94 },
+    });
+  });
+
+  it("does not let a low-confidence full song steal the crown", () => {
+    expect(
+      bestClips([
+        row(100, 0.98, "chirp.wav", "Cardinalis cardinalis", 0.05),
+        row(200, 0.55, "long.wav", "Cardinalis cardinalis", 0.95),
+      ]),
+    ).toMatchObject({
+      "Cardinalis cardinalis": { clip: "chirp.wav", confidence: 0.98 },
+    });
+  });
+
+  it("on equal fill, prefers higher confidence then earlier ts", () => {
+    expect(
+      bestClips([
+        row(100, 0.92, "a.wav", "Cardinalis cardinalis", 0.5),
+        row(200, 0.96, "b.wav", "Cardinalis cardinalis", 0.5),
+      ]),
+    ).toMatchObject({
+      "Cardinalis cardinalis": { clip: "b.wav", confidence: 0.96 },
+    });
+    expect(
+      bestClips([
+        row(100, 0.95, "old.wav", "Cardinalis cardinalis", 0.5),
+        row(200, 0.95, "new.wav", "Cardinalis cardinalis", 0.5),
+      ]),
+    ).toMatchObject({
+      "Cardinalis cardinalis": { clip: "old.wav", ts: 100 },
+    });
   });
 });
 
