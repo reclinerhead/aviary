@@ -70,8 +70,14 @@ import {
   reconcileOrder,
   reconcileRail,
   rhythmStrip,
+  AviaryNotice,
   aviaryTitle,
+  demoNotice,
+  dismissNotice,
+  isNoticeDismissed,
   mastheadSub,
+  pickVisibleNotice,
+  portraitUrl,
   readLifeListQuery,
   rivalLine,
   rosterOrder,
@@ -984,6 +990,119 @@ const MASTHEAD_TABS = [
   { key: "record", label: "all detections", href: "/aviary/events" },
 ] as const;
 
+/**
+ * Announcement strip under the tab bar (epic #447 Phase 1). Null notice →
+ * zero footprint. One visible notice at a time; parent owns the queue and
+ * dismiss persistence (pure helpers in lib/aviary.ts).
+ */
+function AviaryNoticeStrip({
+  notice,
+  onDismiss,
+}: {
+  notice: AviaryNotice | null;
+  onDismiss: (id: string) => void;
+}) {
+  if (!notice) return null;
+  const kindLabel =
+    notice.kind === "new_best"
+      ? "new best recording"
+      : notice.kind === "fun_fact"
+        ? "did you know?"
+        : "notice";
+  const portraitSci = notice.species_sci;
+  const body = (
+    <>
+      {portraitSci ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={portraitUrl(portraitSci)}
+          alt=""
+          className="h-12 w-12 shrink-0 rounded-sm border border-line object-cover object-top bg-panel2"
+        />
+      ) : (
+        <span
+          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-sm border border-line bg-panel2 text-sm text-inkdim"
+          aria-hidden
+        >
+          ·
+        </span>
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="stamp block text-xs text-inkdim">{kindLabel}</span>
+        <span
+          className="mt-0.5 block text-sm text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {notice.title}
+        </span>
+        {notice.body ? (
+          <span className="mt-0.5 block text-xs text-inkdim">{notice.body}</span>
+        ) : null}
+      </span>
+    </>
+  );
+  return (
+    <div
+      className="mt-3 flex items-stretch gap-3 rounded-sm border border-line bg-panel2 px-3 py-2.5"
+      role="status"
+      aria-live="polite"
+    >
+      {notice.href ? (
+        <Link
+          href={notice.href}
+          className="flex min-w-0 flex-1 items-center gap-3 transition-colors hover:text-squirrel"
+        >
+          {body}
+        </Link>
+      ) : (
+        <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
+      )}
+      <button
+        type="button"
+        onClick={() => onDismiss(notice.id)}
+        className="stamp shrink-0 self-center rounded-sm border border-line px-2.5 py-2 text-xs text-inkdim transition-colors hover:border-linebright hover:text-ink"
+        aria-label="Dismiss notice"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Post-mount notice selection so localStorage / URL demo never hydration-
+ * mismatch. `queued` is the product queue (Phase 2+); `?notice=demo` adds
+ * a desk-check notice without shipping permanent chrome.
+ */
+function useAviaryNoticeStrip(queued: AviaryNotice[] = []) {
+  const [visible, setVisible] = useState<AviaryNotice | null>(null);
+  const queuedKey = queued.map((n) => n.id).join("|");
+
+  useEffect(() => {
+    const all = [...queued];
+    try {
+      if (
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("notice") === "demo"
+      ) {
+        all.push(demoNotice());
+      }
+    } catch {
+      // ignore
+    }
+    setVisible(
+      pickVisibleNotice(all, (id) => isNoticeDismissed(localStorage, id)),
+    );
+  }, [queued, queuedKey]);
+
+  const onDismiss = useCallback((id: string) => {
+    dismissNotice(localStorage, id);
+    setVisible((cur) => (cur?.id === id ? null : cur));
+  }, []);
+
+  return { notice: visible, onDismiss };
+}
+
 /** Page masthead + the tab bar. The lamp is optional because only the
  * dashboard runs a bus client; the profile page showing "bus quiet" would
  * be a lie about a bus it never asked. */
@@ -993,6 +1112,8 @@ function AviaryMasthead({
   stationName,
   title,
   tab = "aviary",
+  notice = null,
+  onDismissNotice,
 }: {
   lamp?: {
     busUp: boolean;
@@ -1020,6 +1141,9 @@ function AviaryMasthead({
    * as the dashboard's section -- it's a drill-down of the life list, not
    * its own module -- so only the events page overrides the default. */
   tab?: (typeof MASTHEAD_TABS)[number]["key"];
+  /** Announcement strip under the tabs (#447). Null = zero footprint. */
+  notice?: AviaryNotice | null;
+  onDismissNotice?: (id: string) => void;
 }) {
   const heading = aviaryTitle(title);
   return (
@@ -1099,6 +1223,10 @@ function AviaryMasthead({
           </span>
         )}
       </nav>
+      <AviaryNoticeStrip
+        notice={notice}
+        onDismiss={onDismissNotice ?? (() => {})}
+      />
     </header>
   );
 }
@@ -1285,6 +1413,9 @@ export function Aviary({
   stationName?: string;
   title?: string;
 } = {}) {
+  // Announcement strip (#447 Phase 1): empty product queue until Phase 2
+  // enqueues new-best; desk-check with /aviary?notice=demo.
+  const { notice, onDismiss } = useAviaryNoticeStrip([]);
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
   // live count updates land in place and nothing reshuffles on its own.
@@ -1572,6 +1703,8 @@ export function Aviary({
           { href: "#latest-events", label: "events ↓" },
           { href: "#new-arrivals", label: "arrivals ↓" },
         ]}
+        notice={notice}
+        onDismissNotice={onDismiss}
       />
       {/* The whole record's numbers, above both columns (#260). */}
       <ArchiveHero roster={roster} loaded={loaded} now={nowTs} />
@@ -2273,6 +2406,8 @@ export function SpeciesProfile({
   stationName?: string;
   title?: string;
 }) {
+  // Announcement strip (#447 Phase 1) -- same shell as the dashboard.
+  const { notice, onDismiss } = useAviaryNoticeStrip([]);
   const [entry, setEntry] = useState<RosterEntry | null>(null);
   // The whole roster rides along (#220): the standings band ranks this bird
   // against every other, and the payload is already on the wire for `entry`.
@@ -2462,7 +2597,12 @@ export function SpeciesProfile({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead stationName={stationName} title={title} />
+      <AviaryMasthead
+        stationName={stationName}
+        title={title}
+        notice={notice}
+        onDismissNotice={onDismiss}
+      />
       {loaded && !entry ? (
         <section className="panel flex min-h-[200px] items-center justify-center rounded-sm border border-line bg-panel">
           <span className="stamp text-xs text-inkfaint">

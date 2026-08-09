@@ -11,7 +11,7 @@
 #
 #   python -m listener.enrichment_loop          # the earl-enrichment unit
 #
-# ONE TICK, THREE PASSES, IN THIS ORDER:
+# ONE TICK, FOUR PASSES, IN THIS ORDER:
 #   1. Profile pass -- drain species_profile.worklist() through the ~daily
 #      retry gate. Depends only on the network, so it runs even when no
 #      model is up anywhere.
@@ -20,7 +20,13 @@
 #      local, so it always runs; automatic on both roles because pearl's
 #      ENH toggle spent weeks silently falling back to raw, and a station's
 #      passive-mic clips are born ~20 dB quieter than camera-AGC audio.
-#   3. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
+#   3. Vocal-fill pass (#447 Phase 0 / #442) -- score sightings.vocal_fill
+#      for rows still NULL, bounded per tick. Same DSP as the hand
+#      clip_vocal_fill CLI. New live visits get a fill without a full-store
+#      backfill so composite bestClips (and the new-best announcement) can
+#      crown a full song, not only a pre-scored archive. Lazy numpy import
+#      like the clip pass -- lean boxes without numpy log once and continue.
+#   4. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
 #      order via /api/tags (liveness + which models the host holds, one
 #      cheap call); the first that answers wins; drain a bounded slice of
 #      species_analysis.worklist() through its fingerprint gate.
@@ -28,7 +34,8 @@
 # the profile's description, so profile-before-notes means a brand-new bird
 # has its background before its first note is written -- same tick; and
 # clips-before-notes keeps audible evidence from waiting behind an LLM that
-# can take minutes per species.
+# can take minutes per species. Fill rides after enhance (both need numpy)
+# and before notes so the metric is local-only and never blocked on Ollama.
 #
 # SCHEDULED BY OPPORTUNITY, NOT BY CLOCK (#206's design): Ollama lives on
 # bluejay, a workstation that is off overnight and busy some afternoons. A
@@ -72,7 +79,8 @@ DEFAULT_TICK_CAP = 3
 CLIP_TICK_CAP = 200   # clips enhanced per tick (#325): bounds the first
                       # drain of a weeks-deep backlog; the worklist is
                       # idempotent, so what defers this tick lands next
-
+FILL_TICK_CAP = 200   # vocal_fill scores per tick (#447 Phase 0): same
+                      # bound shape as the enhance pass
 
 # --- Pure shaping (test_listener_enrichment_loop.py) --------------------------
 
@@ -210,6 +218,47 @@ def run_clip_pass(cap=None):
     return counts
 
 
+def run_vocal_fill_pass(cap=None):
+    """Drain unscored visit clips for vocal_fill (#447 Phase 0 / #442).
+
+    New detections land with vocal_fill NULL; without this pass a full
+    backfill would leave every *future* visit unscored, and composite
+    bestClips would rank them as fill -1 so they rarely crown. Same
+    per-row function as `python -m listener.clip_vocal_fill`. Lazy import
+    of clip_vocal_fill (numpy) so a lean box without it still runs the
+    other passes -- one loud line, not a dead loop."""
+    from listener import clip_vocal_fill as vf
+    from listener import sightings
+
+    cap = FILL_TICK_CAP if cap is None else cap
+    media = vf.clips_dir()
+    counts = {}
+    conn = sightings.connect(sightings.db_path())
+    try:
+        if not has_table(conn, "sightings"):
+            return counts
+        todo = vf.worklist(conn)
+        if len(todo) > cap:
+            counts["deferred"] = len(todo) - cap
+            todo = todo[:cap]
+        for sid, relpath in todo:
+            try:
+                status = vf.score_row(conn, media, sid, relpath)
+            except Exception as e:
+                print(f"[enrich] vocal-fill id={sid} {relpath}: FAILED ({e}) "
+                      "-- staying on the worklist", flush=True)
+                counts["failed"] = counts.get("failed", 0) + 1
+                continue
+            counts[status] = counts.get(status, 0) + 1
+        if counts:
+            conn.commit()
+            print("[enrich] vocal-fill: " + ", ".join(
+                f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
+    finally:
+        conn.close()
+    return counts
+
+
 def drain_analysis(host, port, model, cap, now=None):
     """A bounded slice of the field-notes worklist against one host. The cap
     counts GENERATIONS, not gate-skips -- a tick that finds forty settled
@@ -272,10 +321,9 @@ def run_analysis_pass(now=None):
 
 def tick(now=None):
     """One turn of the crank: profiles first (the description a note wants
-    background from), then clips (#325 -- audible evidence shouldn't wait
-    behind an LLM that can take minutes per species), then notes. A failed
-    pass is one loud line, never a dead service -- the other passes still
-    run."""
+    background from), then clips (#325), then vocal_fill (#447 Phase 0),
+    then notes. A failed pass is one loud line, never a dead service --
+    the other passes still run."""
     results = {}
     try:
         results["profile"] = run_profile_pass(now=now)
@@ -285,6 +333,10 @@ def tick(now=None):
         results["clips"] = run_clip_pass()
     except Exception as e:
         print(f"[enrich] clip pass FAILED ({e})", flush=True)
+    try:
+        results["vocal_fill"] = run_vocal_fill_pass()
+    except Exception as e:
+        print(f"[enrich] vocal-fill pass FAILED ({e})", flush=True)
     try:
         results["analysis"] = run_analysis_pass(now=now)
     except Exception as e:

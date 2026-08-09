@@ -284,6 +284,36 @@ def test_clip_pass_bounds_a_backlog_and_counts_the_deferred(store, monkeypatch,
     assert loop.tick(now=NOW)["clips"] == {"enhanced": 1}
 
 
+def test_vocal_fill_pass_scores_null_rows_and_is_quiet_next(store, monkeypatch,
+                                                            tmp_path, capsys):
+    """#447 Phase 0: unscored sightings get vocal_fill within a tick; the
+    next tick finds nothing and (journal rule) says nothing."""
+    clips = tmp_path / "clips"
+    rel = "window-mic/100-Blue_Jay.wav"
+    make_clip(clips, rel)
+    store.execute(
+        "INSERT INTO sightings (ts, source, species_sci, species_common,"
+        " confidence, clip, wind_suspect, rms, location_id, vocal_fill)"
+        " VALUES (?,?,?,?,?,?,?,?,?,NULL)",
+        (NOW, "window-mic", "Cyanocitta cristata", "Blue Jay",
+         0.9, rel, 0, 0.01, 0))
+    store.commit()
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: None)
+
+    results = loop.tick(now=NOW)
+    assert results.get("vocal_fill") == {"scored": 1}
+    fill = store.execute(
+        "SELECT vocal_fill FROM sightings WHERE clip = ?", (rel,)
+    ).fetchone()[0]
+    assert fill is not None
+    assert 0.0 <= float(fill) <= 1.0
+    assert "vocal-fill:" in capsys.readouterr().out
+
+    capsys.readouterr()
+    assert loop.tick(now=NOW).get("vocal_fill") == {}
+    assert "vocal-fill:" not in capsys.readouterr().out
+
+
 def test_no_page_species_retry_daily_not_per_tick(store, monkeypatch):
     seed(store, "Ghost sci", "Ghost", [at(2026, 7, 18, 7)])
     calls = []

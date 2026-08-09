@@ -751,6 +751,108 @@ export function writeLifeListQuery(
   }
 }
 
+// --- Announcement strip (epic #447 Phase 1) ---------------------------------
+//
+// Reusable notice under the Aviary tab bar. Event kinds (new_best) and
+// ambient kinds (fun_fact) share one shell; priority + dismiss keys are pure
+// so Phase 2/3 only enqueue. Zero footprint when nothing is visible -- not a
+// permanent empty panel (unlike New Arrivals' reserved frame).
+
+/** Notice kinds the strip understands. More kinds are additive. */
+export type AviaryNoticeKind = "new_best" | "fun_fact" | "demo";
+
+/** One message for the strip. `id` is stable for dismiss persistence. */
+export type AviaryNotice = {
+  id: string;
+  kind: AviaryNoticeKind;
+  title: string;
+  body?: string;
+  /** When set, the primary surface is a link (species page, etc.). */
+  href?: string;
+  species_sci?: string;
+  species_common?: string;
+  /** Portrait filename under species/ when known (roster image_file). */
+  portrait_file?: string | null;
+};
+
+/** localStorage key prefix for dismissed notice ids. */
+export const NOTICE_DISMISS_PREFIX = "aviary.notice.dismissed.";
+
+/** Event notices outrank ambient so a live new-best is never buried. */
+const NOTICE_KIND_RANK: Record<AviaryNoticeKind, number> = {
+  new_best: 0,
+  demo: 1,
+  fun_fact: 2,
+};
+
+/** Stable dismiss key for a notice id. */
+export function noticeDismissKey(id: string): string {
+  return NOTICE_DISMISS_PREFIX + id;
+}
+
+/** Id for a new-best announcement: species + clip path so a later champion
+ * can re-fire while the same clip stays quiet after dismiss. */
+export function newBestNoticeId(species_sci: string, clip: string): string {
+  return `new_best:${species_sci}:${clip}`;
+}
+
+/** Desk-check notice for `?notice=demo` -- not a product surface. */
+export function demoNotice(): AviaryNotice {
+  return {
+    id: "demo:announcement-strip",
+    kind: "demo",
+    title: "Announcement strip",
+    body: "Reusable notice under the tab bar (#447). Close when you are done looking.",
+    href: "/aviary",
+  };
+}
+
+export function isNoticeDismissed(
+  store: Pick<Storage, "getItem"> | null | undefined,
+  id: string,
+): boolean {
+  if (!store) return false;
+  try {
+    return store.getItem(noticeDismissKey(id)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function dismissNotice(
+  store: Pick<Storage, "setItem"> | null | undefined,
+  id: string,
+): void {
+  if (!store) return;
+  try {
+    store.setItem(noticeDismissKey(id), "1");
+  } catch {
+    // private mode / quota: fail quiet
+  }
+}
+
+/**
+ * Pick the single notice to show: highest priority kind among undismissed
+ * candidates (stable order within a kind = first in the list wins). Empty
+ * input or all dismissed → null (strip unmounts; zero footprint).
+ */
+export function pickVisibleNotice(
+  notices: AviaryNotice[],
+  isDismissed: (id: string) => boolean,
+): AviaryNotice | null {
+  let best: AviaryNotice | null = null;
+  let bestRank = Infinity;
+  for (const n of notices) {
+    if (!n?.id || isDismissed(n.id)) continue;
+    const rank = NOTICE_KIND_RANK[n.kind] ?? 99;
+    if (rank < bestRank) {
+      best = n;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
 /** Does this roster entry answer the search box? Case-insensitive substring
  * over the common AND scientific name -- `wood` finds every woodpecker,
  * `finc` the finches, and a Latin fragment works for whoever thinks in sci

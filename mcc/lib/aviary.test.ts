@@ -13,6 +13,8 @@ import {
   clipRelPath,
   clipUrl,
   coerceGain,
+  demoNotice,
+  dismissNotice,
   enhancedClipUrl,
   enhancedRelPath,
   collapseVisits,
@@ -28,15 +30,19 @@ import {
   doomedFiles,
   hourBuckets,
   hourStart,
+  isNoticeDismissed,
   liferNumber,
   newArrivals,
   nearestBar,
+  newBestNoticeId,
   nextBefore,
+  noticeDismissKey,
   parseBefore,
   parseLimit,
   parseRange,
   parseSince,
   parseSpeciesFilter,
+  pickVisibleNotice,
   portraitAspect,
   portraitUrl,
   reconcileOrder,
@@ -1984,5 +1990,56 @@ describe("aviaryTitle (station H1)", () => {
   });
   it("uses a configured title", () => {
     expect(aviaryTitle("Karen's Aviary")).toBe("Karen's Aviary");
+  });
+});
+
+describe("announcement strip helpers (#447 Phase 1)", () => {
+  it("builds stable new-best and dismiss keys", () => {
+    expect(newBestNoticeId("Cardinalis cardinalis", "house/1-Cardinal.wav")).toBe(
+      "new_best:Cardinalis cardinalis:house/1-Cardinal.wav",
+    );
+    expect(noticeDismissKey("new_best:x:y")).toBe(
+      "aviary.notice.dismissed.new_best:x:y",
+    );
+  });
+
+  it("pickVisibleNotice prefers new_best over fun_fact and demo", () => {
+    const fun = {
+      id: "f1",
+      kind: "fun_fact" as const,
+      title: "fun",
+    };
+    const best = {
+      id: "b1",
+      kind: "new_best" as const,
+      title: "best",
+    };
+    const demo = demoNotice();
+    expect(pickVisibleNotice([fun, best, demo], () => false)?.id).toBe("b1");
+    expect(pickVisibleNotice([fun, demo], () => false)?.kind).toBe("demo");
+    expect(pickVisibleNotice([fun], () => false)?.kind).toBe("fun_fact");
+  });
+
+  it("pickVisibleNotice skips dismissed and returns null when empty", () => {
+    const best = {
+      id: "b1",
+      kind: "new_best" as const,
+      title: "best",
+    };
+    expect(pickVisibleNotice([best], (id) => id === "b1")).toBeNull();
+    expect(pickVisibleNotice([], () => false)).toBeNull();
+  });
+
+  it("dismiss storage marks a notice read", () => {
+    const mem = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        mem.set(k, v);
+      },
+    };
+    expect(isNoticeDismissed(store, "b1")).toBe(false);
+    dismissNotice(store, "b1");
+    expect(isNoticeDismissed(store, "b1")).toBe(true);
   });
 });
