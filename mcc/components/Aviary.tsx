@@ -77,7 +77,6 @@ import {
   isNoticeDismissed,
   mastheadSub,
   pickVisibleNotice,
-  portraitUrl,
   readLifeListQuery,
   rivalLine,
   rosterOrder,
