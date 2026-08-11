@@ -412,6 +412,19 @@ def test_species_portraits_are_never_pruned():
         ["amcrest/2-Common.wav"]
 
 
+def test_quarantine_shelf_is_never_pruned():
+    # The quarantine/ shelf (issue #281) holds a removal's evidence -- the
+    # negatives-in-waiting for the false-positive loop (epic #278). Aged far
+    # past any horizon it stays, its -enh sibling with it; the
+    # identically-aged clip beside the shelf goes.
+    now = 1000 * DAY
+    files = [("quarantine/amcrest/1-Aix_sponsa.wav", 0),
+             ("quarantine/amcrest/1-Aix_sponsa-enh.wav", 0),
+             ("amcrest/2-Common.wav", 0)]
+    assert sightings.prune_selection(files, now, 90, set()) == \
+        ["amcrest/2-Common.wav"]
+
+
 def test_lifer_first_clips_survive_forever():
     # The sacred exemption: a lifer's first recording outlives any horizon;
     # the identical path un-lifered would not.
@@ -563,6 +576,16 @@ def test_budget_counts_but_never_evicts_portraits():
                   ("a/1.wav", 100, 30))
     # 110 on disk against a 100 cap: the portrait is untouchable, so the
     # clip goes even though the clips alone would have fit.
+    assert sightings.budget_selection(files, set(), 100) == ["a/1.wav"]
+
+
+def test_budget_counts_but_never_evicts_quarantine():
+    """The quarantine/ shelf (#281) is the species/ rule's second tenant:
+    removal evidence occupies the volume, so it counts against the cap, but
+    the budget arm may never evict it -- deleting a hand-labeled negative to
+    satisfy a disk number would silently undo the operator's work."""
+    files = sized(("quarantine/amcrest/1-Aix_sponsa.wav", 50, 80),
+                  ("a/1.wav", 100, 30))
     assert sightings.budget_selection(files, set(), 100) == ["a/1.wav"]
 
 
