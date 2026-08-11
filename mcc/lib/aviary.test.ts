@@ -27,7 +27,7 @@ import {
   dayGroups,
   dayStart,
   detectionFromRow,
-  doomedFiles,
+  removalPlan,
   hourBuckets,
   hourStart,
   isNoticeDismissed,
@@ -314,58 +314,101 @@ describe("portraitUrl", () => {
   });
 });
 
-describe("doomedFiles", () => {
-  it("collects sighting clips with their -enh siblings", () => {
+describe("removalPlan", () => {
+  it("moves sighting clips with their -enh siblings to quarantine", () => {
     expect(
-      doomedFiles(["amcrest/1000-Wood_Duck.wav", "rover/2000-Wood_Duck.wav"], null),
-    ).toEqual([
-      "amcrest/1000-Wood_Duck.wav",
-      "amcrest/1000-Wood_Duck-enh.wav",
-      "rover/2000-Wood_Duck.wav",
-      "rover/2000-Wood_Duck-enh.wav",
-    ]);
+      removalPlan(
+        ["amcrest/1000-Wood_Duck.wav", "rover/2000-Wood_Duck.wav"],
+        null,
+      ),
+    ).toEqual({
+      moves: [
+        {
+          from: "amcrest/1000-Wood_Duck.wav",
+          to: "quarantine/amcrest/1000-Wood_Duck.wav",
+        },
+        {
+          from: "amcrest/1000-Wood_Duck-enh.wav",
+          to: "quarantine/amcrest/1000-Wood_Duck-enh.wav",
+        },
+        {
+          from: "rover/2000-Wood_Duck.wav",
+          to: "quarantine/rover/2000-Wood_Duck.wav",
+        },
+        {
+          from: "rover/2000-Wood_Duck-enh.wav",
+          to: "quarantine/rover/2000-Wood_Duck-enh.wav",
+        },
+      ],
+      deletes: [],
+    });
   });
   it("dedupes first_clip against the sighting row that made it", () => {
     // The lifer's opening sighting and life_list.first_clip name the same
-    // file -- the caller appends first_clip to the row clips, and the set
-    // must not doom it twice.
+    // file -- the caller appends first_clip to the row clips, and the plan
+    // must not move it twice.
     expect(
-      doomedFiles(
+      removalPlan(
         ["amcrest/1000-Wood_Duck.wav", "amcrest/1000-Wood_Duck.wav"],
         null,
-      ),
-    ).toEqual(["amcrest/1000-Wood_Duck.wav", "amcrest/1000-Wood_Duck-enh.wav"]);
+      ).moves,
+    ).toEqual([
+      {
+        from: "amcrest/1000-Wood_Duck.wav",
+        to: "quarantine/amcrest/1000-Wood_Duck.wav",
+      },
+      {
+        from: "amcrest/1000-Wood_Duck-enh.wav",
+        to: "quarantine/amcrest/1000-Wood_Duck-enh.wav",
+      },
+    ]);
   });
   it("skips null clips (pre-clip-era rows) quietly", () => {
-    expect(doomedFiles([null, undefined, "amcrest/1000-Blue_Jay.wav"], null))
-      .toEqual(["amcrest/1000-Blue_Jay.wav", "amcrest/1000-Blue_Jay-enh.wav"]);
-    expect(doomedFiles([], null)).toEqual([]);
+    expect(
+      removalPlan([null, undefined, "amcrest/1000-Blue_Jay.wav"], null).moves,
+    ).toEqual([
+      {
+        from: "amcrest/1000-Blue_Jay.wav",
+        to: "quarantine/amcrest/1000-Blue_Jay.wav",
+      },
+      {
+        from: "amcrest/1000-Blue_Jay-enh.wav",
+        to: "quarantine/amcrest/1000-Blue_Jay-enh.wav",
+      },
+    ]);
+    expect(removalPlan([], null)).toEqual({ moves: [], deletes: [] });
   });
   it("re-runs the clips route's guard: a hostile row skips, never escapes", () => {
     expect(
-      doomedFiles(
+      removalPlan(
         ["../../../etc/passwd", "a/b/c.wav", "amcrest/a.b.wav", "amcrest/x.mp3"],
         null,
       ),
-    ).toEqual([]);
+    ).toEqual({ moves: [], deletes: [] });
   });
   it("does not name an -enh-enh for a row already holding a sibling", () => {
     // Sightings never store the sibling, but a hand-edited row is a row:
     // enhancedRelPath's no-double-enhance rule carries over unchanged.
-    expect(doomedFiles(["amcrest/1000-Blue_Jay-enh.wav"], null)).toEqual([
-      "amcrest/1000-Blue_Jay-enh.wav",
+    expect(removalPlan(["amcrest/1000-Blue_Jay-enh.wav"], null).moves).toEqual([
+      {
+        from: "amcrest/1000-Blue_Jay-enh.wav",
+        to: "quarantine/amcrest/1000-Blue_Jay-enh.wav",
+      },
     ]);
   });
-  it("adds the portrait on the species/ shelf", () => {
-    expect(doomedFiles([], "Aix_sparsa.jpg")).toEqual(["species/Aix_sparsa.jpg"]);
+  it("deletes the portrait -- refetchable, so not quarantined", () => {
+    expect(removalPlan([], "Aix_sparsa.jpg")).toEqual({
+      moves: [],
+      deletes: ["species/Aix_sparsa.jpg"],
+    });
   });
   it("refuses a portrait filename that could step off the shelf", () => {
-    expect(doomedFiles([], "../evil.jpg")).toEqual([]);
-    expect(doomedFiles([], "x/y.jpg")).toEqual([]);
-    expect(doomedFiles([], "a.b.jpg")).toEqual([]);
-    expect(doomedFiles([], "portrait.png")).toEqual([]);
-    expect(doomedFiles([], null)).toEqual([]);
-    expect(doomedFiles([], "")).toEqual([]);
+    expect(removalPlan([], "../evil.jpg").deletes).toEqual([]);
+    expect(removalPlan([], "x/y.jpg").deletes).toEqual([]);
+    expect(removalPlan([], "a.b.jpg").deletes).toEqual([]);
+    expect(removalPlan([], "portrait.png").deletes).toEqual([]);
+    expect(removalPlan([], null).deletes).toEqual([]);
+    expect(removalPlan([], "").deletes).toEqual([]);
   });
 });
 

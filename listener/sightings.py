@@ -358,6 +358,15 @@ def record(conn, row):
 # never does arithmetic.
 ENH_SUFFIX = "-enh.wav"
 
+# The permanent tenants of the clips tree: the species/ portrait shelf
+# (issue #184) and the quarantine/ shelf (issue #281 -- species removal
+# moves its evidence there instead of deleting it, the negatives-in-waiting
+# for the false-positive loop, epic #278). Neither is a rolling window:
+# neither retention arm may select under these prefixes, and the budget arm
+# still COUNTS them -- a cap that ignored a shelf would be a lie the moment
+# the shelf grew.
+PERMANENT_PREFIXES = ("species/", "quarantine/")
+
 
 def clips_cap_bytes():
     """MERLE_EARL_CLIPS_CAP_GB -> bytes, or None when unset (no size cap:
@@ -385,9 +394,9 @@ def prune_selection(files, now_ts, keep_days, exempt):
     """Which clips to delete: older than the horizon AND not a lifer's first
     recording. `files` is [(relpath, mtime_ts)]; pure with an injected clock
     -- the frame_archiver.prune_selection precedent, plus the exemption.
-    The species/ shelf (issue #184's portraits) shares the clips dir but is
-    a permanent collection, not a rolling window -- never selected, whatever
-    its age.
+    The species/ shelf (issue #184's portraits) and the quarantine/ shelf
+    (issue #281's removal evidence) share the clips dir but are permanent
+    collections, not rolling windows -- never selected, whatever their age.
 
     ENHANCED SIBLINGS (issue #190) share their original's fate exactly: a
     doomed clip takes its <stem>-enh.wav with it, and a lifer's exempt first
@@ -402,7 +411,7 @@ def prune_selection(files, now_ts, keep_days, exempt):
     present = {relpath for relpath, _ in files}
     doomed = []
     for relpath, mtime in files:
-        if relpath.startswith("species/"):
+        if relpath.startswith(PERMANENT_PREFIXES):
             continue
         if relpath.endswith(ENH_SUFFIX):
             original = relpath[:-len(ENH_SUFFIX)] + ".wav"
@@ -439,10 +448,11 @@ def budget_selection(files, exempt, cap_bytes, already_doomed=()):
       and still leaves the tree over budget; the CALLER says so out loud.
       Deleting first-heard evidence to satisfy a disk number would trade the
       one irreplaceable thing here for the one cheapest thing.
-    * The species/ portrait shelf is never evicted either (permanent
-      collection, #184) -- but it DOES count toward usage, as do the exempt
-      clips. Measuring only the evictable half would make the cap a lie the
-      moment the permanent half grew.
+    * The permanent shelves -- species/ portraits (#184) and quarantine/
+      removal evidence (#281) -- are never evicted either, but they DO
+      count toward usage, as do the exempt clips. Measuring only the
+      evictable half would make the cap a lie the moment the permanent
+      half grew.
     * An enhanced sibling shares its original's fate (#190), evicted as one
       unit and freeing both files' bytes -- the age arm's rule, restated
       where the arithmetic happens."""
@@ -459,7 +469,7 @@ def budget_selection(files, exempt, cap_bytes, already_doomed=()):
     for relpath, mtime, _ in files:
         if relpath in doomed or relpath in exempt:
             continue
-        if relpath.startswith("species/"):
+        if relpath.startswith(PERMANENT_PREFIXES):
             continue           # counted above, never evicted
         if relpath.endswith(ENH_SUFFIX):
             original = relpath[:-len(ENH_SUFFIX)] + ".wav"
@@ -579,8 +589,8 @@ def main():
     cap_note = (f", cap {cap_bytes / 1e9:.0f} GB" if cap_bytes
                 else ", no size cap")
     print(f"[sightings] recording to {path}; pruning {clips_dir} past "
-          f"{keep_days:.0f} days{cap_note} (lifer first-clips exempt)",
-          flush=True)
+          f"{keep_days:.0f} days{cap_note} (lifer first-clips, species/ "
+          "and quarantine/ exempt)", flush=True)
 
     def on_connect(client, userdata, flags, reason_code, properties):
         client.subscribe(bus.AUDIO_EVENTS_TOPIC)

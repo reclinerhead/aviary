@@ -222,7 +222,7 @@ export function portraitUrl(sci: string): string {
   return `/aviary/portrait/${encodeURIComponent(sci)}`;
 }
 
-// --- Species removal (issue #216) -------------------------------------------
+// --- Species removal (issues #216 + #281) -----------------------------------
 
 // Mirror of the pass's portrait shelf: species_profile.image_file holds a
 // scrubbed <name>.jpg -- one dot, no separators -- so anything else in the
@@ -230,32 +230,59 @@ export function portraitUrl(sci: string): string {
 const PORTRAIT_FILE = /^[A-Za-z0-9_-]+\.jpg$/;
 const SPECIES_DIR = "species";
 
-/** The files a species removal dooms, as relative paths under
+// The quarantine shelf (issue #281): a removal MOVES clip evidence here
+// instead of deleting it, so a hand-made "this isn't a bird" verdict keeps
+// its audio for the false-positive loop (epic #278). Under the clips dir on
+// purpose -- one tree, one disk budget -- but a quarantined path is THREE
+// segments (quarantine/<source>/<file>.wav), which the clips route's
+// two-segment guard rejects by construction: nothing serves quarantine
+// until the review surface (#283) chooses to.
+export const QUARANTINE_DIR = "quarantine";
+
+/** A removed clip's new home on the quarantine shelf. */
+export function quarantinePath(rel: string): string {
+  return `${QUARANTINE_DIR}/${rel}`;
+}
+
+export type RemovalPlan = {
+  /** Evidence: clip + -enh sibling pairs, original -> quarantine shelf. */
+  moves: { from: string; to: string }[];
+  /** Refetchable files, still deleted: the portrait (Wikipedia sells it
+   * back; the audio no one can re-record is what quarantine is for). */
+  deletes: string[];
+};
+
+/** The file plan for a species removal, as relative paths under
  * MERLE_EARL_CLIPS: every sighting clip and the lifer's first_clip (deduped
- * -- the first sighting's clip usually IS first_clip), each with its -enh
- * sibling named unconditionally (the enhancement pass keeps no registry, so
- * the filesystem is asked by deleting: a sibling never written is a missing
- * file, and missing files are not errors), plus the portrait on the
- * species/ shelf. Every row-held path re-runs the clips route's own
- * traversal guard before it may name a file -- rows normally hold exactly
- * what Earl wrote, but this feeds the MCC's first delete, and a hand-edited
- * row must skip quietly rather than escape the clips dir. */
-export function doomedFiles(
+ * -- the first sighting's clip usually IS first_clip) MOVES to the
+ * quarantine shelf, each with its -enh sibling named unconditionally (the
+ * enhancement pass keeps no registry, so the filesystem is asked by moving:
+ * a sibling never written is a missing file, and missing files are not
+ * errors); the portrait on the species/ shelf is deleted. Every row-held
+ * path re-runs the clips route's own traversal guard before it may name a
+ * file -- rows normally hold exactly what Earl wrote, but this feeds the
+ * MCC's only write, and a hand-edited row must skip quietly rather than
+ * escape the clips dir. */
+export function removalPlan(
   clips: (string | null | undefined)[],
   imageFile: string | null | undefined,
-): string[] {
-  const out = new Set<string>();
+): RemovalPlan {
+  const seen = new Set<string>();
+  const moves: RemovalPlan["moves"] = [];
   for (const clip of clips) {
     if (!clip) continue;
     const rel = clipRelPath(clip.split("/"));
     if (rel === null) continue;
-    out.add(rel);
-    const enh = enhancedRelPath(rel);
-    if (enh !== null) out.add(enh);
+    for (const p of [rel, enhancedRelPath(rel)]) {
+      if (p === null || seen.has(p)) continue;
+      seen.add(p);
+      moves.push({ from: p, to: quarantinePath(p) });
+    }
   }
+  const deletes: string[] = [];
   if (imageFile && PORTRAIT_FILE.test(imageFile))
-    out.add(`${SPECIES_DIR}/${imageFile}`);
-  return [...out];
+    deletes.push(`${SPECIES_DIR}/${imageFile}`);
+  return { moves, deletes };
 }
 
 // --- Portrait framing (issue #185) ------------------------------------------
