@@ -8,9 +8,9 @@
 #
 # Camera credentials live in Frigate's config (issue #247): Frigate holds the
 # only sessions to the cameras and republishes them credential-free at
-# rtsp://pearl:8554/<name>. The URLs below use the hostname form on purpose --
-# it resolves on pearl itself as well as on the dev boxes, so this one
-# committed file serves every machine.
+# rtsp://nvr.lan:8554/<name>. nvr.lan is a Pi-hole name for the NVR box
+# (raptor after Phase 12). The hostname form resolves on the NVR itself
+# and on the consumer boxes, so this one committed file serves every machine.
 #
 # A feed's name doubles as its published source label (audio/events, the bird
 # record's `source` column, the clip directory under MERLE_EARL_CLIPS), so
@@ -41,7 +41,7 @@ feeds:
   # only video source.
   house-rear:
     kind: rtsp
-    url: rtsp://pearl:8554/house-rear
+    url: rtsp://nvr.lan:8554/house-rear
     earl: true
     naturalist: true
 
@@ -50,7 +50,7 @@ feeds:
   # stays a one-camera affair.
   house-front:
     kind: rtsp
-    url: rtsp://pearl:8554/house-front
+    url: rtsp://nvr.lan:8554/house-front
     earl: true
 
   # The rover's own USB-camera mic, arecord piped over ssh (Phase 0 D5: the
