@@ -9,7 +9,7 @@
 # Camera credentials live in Frigate's config (issue #247): Frigate holds the
 # only sessions to the cameras and republishes them credential-free at
 # rtsp://nvr.lan:8554/<name>. nvr.lan is a Pi-hole name for the NVR box
-# (raptor after Phase 12). The hostname form resolves on the NVR itself
+# (pearl after #471). The hostname form resolves on the NVR itself
 # and on the consumer boxes, so this one committed file serves every machine.
 #
 # A feed's name doubles as its published source label (audio/events, the bird
