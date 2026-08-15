@@ -15,8 +15,9 @@
 # test_import_boundary.py stays true and the lean venv stays lean.
 #
 # THE SOURCE: the Action API (en.wikipedia.org/w/api.php), deliberately NOT
-# the rest_v1/page/summary endpoint the issue sketched. music_bio.py already
-# litigated this: rest_v1 entered gradual deprecation in July 2026, while
+# the rest_v1/page/summary endpoint the issue sketched. The retired artist-bio
+# pass already litigated this: rest_v1 entered gradual deprecation in July
+# 2026, while
 # prop=extracts is the long-stable path and takes maxlag (what a
 # non-interactive job is supposed to send). And the summary endpoint never
 # returned the image's license anyway -- attribution needs the imageinfo
@@ -93,7 +94,7 @@
 #
 # No page, no extract, no image: honest NULLs. A no-page species stays OFF
 # the profile table and therefore ON the worklist -- a re-run gets another
-# look for free (the music_art precedent). iNaturalist fallback is a noted
+# look for free (the retired cover-art pass's precedent). iNaturalist fallback is a noted
 # follow-up, not built here.
 #
 # Config (env):
@@ -189,7 +190,7 @@ CREATE TABLE IF NOT EXISTS profile_attempts (
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
 # The leftover section scaffolding a truncated extract can end on, and the
-# blank-line runs the extractor leaves between paragraphs (music_bio's
+# blank-line runs the extractor leaves between paragraphs (the artist-bio pass's
 # clean_wikipedia, trimmed to what bird leads actually need).
 _SECTION_STUB = re.compile(r"\n==.*$", re.DOTALL)
 _BLANK_RUNS = re.compile(r"\n{3,}")
@@ -760,7 +761,7 @@ def record_attempt(conn, sci, now):
 # --- The wire ----------------------------------------------------------------
 
 def get_json(url):
-    """music_bio's fetch idiom, trimmed: identified client, one patient
+    """The artist-bio pass's fetch idiom, trimmed: identified client, one patient
     retry on 503 (maxlag's answer arrives as one)."""
     for attempt in (1, 2):
         req = urllib.request.Request(url, headers={
