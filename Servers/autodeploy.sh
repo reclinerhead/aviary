@@ -69,9 +69,6 @@
 #                            mcc/, run install -> build -> restart for
 #                            mcc-dashboard (the deploy-mcc.sh order; a failed
 #                            build never restarts -- old code keeps serving)
-#   MERLE_DEPLOY_MUSIC       "1" on pearl only: the same gate for music/ ->
-#                            music-app (issue #131). Same order, same
-#                            failed-build-keeps-serving contract.
 #   MERLE_DEPLOY_INTERVAL_S  poll cadence, default 60
 #   MERLE_DEPLOY_USER        checkout owner, default todd
 #   MERLE_REPO               checkout path, default /home/todd/project-squirrel
@@ -96,7 +93,6 @@ REPO="${MERLE_REPO:-/home/todd/project-squirrel}"
 SELF="$REPO/Servers/autodeploy.sh"
 UNITS="${MERLE_DEPLOY_UNITS:-}"
 DEPLOY_MCC="${MERLE_DEPLOY_MCC:-0}"
-DEPLOY_MUSIC="${MERLE_DEPLOY_MUSIC:-0}"
 INTERVAL="${MERLE_DEPLOY_INTERVAL_S:-60}"
 OWNER="${MERLE_DEPLOY_USER:-todd}"
 
@@ -208,13 +204,10 @@ tick() {
         fi
     done
 
-    # The gated expensive paths (pearl only): a docs-only merge never costs a
-    # Next build, and each app rebuilds only when its own directory changed.
+    # The gated expensive path: a docs-only merge never costs a Next build, so
+    # the MCC rebuilds only when mcc/ itself changed.
     if [ "$DEPLOY_MCC" = "1" ] && grep -q "^mcc/" <<<"$changed"; then
         deploy_next_app mcc mcc-dashboard
-    fi
-    if [ "$DEPLOY_MUSIC" = "1" ] && grep -q "^music/" <<<"$changed"; then
-        deploy_next_app music music-app
     fi
 
     # The self-update guard: this script deploys the repo it lives in. The

@@ -66,7 +66,3 @@ yarn-error.log*
 # Kept out of git so it does not collide with Claude Code (or other) checkouts
 # of the same repo that carry their own agent files.
 AGENTS.md
-
-# The Phase 1a analysis run's output (issue #136): a machine-local artifact
-# of a one-time pass -- it gets scp'd to pearl and imported, not committed.
-music_analysis.jsonl

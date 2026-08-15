@@ -59,11 +59,6 @@
 #                            is the Last Will), but in the weather namespace:
 #                            Willard is a reporter, not a narrator, and must
 #                            not light up the Field Journal's presence wildcard
-#   music/status             music presence      "online"/"offline", RETAINED --
-#                            the playback daemon on pearl (issue #129). Same
-#                            contract and same reasoning as weather/status:
-#                            its own namespace, because a jukebox is not a
-#                            narrator and must not appear in the Field Journal
 #   audio/events             Earl -> world       one JSON object per accepted
 #                                                audio detection (issue #172):
 #                                                species, confidence, source,
@@ -93,7 +88,7 @@
 #   services/<name>/status   service presence    "online"/"offline", RETAINED --
 #                            the house-wide namespace (epic #110 Phase 4,
 #                            issue #147) for anything that is neither a
-#                            narrator, a weather reporter, nor the jukebox.
+#                            narrator nor a weather reporter.
 #                            Same contract as all the status topics above.
 #                            The pre-existing namespaces STAY WHERE THEY ARE
 #                            on purpose -- each was split so a wildcard
@@ -143,7 +138,6 @@ WEATHER_FORECAST_TOPIC = "weather/forecast"
 WEATHER_HISTORY_TOPIC = "weather/history"
 WEATHER_REPORT_TOPIC = "weather/report"
 WEATHER_STATUS_TOPIC = "weather/status"
-MUSIC_STATUS_TOPIC = "music/status"
 AUDIO_EVENTS_TOPIC = "audio/events"
 AUDIO_STATUS_TOPIC = "audio/status"
 AUDIO_SOURCES_TOPIC = "audio/sources"
