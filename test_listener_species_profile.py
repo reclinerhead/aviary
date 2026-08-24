@@ -1041,3 +1041,72 @@ def test_connect_adds_the_attempts_table_to_an_existing_file(tmp_path):
     assert c.execute("SELECT COUNT(*) c FROM profile_attempts"
                      ).fetchone()["c"] == 0
     c.close()
+
+
+# --- The tile-sized thumbnail sibling (#495) ---------------------------------
+
+def test_thumb_name_mirrors_the_mcc_route():
+    # The TS mirror (speciesThumbName in lib/aviary.ts) asserts this exact
+    # pair; drifting either side breaks the other's fixed expectation.
+    assert species_profile.thumb_name(
+        species_profile.image_filename("Cardinalis cardinalis")
+    ) == "Cardinalis_cardinalis-thumb.jpg"
+
+
+def test_thumb_size_caps_width_and_never_upscales():
+    assert species_profile.thumb_size(960, 1261, cap=640) == (640, 841)
+    assert species_profile.thumb_size(640, 480, cap=640) == (640, 480)
+    # Narrower than the cap: re-encoded at its own size, no invented pixels.
+    assert species_profile.thumb_size(320, 200, cap=640) == (320, 200)
+    # A pathological sliver still yields a legal image.
+    assert species_profile.thumb_size(10000, 1, cap=640) == (640, 1)
+
+
+def _shelf(tmp_path, *names):
+    shelf = tmp_path / species_profile.SPECIES_DIR
+    shelf.mkdir(exist_ok=True)
+    for name in names:
+        (shelf / name).write_bytes(b"jpg")
+    return shelf
+
+
+def test_thumb_worklist_wants_missing_and_stale_siblings(tmp_path):
+    shelf = _shelf(tmp_path, "A.jpg", "B.jpg", "B-thumb.jpg",
+                   "C.jpg", "C-thumb.jpg")
+    # B's sibling is current (as new as its original); C's original was
+    # rewritten after its thumb -- the owner-drop / refresh case.
+    now = 1_700_000_000
+    os.utime(shelf / "B.jpg", (now, now))
+    os.utime(shelf / "B-thumb.jpg", (now, now))
+    os.utime(shelf / "C.jpg", (now + 60, now + 60))
+    os.utime(shelf / "C-thumb.jpg", (now, now))
+    assert species_profile.thumb_worklist(str(tmp_path)) == ["A.jpg", "C.jpg"]
+
+
+def test_thumb_worklist_never_lists_siblings_or_strangers(tmp_path):
+    _shelf(tmp_path, "A-thumb.jpg", "notes.txt")
+    assert species_profile.thumb_worklist(str(tmp_path)) == []
+
+
+def test_thumb_worklist_quiet_on_a_shelfless_dir(tmp_path):
+    assert species_profile.thumb_worklist(str(tmp_path / "nope")) == []
+
+
+def test_write_thumb_writes_a_capped_sibling(tmp_path):
+    PIL = pytest.importorskip("PIL.Image")
+    shelf = tmp_path / species_profile.SPECIES_DIR
+    shelf.mkdir()
+    src = PIL.new("RGB", (species_profile.THUMB_WIDTH * 2, 300), "#804000")
+    src.save(shelf / "Big_Bird.jpg", "JPEG")
+    assert species_profile.write_thumb(str(tmp_path), "Big_Bird.jpg") == "thumb"
+    with PIL.open(shelf / "Big_Bird-thumb.jpg") as out:
+        assert (out.width, out.height) == (species_profile.THUMB_WIDTH, 150)
+    # Idempotence rides mtime: the fresh sibling clears the worklist.
+    assert species_profile.thumb_worklist(str(tmp_path)) == []
+
+
+def test_write_thumb_missing_original_is_a_status_not_a_raise(tmp_path):
+    pytest.importorskip("PIL.Image")
+    _shelf(tmp_path)
+    assert species_profile.write_thumb(
+        str(tmp_path), "Gone_Bird.jpg") == "missing"

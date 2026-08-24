@@ -46,5 +46,5 @@ jobs:
       # CI goes green having tested nothing. Add new files by hand.
       # (test_bus.py and test_frame_archiver.py joined the list in #123 -- they
       # had existed for months and never once run here.)
-      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml
+      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml pillow
       - run: pytest test_storage.py test_feeds.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_weather.py test_weather_archive.py test_replay.py test_make_2class.py test_bus.py test_frame_archiver.py test_flyway_liveness.py test_import_boundary.py test_listener_gate.py test_listener_sightings.py test_listener_species_profile.py test_listener_species_analysis.py test_listener_enrichment_loop.py test_listener_clip_enhance.py test_listener_clip_vocal_fill.py test_listener_earl.py test_fieldmode_session.py -q

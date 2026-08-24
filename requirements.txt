@@ -15,6 +15,7 @@ opencv-python
 numpy
 paho-mqtt      # the MQTT bus (daemon publisher, narrator, replay script)
 pyyaml         # narrator personas + character bible
+pillow         # portrait-shelf tile thumbnails (#495; enrichment venvs too)
 
 # Test-only:
 pytest

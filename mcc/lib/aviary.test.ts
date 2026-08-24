@@ -45,6 +45,7 @@ import {
   pickVisibleNotice,
   portraitAspect,
   portraitUrl,
+  portraitVersion,
   reconcileOrder,
   reconcileRail,
   rhythmStrip,
@@ -58,6 +59,7 @@ import {
   smoothPath,
   smoothSegments,
   speciesImageName,
+  speciesThumbName,
   LIFE_LIST_QUERY_KEY,
   readLifeListQuery,
   speciesMatches,
@@ -312,6 +314,63 @@ describe("portraitUrl", () => {
       "/aviary/portrait/Cardinalis%20cardinalis",
     );
   });
+  it("a bare call keeps the pre-#495 URL byte-for-byte", () => {
+    expect(portraitUrl("Cardinalis cardinalis", {})).toBe(
+      "/aviary/portrait/Cardinalis%20cardinalis",
+    );
+  });
+  it("asks for the tile sibling and carries the shelf version (#495)", () => {
+    expect(portraitUrl("Cardinalis cardinalis", { thumb: true })).toBe(
+      "/aviary/portrait/Cardinalis%20cardinalis?size=thumb",
+    );
+    expect(
+      portraitUrl("Cardinalis cardinalis", { thumb: true, v: "1-2.3-4" }),
+    ).toBe("/aviary/portrait/Cardinalis%20cardinalis?size=thumb&v=1-2.3-4");
+    expect(portraitUrl("Cardinalis cardinalis", { v: "1-2.3-4" })).toBe(
+      "/aviary/portrait/Cardinalis%20cardinalis?v=1-2.3-4",
+    );
+  });
+  it("a null/absent version emits a version-less URL, never v=null", () => {
+    expect(portraitUrl("X y", { thumb: true, v: null })).toBe(
+      "/aviary/portrait/X%20y?size=thumb",
+    );
+  });
+});
+
+describe("speciesThumbName", () => {
+  it("mirrors the pass's thumb_name exactly", () => {
+    expect(speciesThumbName("Cardinalis_cardinalis.jpg")).toBe(
+      "Cardinalis_cardinalis-thumb.jpg",
+    );
+  });
+  it("stays inside the shelf allowlist by construction", () => {
+    // The input is the ALREADY-SCRUBBED name; appending -thumb cannot add a
+    // character the allowlist rejects, so the guard's verdict is unchanged.
+    expect(speciesThumbName("a_b-c.jpg")).toMatch(/^[A-Za-z0-9_-]+\.jpg$/);
+  });
+});
+
+describe("portraitVersion", () => {
+  const full = { mtimeMs: 1000.4, size: 200 };
+  it("tokens both files' stat facts, mtime rounded", () => {
+    expect(portraitVersion(full, { mtimeMs: 2000.6, size: 50 })).toBe(
+      "1000-200.2001-50",
+    );
+  });
+  it("versions the thumb's ABSENCE too -- the backfill landing is a change", () => {
+    const before = portraitVersion(full, null);
+    expect(before).toBe("1000-200.0-0");
+    expect(before).not.toBe(portraitVersion(full, { mtimeMs: 0, size: 1 }));
+  });
+  it("changes when either file's bytes do", () => {
+    const t = { mtimeMs: 2000, size: 50 };
+    expect(portraitVersion(full, t)).not.toBe(
+      portraitVersion({ mtimeMs: 1000.4, size: 201 }, t),
+    );
+    expect(portraitVersion(full, t)).not.toBe(
+      portraitVersion(full, { mtimeMs: 2000, size: 51 }),
+    );
+  });
 });
 
 describe("removalPlan", () => {
@@ -396,10 +455,12 @@ describe("removalPlan", () => {
       },
     ]);
   });
-  it("deletes the portrait -- refetchable, so not quarantined", () => {
+  it("deletes the portrait AND its thumb sibling -- refetchable, so not quarantined", () => {
+    // The sibling is named unconditionally (#495, the -enh precedent): a
+    // thumb never written is a missing file the delete loop forgives.
     expect(removalPlan([], "Aix_sparsa.jpg")).toEqual({
       moves: [],
-      deletes: ["species/Aix_sparsa.jpg"],
+      deletes: ["species/Aix_sparsa.jpg", "species/Aix_sparsa-thumb.jpg"],
     });
   });
   it("refuses a portrait filename that could step off the shelf", () => {
