@@ -26,6 +26,15 @@
 :80 {
 	root * /home/todd/project-squirrel/launchpad
 
+	# Compression at the choke point (issue #494, same line as orchid's
+	# front door): route-handler JSON bypasses Next's compression, and the
+	# roster payload is the Aviary's dominant recurring fetch -- paid here
+	# over the station's own Wi-Fi link and over every remote tailnet admin
+	# session. encode only touches compressible content types; portraits,
+	# clips (and their 206 range answers), and the porch's font files pass
+	# through untouched. The broker websocket isn't proxied here at all.
+	encode zstd gzip
+
 	# The porch's own files, each at its exact path. The one rewrite is the
 	# point of this file: app.js fetches "tiles.json", and the station serves
 	# the committed tiles.station.json AS that name -- so the porch code is
