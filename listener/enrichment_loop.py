@@ -11,10 +11,16 @@
 #
 #   python -m listener.enrichment_loop          # the earl-enrichment unit
 #
-# ONE TICK, FOUR PASSES, IN THIS ORDER:
+# ONE TICK, FIVE PASSES, IN THIS ORDER:
 #   1. Profile pass -- drain species_profile.worklist() through the ~daily
 #      retry gate. Depends only on the network, so it runs even when no
 #      model is up anywhere.
+#   1b. Thumb pass (#495) -- drain species_profile.thumb_worklist(), bounded
+#      per tick: every shelf original without a current -thumb sibling gets
+#      the tile-sized one. Purely local, fs-mtime-driven (owner drops
+#      included), directly after profiles so a brand-new lifer's portrait
+#      gets its tile thumb in the same tick. Lazy Pillow, the clip pass's
+#      numpy shape: a box without it logs one line and the rest still runs.
 #   2. Clip pass (#325) -- drain clip_enhance.worklist(), bounded per tick:
 #      every original without a current -enh sibling gets one. Purely
 #      local, so it always runs; automatic on both roles because pearl's
@@ -81,6 +87,9 @@ CLIP_TICK_CAP = 200   # clips enhanced per tick (#325): bounds the first
                       # idempotent, so what defers this tick lands next
 FILL_TICK_CAP = 200   # vocal_fill scores per tick (#447 Phase 0): same
                       # bound shape as the enhance pass
+THUMB_TICK_CAP = 200  # thumbs per tick (#495): a whole-shelf backfill fits
+                      # one tick at today's life-list size; the bound is for
+                      # a future --refresh-all landing the lot at once
 
 # --- Pure shaping (test_listener_enrichment_loop.py) --------------------------
 
@@ -179,6 +188,41 @@ def run_profile_pass(now=None):
             print(f"[enrich] profile {common}: {status}", flush=True)
     finally:
         conn.close()
+    return counts
+
+
+def run_thumb_pass(cap=None):
+    """Drain the thumbnail worklist (#495): every shelf original without a
+    current -thumb sibling gets the tile-sized one, via the same per-file
+    function the --thumbs CLI calls (the reusable-pass rule). Purely local
+    and fs-mtime-driven, so owner photos dropped onto the shelf by hand are
+    covered too -- the original is read-only input, never touched.
+
+    The import probe below is the lazy-dependency guard, one level up from
+    write_thumb's own lazy import: without it a Pillow-less box would log
+    one ImportError PER FILE per tick instead of one loud pass-level line
+    through tick()'s catch."""
+    from PIL import Image  # noqa: F401 -- probe: fail the PASS once, not per file
+
+    cap = THUMB_TICK_CAP if cap is None else cap
+    media = species_profile.clips_dir()
+    todo = species_profile.thumb_worklist(media)
+    counts = {}
+    if len(todo) > cap:
+        counts["deferred"] = len(todo) - cap   # no silent caps; next tick
+        todo = todo[:cap]
+    for name in todo:
+        try:
+            status = species_profile.write_thumb(media, name)
+        except Exception as e:
+            print(f"[enrich] thumb {name}: FAILED ({e}) -- staying on the "
+                  "worklist", flush=True)
+            counts["failed"] = counts.get("failed", 0) + 1
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    if counts:
+        print("[enrich] thumbs: " + ", ".join(
+            f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
     return counts
 
 
@@ -321,14 +365,19 @@ def run_analysis_pass(now=None):
 
 def tick(now=None):
     """One turn of the crank: profiles first (the description a note wants
-    background from), then clips (#325), then vocal_fill (#447 Phase 0),
-    then notes. A failed pass is one loud line, never a dead service --
-    the other passes still run."""
+    background from), then thumbs (#495 -- a fresh portrait's tile sibling,
+    same tick), then clips (#325), then vocal_fill (#447 Phase 0), then
+    notes. A failed pass is one loud line, never a dead service -- the
+    other passes still run."""
     results = {}
     try:
         results["profile"] = run_profile_pass(now=now)
     except Exception as e:
         print(f"[enrich] profile pass FAILED ({e})", flush=True)
+    try:
+        results["thumbs"] = run_thumb_pass()
+    except Exception as e:
+        print(f"[enrich] thumb pass FAILED ({e})", flush=True)
     try:
         results["clips"] = run_clip_pass()
     except Exception as e:

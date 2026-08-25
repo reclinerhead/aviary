@@ -24,9 +24,16 @@
 // The unit must carry an absolute path matching earl-sightings' -- the
 // MERLE_WEATHER_DB coupling exactly.
 
+import { promises as fs } from "fs";
+import path from "path";
 import { DatabaseSync } from "node:sqlite";
 import type { NextRequest } from "next/server";
-import { parseSince, shapeRoster } from "@/lib/aviary";
+import {
+  parseSince,
+  portraitVersion,
+  shapeRoster,
+  speciesThumbName,
+} from "@/lib/aviary";
 
 const LIFE_SQL =
   "SELECT species_sci, species_common, first_ts, first_source, first_clip " +
@@ -98,6 +105,51 @@ function species(rows: unknown[]) {
   );
 }
 
+// The portrait shelf, shared with the portrait route and the pass.
+const SPECIES_DIR = "species";
+
+// The pass's scrub means a stored image_file is exactly this shape; a row
+// that isn't (a hand-edited store) is skipped rather than handed to
+// path.join -- the stat would only leak mtime/size into an opaque token,
+// but the clips route's posture is "never walk an unguarded name" and the
+// same rule is cheaper kept than argued about.
+const SHELF_NAME = /^[A-Za-z0-9_-]+\.jpg$/;
+
+async function statFacts(p: string) {
+  try {
+    const st = await fs.stat(p);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return null; // shelf file gone: entry ships without a version
+  }
+}
+
+/** Attach the portrait shelf version (#495) to enriched rows: an opaque
+ * portraitVersion() token over the full file's and thumb sibling's stats,
+ * so portraitUrl(sci, {v}) URLs can be cached immutable while a replaced
+ * or newly-thumbed portrait still surfaces on the next roster fetch. The
+ * fs lives HERE, not in shapeRoster -- the shaping stays pure, and ~90
+ * async stats against a local SSD are microseconds on a route that already
+ * opens SQLite per request. No env, no file: rows pass through untouched
+ * and consumers fall back to version-less URLs (the 86400 policy). */
+async function withPortraitVersions<T extends { image_file?: string | null }>(
+  rows: T[],
+): Promise<T[]> {
+  const dir = process.env.MERLE_EARL_CLIPS;
+  if (!dir) return rows;
+  return Promise.all(
+    rows.map(async (r) => {
+      if (!r.image_file || !SHELF_NAME.test(r.image_file)) return r;
+      const full = await statFacts(path.join(dir, SPECIES_DIR, r.image_file));
+      if (!full) return r;
+      const thumb = await statFacts(
+        path.join(dir, SPECIES_DIR, speciesThumbName(r.image_file)),
+      );
+      return { ...r, image_v: portraitVersion(full, thumb) };
+    }),
+  );
+}
+
 export async function GET(req: NextRequest) {
   const path = process.env.MERLE_EARL_DB;
   if (!path) return empty();
@@ -149,7 +201,7 @@ export async function GET(req: NextRequest) {
       // Store predates #442's vocal_fill column — confidence-only best.
       rows = db.prepare(SIGHTINGS_PRE442_SQL).all() as SightRows;
     }
-    return species(shapeRoster(life, rows, today));
+    return species(await withPortraitVersions(shapeRoster(life, rows, today)));
   } catch {
     return empty(); // a store without the tables yet: still just no birds
   } finally {

@@ -206,6 +206,8 @@ function Portrait({
   h,
   boxAspect,
   style,
+  thumb,
+  v,
 }: {
   sci: string;
   has: boolean;
@@ -222,12 +224,20 @@ function Portrait({
    * rides BOTH branches, so the placeholder holds exactly the shape the
    * photo will take -- enrichment landing can't shift the page. */
   style?: React.CSSProperties;
+  /** Tile-sized sibling ask (#495) -- the small surfaces. Default full,
+   * so a caller that says nothing keeps the profile-grade file. The
+   * route falls back to the full file for an un-backfilled species, so
+   * the swap can never change geometry (same source, same aspect). */
+  thumb?: boolean;
+  /** The roster's shelf version (#495): present, the URL is
+   * immutable-cacheable; absent, the older 86400 policy applies. */
+  v?: string | null;
 }) {
   const [lost, setLost] = useState(false);
   if (has && !lost)
     return (
       <img
-        src={portraitUrl(sci)}
+        src={portraitUrl(sci, { thumb, v })}
         alt={alt}
         loading="lazy"
         onError={() => setLost(true)}
@@ -260,6 +270,7 @@ function TickerThumb({
   has,
   w,
   h,
+  v,
   // The archive (#211) wears the same thumb at h-16; the ticker keeps its
   // h-9. Two real callers, one geometry rule -- the size is the only knob.
   box = "h-9 w-9",
@@ -269,6 +280,10 @@ function TickerThumb({
   has: boolean;
   w?: number | null;
   h?: number | null;
+  /** The roster's shelf version (#495), from the same lookup that already
+   * answers `has` -- these squares are the most thumb-shaped surface on
+   * the board, so the ask is unconditional here. */
+  v?: string | null;
   box?: string;
   glyph?: string;
 }) {
@@ -279,7 +294,7 @@ function TickerThumb({
     >
       {has && !lost ? (
         <img
-          src={portraitUrl(sci)}
+          src={portraitUrl(sci, { thumb: true, v })}
           alt=""
           loading="lazy"
           onError={() => setLost(true)}
@@ -759,6 +774,8 @@ function NewArrivals({
                       glyphClass="h-12 w-12"
                       w={e.image_w}
                       h={e.image_h}
+                      v={e.image_v}
+                      thumb
                       boxAspect={4 / 3}
                       style={{ aspectRatio: "4 / 3" }}
                       className="w-full border-b border-line bg-panel"
@@ -1014,7 +1031,10 @@ function AviaryNoticeStrip({
       {portraitSci ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={portraitUrl(portraitSci)}
+          // Thumb ask, no version: the notice payload carries no roster
+          // entry, so this 48px square takes the small bytes on the 86400
+          // policy rather than plumbing a lookup for a dismissible strip.
+          src={portraitUrl(portraitSci, { thumb: true })}
           alt=""
           className="h-12 w-12 shrink-0 rounded-sm border border-line object-cover object-top bg-panel2"
         />
@@ -1818,6 +1838,8 @@ export function Aviary({
                           glyphClass="h-12 w-12"
                           w={e.image_w}
                           h={e.image_h}
+                          v={e.image_v}
+                          thumb
                           boxAspect={4 / 3}
                           className="aspect-[4/3] w-full rounded-sm border border-line bg-panel transition-colors group-hover:text-inkdim"
                         />
@@ -1900,6 +1922,7 @@ export function Aviary({
                             has={Boolean(roster[e.species_sci]?.image_file)}
                             w={roster[e.species_sci]?.image_w}
                             h={roster[e.species_sci]?.image_h}
+                            v={roster[e.species_sci]?.image_v}
                           />
                           <div className="min-w-0 flex-1">
                             {/* The name owns its whole line now (#207): the
@@ -2628,7 +2651,10 @@ export function SpeciesProfile({
             {entry?.image_file && (
               <div className="pointer-events-none absolute inset-0" aria-hidden>
                 <img
-                  src={portraitUrl(sci)}
+                  // Full size + the roster's version (#495): the backdrop
+                  // and the figure share one URL, so the hero costs no
+                  // second fetch and both ride the immutable cache.
+                  src={portraitUrl(sci, { v: entry?.image_v })}
                   alt=""
                   className="h-full w-full scale-105 object-cover object-top opacity-[0.78] blur-md saturate-[1.2]"
                 />
@@ -2796,6 +2822,9 @@ export function SpeciesProfile({
                     bird is always in frame. The ratio is reserved before
                     the bytes land, so the photo arriving shifts nothing;
                     an un-backfilled row falls back to the old 4:3. */}
+                {/* Full size deliberately (#495): the magazine figure is
+                    the one surface that renders the portrait at its
+                    documented width -- the thumb would be soft here. */}
                 <Portrait
                   sci={sci}
                   has={Boolean(entry?.image_file)}
@@ -2803,6 +2832,7 @@ export function SpeciesProfile({
                   glyphClass="h-16 w-16"
                   w={entry?.image_w}
                   h={entry?.image_h}
+                  v={entry?.image_v}
                   boxAspect={4 / 3}
                   style={{
                     aspectRatio: portraitAspect(entry?.image_w, entry?.image_h),
@@ -3447,6 +3477,8 @@ export function AviaryEvents({
                   glyphClass="h-8 w-8"
                   w={solo.image_w}
                   h={solo.image_h}
+                  v={solo.image_v}
+                  thumb
                   boxAspect={4 / 3}
                   style={{
                     aspectRatio: portraitAspect(solo.image_w, solo.image_h),
@@ -3554,6 +3586,7 @@ export function AviaryEvents({
                           has={Boolean(roster[e.species_sci]?.image_file)}
                           w={roster[e.species_sci]?.image_w}
                           h={roster[e.species_sci]?.image_h}
+                          v={roster[e.species_sci]?.image_v}
                           box="h-16 w-16"
                           glyph="h-7 w-7"
                         />

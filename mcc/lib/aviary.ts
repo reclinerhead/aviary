@@ -217,9 +217,45 @@ export function speciesImageName(sci: string): string | null {
   return safe ? `${safe}.jpg` : null;
 }
 
-/** The grid/profile URL for one species' portrait. */
-export function portraitUrl(sci: string): string {
-  return `/aviary/portrait/${encodeURIComponent(sci)}`;
+/** The grid/profile URL for one species' portrait. The small surfaces ask
+ * for the tile-sized sibling (#495, `thumb`); `v` is the shelf version the
+ * roster carries -- present, the URL names exact bytes and the route
+ * answers it immutable, and a replaced portrait changes the version, so
+ * freshness rides the URL instead of a revalidation. A bare call keeps the
+ * original URL byte-for-byte (the pre-#495 callers and the 86400 policy). */
+export function portraitUrl(
+  sci: string,
+  opts?: { thumb?: boolean; v?: string | null },
+): string {
+  const base = `/aviary/portrait/${encodeURIComponent(sci)}`;
+  const params = new URLSearchParams();
+  if (opts?.thumb) params.set("size", "thumb");
+  if (opts?.v) params.set("v", opts.v);
+  const q = params.toString();
+  return q ? `${base}?${q}` : base;
+}
+
+/** 'Cardinalis_cardinalis.jpg' -> 'Cardinalis_cardinalis-thumb.jpg': the
+ * enrichment pass's tile-sized sibling (#495). Derived from the
+ * ALREADY-SCRUBBED shelf name ('-' has always been in the allowlist), so
+ * the traversal guard's verdict is unchanged by construction. Must match
+ * the pass's thumb_name() exactly -- one regex, one suffix, both sides. */
+export function speciesThumbName(imageName: string): string {
+  return `${imageName.slice(0, -".jpg".length)}-thumb.jpg`;
+}
+
+/** The portrait shelf version the roster ships (#495): an opaque token
+ * from both files' stat facts that changes whenever either byte-stream
+ * does -- an enrichment refresh, an owner drop, a thumb backfill landing.
+ * That last one matters: "no thumb yet" is versioned too ("0-0"), so the
+ * sibling arriving busts a cached full-size fallback instead of hiding
+ * behind a year of immutable. */
+export function portraitVersion(
+  full: { mtimeMs: number; size: number },
+  thumb: { mtimeMs: number; size: number } | null,
+): string {
+  const t = thumb ? `${Math.round(thumb.mtimeMs)}-${thumb.size}` : "0-0";
+  return `${Math.round(full.mtimeMs)}-${full.size}.${t}`;
 }
 
 // --- Species removal (issues #216 + #281) -----------------------------------
@@ -280,8 +316,13 @@ export function removalPlan(
     }
   }
   const deletes: string[] = [];
-  if (imageFile && PORTRAIT_FILE.test(imageFile))
+  if (imageFile && PORTRAIT_FILE.test(imageFile)) {
     deletes.push(`${SPECIES_DIR}/${imageFile}`);
+    // The tile-sized sibling goes with it (#495) -- named unconditionally,
+    // the -enh precedent: the pass keeps no registry, and a sibling never
+    // written is just a missing file the delete loop already forgives.
+    deletes.push(`${SPECIES_DIR}/${speciesThumbName(imageFile)}`);
+  }
   return { moves, deletes };
 }
 
@@ -450,6 +491,12 @@ export type RosterEntry = {
   // fixed-box fallback rather than assuming a ratio.
   image_w?: number | null;
   image_h?: number | null;
+  // The portrait shelf version (#495) -- portraitVersion() over the full
+  // file + thumb sibling's stats, attached by the roster ROUTE (it lives
+  // beside the files; shapeRoster never touches the fs). Absent when the
+  // route has no MERLE_EARL_CLIPS or the file is gone: consumers then emit
+  // version-less URLs and simply get the older 86400 cache policy.
+  image_v?: string | null;
   // What it sounds like (#315): the article's vocalization section, or NULL
   // for the species whose article has no such section -- an honest blank,
   // never a guess assembled from loose paragraphs.

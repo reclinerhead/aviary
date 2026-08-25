@@ -122,6 +122,18 @@ FETCH_TIMEOUT_S = 20
 THROTTLE_S = 1.0     # ~17 species today; a polite crawl, not a hammer
 THUMB_PX = 900       # wide enough for the profile page, bounded on disk
 
+# The tile-sized sibling (#495). The GUI's small surfaces (grid tiles,
+# ticker thumbs, New Arrivals cards) render at most ~340 CSS px wide, so a
+# 640px-wide thumb covers a 2x display within 6% while cutting the shelf's
+# ~316 KB average to ~60 KB -- settled by a sweep over real portraits
+# (2026-08-24: 480px q80 was 25% smaller again but visibly soft on the
+# full-rail New Arrivals card at 2x; 800px q80 spent 55% more for width no
+# surface renders). Width-capped, never upscaled; the full-size file is
+# untouched -- the profile hero and magazine figure keep reading it.
+THUMB_SUFFIX = "-thumb.jpg"
+THUMB_WIDTH = 640
+THUMB_QUALITY = 78
+
 # --- Animal Diversity Web, the third tier (issue #318) ------------------------
 
 ADW_ACCOUNT = "https://animaldiversity.org/accounts/"
@@ -336,6 +348,24 @@ def image_filename(sci):
     name that scrubs to nothing. Must match the MCC route's mirror exactly."""
     safe = _SAFE_CHARS.sub("_", str(sci).strip()).strip("_")
     return f"{safe}.jpg" if safe else None
+
+
+def thumb_name(image_file):
+    """'X.jpg' -> 'X-thumb.jpg': the tile-sized sibling's shelf name (#495).
+    Derived from the already-scrubbed filename, so it passes the same
+    allowlist by construction ('-' has always been in it). Must match the
+    MCC route's mirror (speciesThumbName) exactly."""
+    return f"{image_file[:-len('.jpg')]}{THUMB_SUFFIX}"
+
+
+def thumb_size(w, h, cap=THUMB_WIDTH):
+    """Target (w, h) for a thumb: width-capped, aspect preserved, never
+    upscaled -- a portrait narrower than the cap is re-encoded at its own
+    size rather than invented pixels. Pure so the rounding is testable
+    without Pillow in the room."""
+    if w <= cap:
+        return (w, h)
+    return (cap, max(1, round(h * cap / w)))
 
 
 def summary_url(sci):
@@ -722,6 +752,58 @@ def all_species(conn):
         " ORDER BY species_common")]
 
 
+def thumb_worklist(media_dir):
+    """Shelf originals whose -thumb sibling is missing or older (#495).
+    File mtime is the whole state -- the clip pass's idiom: no schema, no
+    column, and an owner photo dropped onto the shelf by hand is newer than
+    its stale thumb, so it earns a fresh one on the next tick with the
+    original never touched. A sibling newer than (or as new as) its
+    original is current and skipped."""
+    shelf = os.path.join(media_dir, SPECIES_DIR)
+    try:
+        names = sorted(os.listdir(shelf))
+    except OSError:
+        return []   # no shelf yet -- day one, not an error
+    todo = []
+    for name in names:
+        if not name.endswith(".jpg") or name.endswith(THUMB_SUFFIX):
+            continue
+        sibling = os.path.join(shelf, thumb_name(name))
+        try:
+            if (not os.path.exists(sibling)
+                    or os.path.getmtime(sibling)
+                    < os.path.getmtime(os.path.join(shelf, name))):
+                todo.append(name)
+        except OSError:
+            todo.append(name)   # unreadable stat: let write_thumb decide
+    return todo
+
+
+def write_thumb(media_dir, image_file):
+    """Write one original's -thumb sibling (#495). Returns a status word:
+      'thumb'   -- sibling written
+      'missing' -- the original isn't on the shelf (nothing to derive)
+    Exceptions propagate: the bulk loops log and move on. Lazy Pillow
+    import (the clip pass's numpy precedent) so this module stays
+    importable -- and every other pass runnable -- on a box without it.
+    The original is opened READ-ONLY, owner photos included: a thumb is
+    derived output, so the owner rule holds without an owner check."""
+    from PIL import Image
+
+    shelf = os.path.join(media_dir, SPECIES_DIR)
+    src = os.path.join(shelf, image_file)
+    if not os.path.exists(src):
+        return "missing"
+    with Image.open(src) as im:
+        out = im.convert("RGB")
+        w, h = thumb_size(out.width, out.height)
+        if (w, h) != (out.width, out.height):
+            out = out.resize((w, h), Image.LANCZOS)
+        out.save(os.path.join(shelf, thumb_name(image_file)),
+                 "JPEG", quality=THUMB_QUALITY, optimize=True)
+    return "thumb"
+
+
 def owner_locked(conn, sci):
     """The provenance rule: an owner-sourced row is Todd's, not the pass's."""
     row = conn.execute(
@@ -842,6 +924,15 @@ def enrich_species(conn, media_dir, sci, *, fetch_json=get_json,
             image_file = filename
             image_source = "wikipedia"
             credit = attribution(info["license"], info["artist"])
+            # The tile-sized sibling rides the fetch (#495), best-effort: a
+            # box without Pillow (or a download PIL can't parse) leaves the
+            # thumb to the loop's backfill arm -- one log line, never a
+            # failed profile over a derived file.
+            try:
+                write_thumb(media_dir, filename)
+            except Exception as e:
+                print(f"[species] thumb {filename}: deferred ({e})",
+                      flush=True)
 
     stamp = int(now())
 
@@ -903,7 +994,35 @@ def main():
     one.add_argument("--refresh-all", action="store_true",
                      help="re-fetch EVERY life-list species, ignoring the "
                           "worklist gates (owner rows still skipped)")
+    one.add_argument("--thumbs", action="store_true",
+                     help="(re)generate missing/stale tile thumbnails for "
+                          "the whole shelf (#495) -- no network, no DB")
     args = ap.parse_args()
+
+    if args.thumbs:
+        # Pure shelf work: no store, no Wikipedia, safe anywhere the media
+        # dir is mounted -- the backfill Todd runs once per box; thereafter
+        # the enrichment loop's thumb pass keeps the shelf current.
+        media = clips_dir()
+        todo = thumb_worklist(media)
+        if not todo:
+            print("[species] thumbs: shelf is current -- nothing to do",
+                  flush=True)
+            return
+        print(f"[species] thumbs: {len(todo)} to generate under "
+              f"{os.path.join(media, SPECIES_DIR)}", flush=True)
+        counts = {}
+        for name in todo:
+            try:
+                status = write_thumb(media, name)
+            except Exception as e:
+                print(f"[species] thumb {name}: FAILED ({e})", flush=True)
+                counts["failed"] = counts.get("failed", 0) + 1
+                continue
+            counts[status] = counts.get(status, 0) + 1
+        print("[species] thumbs done: " + ", ".join(
+            f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
+        return
 
     path = db_path()
     media = clips_dir()
