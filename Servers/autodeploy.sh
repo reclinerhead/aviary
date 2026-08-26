@@ -3,8 +3,10 @@
 # project-squirrel -- Servers/autodeploy.sh
 #
 # The deploy watcher (issue #95; role-generalized in #303): a long-lived
-# loop that checks origin/main every MERLE_DEPLOY_INTERVAL_S and brings this
-# box current when it moves -- pull, restart the units listed in
+# loop that checks the configured deploy branch (MERLE_DEPLOY_BRANCH --
+# default main; stations ride the aviary-station-stable release channel,
+# #354) every MERLE_DEPLOY_INTERVAL_S and brings this box current when it
+# moves -- pull, restart the units listed in
 # MERLE_DEPLOY_UNITS, and (where MERLE_DEPLOY_MCC=1) rebuild + restart the
 # MCC when the merge touched mcc/. Merging a PR IS the deploy; nobody SSHes
 # anywhere -- which is the whole fleet story of epic #212 principle 2: main
@@ -70,6 +72,16 @@
 #                            mcc-dashboard (the deploy-mcc.sh order; a failed
 #                            build never restarts -- old code keeps serving)
 #   MERLE_DEPLOY_INTERVAL_S  poll cadence, default 60
+#   MERLE_DEPLOY_BRANCH      the branch this box deploys from, default main
+#                            (pearl and merle never set it). Stations set
+#                            aviary-station-stable -- the release channel
+#                            (#354): fast-forward-only, never committed to
+#                            directly, promoted to main's tip once nightly
+#                            by the promote-stations Action, so remote
+#                            houses build in the small hours and absorb at
+#                            most a day of changes. The checkout must sit ON
+#                            the configured branch; anywhere else reads as
+#                            pinned (see the branch guard).
 #   MERLE_DEPLOY_USER        checkout owner, default todd
 #   MERLE_REPO               checkout path, default /home/todd/project-squirrel
 #
@@ -77,9 +89,10 @@
 # (manual pulls and Servers/deploy-mcc.sh keep working exactly as before);
 # `autodeploy.sh --once` runs a single tick by hand, no loop. And the
 # SANCTIONED way to pin a box for field-testing unmerged work is simply to
-# check out the branch: the branch guard in tick() pauses deploys while the
-# checkout is off main (transition-logged, issue #392) and resumes them the
-# moment main is checked out again -- no watcher stop/start to remember.
+# check out a branch: the branch guard in tick() pauses deploys while the
+# checkout is off the configured deploy branch (transition-logged, issue
+# #392) and resumes them the moment it's checked back out -- no watcher
+# stop/start to remember.
 #
 # Deliberately NOT `set -e`: the loop must survive a failed fetch, restart,
 # or build -- every step checks and logs its own failure, and the next tick
@@ -95,9 +108,10 @@ UNITS="${MERLE_DEPLOY_UNITS:-}"
 DEPLOY_MCC="${MERLE_DEPLOY_MCC:-0}"
 INTERVAL="${MERLE_DEPLOY_INTERVAL_S:-60}"
 OWNER="${MERLE_DEPLOY_USER:-todd}"
+BRANCH="${MERLE_DEPLOY_BRANCH:-main}"
 
 fetch_down=0    # fetch failures are transition-logged (the #35 convention)
-off_main=0      # branch checkouts too -- one line entering, one leaving
+off_channel=0   # off-branch checkouts too -- one line entering, one leaving
 self_changed=0  # set by tick(); the loop hands over to the new copy
 
 log() { echo "[autodeploy] $*"; }
@@ -132,31 +146,34 @@ deploy_next_app() {
 tick() {
     self_changed=0
 
-    # THE BRANCH GUARD (issue #392): a checkout on a feature branch is a box
-    # someone deliberately pinned -- field-testing unmerged work is the
-    # sanctioned use. Without this guard the loop below is a disaster there:
-    # HEAD never equals origin/main, `pull --ff-only` "succeeds" against the
-    # BRANCH's own upstream, and every watched unit restarts every tick,
-    # forever. Measured on merle 2026-08-02: fieldmode killed every ~60s,
-    # three park recording sessions dead at 6min/0s/60s -- and paused only
-    # while the network was down, so recording worked precisely when the
-    # internet didn't. Before the fetch on purpose: a pinned box generates
-    # no deploy traffic at all. Checking out main resumes deploys by itself.
+    # THE BRANCH GUARD (issue #392): a checkout off the configured deploy
+    # branch is a box someone deliberately pinned -- field-testing unmerged
+    # work is the sanctioned use. Without this guard the loop below is a
+    # disaster there: HEAD never equals the deploy branch's tip, `pull
+    # --ff-only` "succeeds" against the checkout's own upstream, and every
+    # watched unit restarts every tick, forever. Measured on merle
+    # 2026-08-02: fieldmode killed every ~60s, three park recording sessions
+    # dead at 6min/0s/60s -- and paused only while the network was down, so
+    # recording worked precisely when the internet didn't. Before the fetch
+    # on purpose: a pinned box generates no deploy traffic at all. Checking
+    # the deploy branch back out resumes deploys by itself. "Pinned" means
+    # off the CONFIGURED branch: a station checkout sitting on main is a
+    # half-finished channel flip, and it pauses the same way (#354).
     local branch
     branch=$(repo_git rev-parse --abbrev-ref HEAD) || return 0
-    if [ "$branch" != "main" ]; then
-        if [ "$off_main" -eq 0 ]; then
-            off_main=1
-            log "checkout is on '$branch', not main -- deploys paused until it returns"
+    if [ "$branch" != "$BRANCH" ]; then
+        if [ "$off_channel" -eq 0 ]; then
+            off_channel=1
+            log "checkout is on '$branch', not $BRANCH -- deploys paused until it returns"
         fi
         return 0
     fi
-    if [ "$off_main" -eq 1 ]; then
-        off_main=0
-        log "back on main -- deploys resume"
+    if [ "$off_channel" -eq 1 ]; then
+        off_channel=0
+        log "back on $BRANCH -- deploys resume"
     fi
 
-    if ! repo_git fetch --quiet origin main; then
+    if ! repo_git fetch --quiet origin "$BRANCH"; then
         # One line when the fetch starts failing, one when it recovers --
         # never one per quiet minute of an outage.
         if [ "$fetch_down" -eq 0 ]; then
@@ -172,7 +189,7 @@ tick() {
 
     local head remote
     head=$(repo_git rev-parse HEAD) || return 0
-    remote=$(repo_git rev-parse origin/main) || return 0
+    remote=$(repo_git rev-parse "origin/$BRANCH") || return 0
     [ "$head" = "$remote" ] && return 0   # the quiet path: no news, no log
 
     # Never act on a checkout someone's mid-something in -- but only TRACKED
@@ -182,11 +199,11 @@ tick() {
     # or ignored files -- counting those blocked pearl's deploys forever.
     # Skipping is safe: the tick retries, so cleaning the tree resumes.
     if [ -n "$(repo_git status --porcelain --untracked-files=no)" ]; then
-        log "origin/main moved to ${remote:0:9} but the checkout is dirty -- not touching it"
+        log "origin/$BRANCH moved to ${remote:0:9} but the checkout is dirty -- not touching it"
         return 0
     fi
 
-    log "deploying ${head:0:9} -> ${remote:0:9}"
+    log "deploying ${head:0:9} -> ${remote:0:9} from origin/$BRANCH"
     if ! repo_git pull --ff-only --quiet; then
         log "pull --ff-only refused (diverged history?) -- needs a human"
         return 0
@@ -226,7 +243,7 @@ main() {
     fi
     # Branch in the startup line so `journalctl -u <watcher> | head` answers
     # "why is this box not deploying" in one read (issue #392).
-    log "watching origin/main every ${INTERVAL}s -- units: [${UNITS:-none}]" \
+    log "watching origin/$BRANCH every ${INTERVAL}s -- units: [${UNITS:-none}]" \
         "mcc: $DEPLOY_MCC repo: $REPO" \
         "branch: $(repo_git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
     while true; do

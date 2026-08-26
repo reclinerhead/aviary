@@ -1,0 +1,57 @@
+# The station release channel's nightly promotion (issue #354).
+#
+# aviary-station-stable is the branch every remote Aviary station's
+# station-autodeploy watcher tracks (MERLE_DEPLOY_BRANCH in station.env).
+# It is NOT a fork: fast-forward-only, never committed to directly, always
+# an ancestor of main -- main with a delay. This job moves it to main's tip
+# once nightly, so remote-house builds happen while everyone sleeps and a
+# station absorbs at most one day of changes per deploy.
+#
+# Runs HERE, not on a house box, on purpose: promotion is a push, and every
+# box in the fleet holds a READ-ONLY deploy key -- a compromised box must
+# never be able to alter the code the whole fleet auto-deploys within 60s
+# (deploy keys can't be scoped to one branch, so "write key on a box" would
+# mean write to everything). The GITHUB_TOKEN this job uses is minted
+# per-run, repo-scoped, and gone when the job ends -- no long-lived write
+# credential exists anywhere.
+#
+# --ff-only is the tripwire: if the branch can't fast-forward, something
+# committed to it directly, and this job FAILS LOUDLY (red run + email)
+# rather than papering over it. Fix the branch; never force.
+#
+# The emergency path (a fix can't wait for tonight): merge the fix to main,
+# then run this workflow by hand -- Actions -> "Promote stations" -> Run
+# workflow (the GitHub phone app works), or:
+#   gh workflow run promote-stations.yml
+# The station watchers deploy within a minute of the fast-forward.
+
+name: Promote stations
+
+on:
+  schedule:
+    # Actions cron is UTC only: 07:00 UTC = 02:00 EST / 03:00 EDT -- the
+    # small hours at both houses year-round, DST notwithstanding.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-stations
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: a shallow clone can't prove ancestry for --ff-only.
+      # This step also fails loudly if aviary-station-stable doesn't exist.
+      - uses: actions/checkout@v4
+        with:
+          ref: aviary-station-stable
+          fetch-depth: 0
+      - name: Fast-forward aviary-station-stable to main
+        run: |
+          git fetch origin main
+          git merge --ff-only origin/main
+          git push origin aviary-station-stable
