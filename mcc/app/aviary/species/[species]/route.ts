@@ -8,9 +8,20 @@
 // from Wikipedia -- is still deleted. Keyed by SCIENTIFIC name,
 // decodeURIComponent'd, exactly like the profile page it serves.
 //
-// DELETE /aviary/species/<species_sci>
+// DELETE /aviary/species/<species_sci>[?exclude_future=1]
 //   -> { species_sci, rows: {sightings, life_list, species_profile,
-//        species_analysis}, negatives, quarantined, files }
+//        species_analysis}, negatives, quarantined, files, excluded }
+//
+// ?exclude_future=1 (issue #506, the overlay's "don't let it come back"
+// checkbox -- DEFAULT OFF, preserving the #216 contract that a species
+// heard again is a brand-new lifer): the same transaction that erases the
+// record writes exclude=1 into species_rules, the operator's standing veto
+// the listener reads. It rides the remove because after the remove there
+// is no species page left to set it from -- this is the ONLY way to
+// exclude a bird you are also erasing (the Wood Duck case). WITHOUT the
+// flag any existing rule row is deleted too: "brand-new lifer" means
+// brand-new -- a leftover threshold silently binding a bird the operator
+// erased would be a ghost of a page that no longer exists.
 //
 // Rows first, then files, in one transaction: the negative evidence rows
 // are INSERTed from the sightings rows (one negative per sighting; a
@@ -46,7 +57,12 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { DatabaseSync } from "node:sqlite";
-import { clipRelPath, quarantinePath, removalPlan } from "@/lib/aviary";
+import {
+  clipRelPath,
+  quarantinePath,
+  removalPlan,
+  SPECIES_RULES_DDL,
+} from "@/lib/aviary";
 
 const TABLES = [
   "sightings",
@@ -101,7 +117,7 @@ function quarantinedClip(clip: string | null): string | null {
 }
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ species: string }> },
 ) {
   const dbPath = process.env.MERLE_EARL_DB;
@@ -114,6 +130,8 @@ export async function DELETE(
 
   const { species } = await ctx.params;
   const sci = decodeURIComponent(species);
+  const excludeFuture =
+    new URL(req.url).searchParams.get("exclude_future") === "1";
 
   let db: DatabaseSync;
   try {
@@ -225,6 +243,23 @@ export async function DELETE(
           db.prepare(`DELETE FROM ${t} WHERE species_sci = ?`).run(sci).changes,
         );
       }
+      // The standing veto (#506): with the checkbox on, the erasure and the
+      // exclude land or fail together -- a remove that succeeded while the
+      // veto silently didn't would re-mint the Wood Duck on its next call.
+      // Without it, any existing rule row goes with the record: heard-again
+      // starts over completely (#216), rules included.
+      db.exec(SPECIES_RULES_DDL);
+      if (excludeFuture) {
+        db.prepare(
+          "INSERT INTO species_rules" +
+            " (species_sci, exclude, threshold, always_include, updated_ts)" +
+            " VALUES (?,1,NULL,0,?)" +
+            " ON CONFLICT(species_sci) DO UPDATE SET exclude=1," +
+            " threshold=NULL, always_include=0, updated_ts=excluded.updated_ts",
+        ).run(sci, removedTs);
+      } else {
+        db.prepare("DELETE FROM species_rules WHERE species_sci = ?").run(sci);
+      }
       db.exec("COMMIT");
     } catch (e) {
       try {
@@ -271,7 +306,8 @@ export async function DELETE(
   }
 
   return Response.json(
-    { species_sci: sci, rows, negatives, quarantined, files },
+    { species_sci: sci, rows, negatives, quarantined, files,
+      excluded: excludeFuture },
     { headers: { "cache-control": "no-store" } },
   );
 }

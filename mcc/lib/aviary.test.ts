@@ -41,6 +41,7 @@ import {
   parseLimit,
   parseRange,
   parseSince,
+  parseRulePayload,
   parseSpeciesFilter,
   pickVisibleNotice,
   portraitAspect,
@@ -48,9 +49,15 @@ import {
   portraitVersion,
   reconcileOrder,
   reconcileRail,
+  removalUrl,
   rhythmStrip,
   rivalLine,
   rosterOrder,
+  ruleIsEmpty,
+  ruleStamp,
+  coerceRuleThreshold,
+  speciesRuleFrom,
+  type SpeciesRule,
   secondsIntoDay,
   shapeRoster,
   voiceCredit,
@@ -470,6 +477,114 @@ describe("removalPlan", () => {
     expect(removalPlan([], "portrait.png").deletes).toEqual([]);
     expect(removalPlan([], null).deletes).toEqual([]);
     expect(removalPlan([], "").deletes).toEqual([]);
+  });
+});
+
+describe("per-species detection rules (#506)", () => {
+  const rule = (over: Partial<SpeciesRule> = {}): SpeciesRule => ({
+    exclude: false,
+    threshold: null,
+    always_include: false,
+    ...over,
+  });
+
+  describe("ruleStamp", () => {
+    // The hero-meta stamp is RESERVED (house rule #1): every state answers a
+    // string, so the entry renders on every species and never pops in.
+    it("reads default with no rule at all", () => {
+      expect(ruleStamp(null)).toBe("default");
+      expect(ruleStamp(undefined)).toBe("default");
+      expect(ruleStamp(rule())).toBe("default");
+    });
+    it("speaks the threshold in the overlay's own step copy", () => {
+      expect(ruleStamp(rule({ threshold: 0.8 }))).toBe("threshold 0.80");
+      expect(ruleStamp(rule({ threshold: 0.9 }))).toBe("threshold 0.90");
+    });
+    it("reads ignored, alone, when the veto stands", () => {
+      // Exclude makes the other fields moot -- exactly as the listener
+      // treats them -- so the stamp says only the thing that governs.
+      expect(ruleStamp(rule({ exclude: true }))).toBe("ignored");
+      expect(
+        ruleStamp(rule({ exclude: true, threshold: 0.8, always_include: true })),
+      ).toBe("ignored");
+    });
+    it("reads map override, and joins it with a threshold", () => {
+      expect(ruleStamp(rule({ always_include: true }))).toBe("map override");
+      expect(ruleStamp(rule({ threshold: 0.9, always_include: true }))).toBe(
+        "threshold 0.90 · map override",
+      );
+    });
+  });
+
+  describe("parseRulePayload", () => {
+    it("shapes the overlay's body", () => {
+      expect(
+        parseRulePayload({ exclude: false, threshold: 0.8, always_include: true }),
+      ).toEqual(rule({ threshold: 0.8, always_include: true }));
+    });
+    it("treats absent fields as defaults", () => {
+      expect(parseRulePayload({})).toEqual(rule());
+      expect(parseRulePayload({ exclude: true })).toEqual(
+        rule({ exclude: true }),
+      );
+    });
+    it("refuses anything that is not a rule-shaped object", () => {
+      expect(parseRulePayload(null)).toBeNull();
+      expect(parseRulePayload("exclude")).toBeNull();
+      expect(parseRulePayload([0.8])).toBeNull();
+      expect(parseRulePayload({ threshold: "0.8" })).toBeNull();
+      expect(parseRulePayload({ threshold: 0 })).toBeNull();
+      expect(parseRulePayload({ threshold: 1 })).toBeNull();
+      expect(parseRulePayload({ threshold: NaN })).toBeNull();
+      expect(parseRulePayload({ exclude: 1 })).toBeNull();
+      expect(parseRulePayload({ always_include: "yes" })).toBeNull();
+    });
+  });
+
+  describe("ruleIsEmpty", () => {
+    it("an all-defaults rule holds no policy -- the route deletes the row", () => {
+      expect(ruleIsEmpty(rule())).toBe(true);
+      expect(ruleIsEmpty(rule({ exclude: true }))).toBe(false);
+      expect(ruleIsEmpty(rule({ threshold: 0.8 }))).toBe(false);
+      expect(ruleIsEmpty(rule({ always_include: true }))).toBe(false);
+    });
+  });
+
+  describe("speciesRuleFrom", () => {
+    it("turns sqlite integers into the wire shape", () => {
+      expect(
+        speciesRuleFrom({ exclude: 1, threshold: null, always_include: 0 }),
+      ).toEqual(rule({ exclude: true }));
+      expect(
+        speciesRuleFrom({ exclude: 0, threshold: 0.9, always_include: 1 }),
+      ).toEqual(rule({ threshold: 0.9, always_include: true }));
+      expect(
+        speciesRuleFrom({ exclude: null, threshold: null, always_include: null }),
+      ).toEqual(rule());
+    });
+  });
+
+  describe("coerceRuleThreshold", () => {
+    it("keeps Default and lands stored values on a step, ties toward lower", () => {
+      expect(coerceRuleThreshold(null)).toBeNull();
+      expect(coerceRuleThreshold(undefined)).toBeNull();
+      expect(coerceRuleThreshold(0.8)).toBe(0.8);
+      expect(coerceRuleThreshold(0.9)).toBe(0.9);
+      expect(coerceRuleThreshold(0.7)).toBe(0.8); // below the steps
+      expect(coerceRuleThreshold(0.85)).toBe(0.8); // the tie, toward lower
+      expect(coerceRuleThreshold(0.95)).toBe(0.9); // above the steps
+    });
+  });
+
+  describe("removalUrl", () => {
+    it("carries the don't-let-it-come-back checkbox as a query flag", () => {
+      expect(removalUrl("Aix sponsa", false)).toBe(
+        "/aviary/species/Aix%20sponsa",
+      );
+      expect(removalUrl("Aix sponsa", true)).toBe(
+        "/aviary/species/Aix%20sponsa?exclude_future=1",
+      );
+    });
   });
 });
 
