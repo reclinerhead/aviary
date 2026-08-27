@@ -125,6 +125,191 @@ def test_multiple_accepted_come_back_best_first():
     assert accepted == [(FINCH, 0.92), (CHICKADEE, 0.70)]
 
 
+# --- rule 4: per-species operator rules (issue #506) -------------------------
+# The rules map is the Aviary's species_rules table, loaded by the caller;
+# decide() itself never touches sqlite (the import-boundary rule).
+
+def rules_for(sci, *, exclude=False, threshold=None, always_include=False):
+    return {sci: {"exclude": exclude, "threshold": threshold,
+                  "always_include": always_include}}
+
+
+def test_excluded_species_never_events_even_at_high_confidence():
+    # The Wood Duck contract: the operator's veto beats any confidence.
+    accepted, _ = gate.decide(
+        [(CHICKADEE, 0.99)], allowed_species=LOCALS,
+        rules=rules_for("Poecile atricapillus", exclude=True))
+    assert accepted == []
+
+
+def test_exclude_wins_over_always_include():
+    accepted, _ = gate.decide(
+        [(AFRICAN, 0.99)], allowed_species=LOCALS,
+        rules=rules_for("Melaenornis pammelaina", exclude=True,
+                        always_include=True))
+    assert accepted == []
+
+
+def test_per_species_threshold_is_an_extra_floor():
+    rules = rules_for("Poecile atricapillus", threshold=0.80)
+    accepted, _ = gate.decide([(CHICKADEE, 0.72)],
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == []
+    accepted, _ = gate.decide([(CHICKADEE, 0.85)],
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == [(CHICKADEE, 0.85)]
+
+
+def test_per_species_threshold_only_binds_its_own_species():
+    rules = rules_for("Poecile atricapillus", threshold=0.90)
+    accepted, _ = gate.decide([(FINCH, 0.72)],
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == [(FINCH, 0.72)]
+
+
+def test_per_species_threshold_never_lowers_the_global_bar():
+    # "Extra floor" means exactly that: a rule under the yard's own bar is
+    # inert, never a loophole.
+    rules = rules_for("Poecile atricapillus", threshold=0.50)
+    accepted, _ = gate.decide([(CHICKADEE, 0.60)],
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == []
+
+
+def test_wind_still_raises_a_per_species_threshold():
+    # Per-species 0.70 on a windy day: the bar is max(0.70, 0.75).
+    rules = rules_for("Poecile atricapillus", threshold=0.70)
+    windy_mph = gate.WIND_GATE_MPH + 5
+    accepted, _ = gate.decide([(CHICKADEE, 0.72)], wind_mph=windy_mph,
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == []
+    accepted, _ = gate.decide([(CHICKADEE, 0.76)], wind_mph=windy_mph,
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == [(CHICKADEE, 0.76)]
+
+
+def test_always_include_opens_a_hole_in_the_mask_only():
+    # A real local the geo model is shy about: not in allowed_species, but
+    # the flag lets it through -- at threshold, not below it.
+    rules = rules_for("Melaenornis pammelaina", always_include=True)
+    accepted, _ = gate.decide([(AFRICAN, 0.80)],
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == [(AFRICAN, 0.80)]
+    accepted, _ = gate.decide([(AFRICAN, 0.50)],
+                              allowed_species=LOCALS, rules=rules)
+    assert accepted == []
+
+
+def test_no_rules_and_empty_rules_are_todays_behavior():
+    for rules in (None, {}):
+        accepted, _ = gate.decide([(CHICKADEE, 0.88)],
+                                  allowed_species=LOCALS, rules=rules)
+        assert accepted == [(CHICKADEE, 0.88)]
+
+
+# --- the confirm hold (issue #506) -------------------------------------------
+# The test contract's band: false positives clustered 0.25-0.61, true locals
+# 0.89-0.92, skip bar 0.85 -- a 0.72 one-off must never mint a life-list row
+# while a 0.90 still one-shots.
+
+def test_skip_bar_publishes_on_the_first_window():
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    assert c.observe(CHICKADEE, 1000, 0.90, "a/1000-c.wav") == ("publish", [])
+
+
+def test_mid_band_holds_then_confirms_with_the_best_of_the_two():
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    assert c.observe(CHICKADEE, 1000, 0.72, "a/1000-c.wav") == ("hold", [])
+    action, held = c.observe(CHICKADEE, 1010, 0.74, "a/1010-c.wav")
+    assert action == "confirm"
+    assert [w["clip"] for w in held] == ["a/1000-c.wav", "a/1010-c.wav"]
+    best = max(held, key=lambda w: w["confidence"])
+    assert (best["confidence"], best["clip"]) == (0.74, "a/1010-c.wav")
+
+
+def test_unconfirmed_hold_drops_at_the_gap_and_a_later_window_is_fresh():
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    c.observe(CHICKADEE, 1000, 0.72, "a/1000-c.wav")
+    assert c.expire(1060) == []          # the gap has not passed yet
+    dropped = c.expire(1061)
+    assert dropped == [{"label": CHICKADEE, "windows": 1, "best_conf": 0.72,
+                        "clips": ["a/1000-c.wav"]}]
+    # No event, no clip, no life-list row -- and the next window starts a
+    # brand-new hold rather than inheriting the dead one.
+    assert c.observe(CHICKADEE, 1100, 0.72, "a/1100-c.wav") == ("hold", [])
+
+
+def test_break_glass_windows_1_restores_first_window_publish():
+    c = gate.ConfirmTracker(windows=1, skip_conf=0.85)
+    assert c.observe(CHICKADEE, 1000, 0.72, "a/1000-c.wav") == ("publish", [])
+
+
+def test_confirmed_species_passes_through_while_the_visit_is_open():
+    # After the release the visit is open and published; a mid-band window
+    # inside the gap is an ordinary extend, not a new hold.
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    c.observe(CHICKADEE, 1000, 0.72, "a/1000-c.wav")
+    c.observe(CHICKADEE, 1010, 0.74, "a/1010-c.wav")
+    assert c.observe(CHICKADEE, 1020, 0.70, "a/1020-c.wav") == ("publish", [])
+
+
+def test_skip_publish_also_opens_the_pass_through():
+    # A 0.90 opener followed by a 0.70 ten seconds later: the second window
+    # extends the open visit -- holding it would re-ask a settled question.
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    c.observe(CHICKADEE, 1000, 0.90, "a/1000-c.wav")
+    assert c.observe(CHICKADEE, 1010, 0.70, "a/1010-c.wav") == ("publish", [])
+
+
+def test_pass_through_expires_with_the_visit_gap():
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    c.observe(CHICKADEE, 1000, 0.90, "a/1000-c.wav")
+    c.expire(1061)
+    # The visit is gone on both trackers' clocks; the mid-band window is a
+    # fresh question again.
+    assert c.observe(CHICKADEE, 1070, 0.72, "a/1070-c.wav") == ("hold", [])
+
+
+def test_a_skip_window_seconds_a_held_one():
+    # 0.72 held, then a 0.90: one publish, best-first is the caller's job
+    # and both windows come back so the visit stats stay honest.
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    c.observe(CHICKADEE, 1000, 0.72, "a/1000-c.wav")
+    action, held = c.observe(CHICKADEE, 1010, 0.90, "a/1010-c.wav")
+    assert action == "confirm"
+    assert [w["confidence"] for w in held] == [0.72, 0.90]
+
+
+def test_held_species_interleave_independently():
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    assert c.observe(CHICKADEE, 1000, 0.72, "c1")[0] == "hold"
+    assert c.observe(FINCH, 1005, 0.70, "f1")[0] == "hold"
+    assert c.observe(CHICKADEE, 1010, 0.74, "c2")[0] == "confirm"
+    # The finch's hold is untouched by the chickadee's release.
+    assert c.observe(FINCH, 1015, 0.71, "f2")[0] == "confirm"
+
+
+def test_held_windows_carry_rms_and_windy_for_the_event():
+    c = gate.ConfirmTracker(windows=2, skip_conf=0.85)
+    c.observe(CHICKADEE, 1000, 0.72, "c1", rms=0.02, windy=True)
+    _, held = c.observe(CHICKADEE, 1010, 0.74, "c2", rms=0.03, windy=False)
+    assert held[0]["rms"] == 0.02 and held[0]["windy"] is True
+    assert held[1]["rms"] == 0.03 and held[1]["windy"] is False
+
+
+def test_out_of_order_observe_never_rewinds_the_visit_clock():
+    # The confirm release feeds the BEST window first (it opens the visit)
+    # and the others after, in ts order -- so VisitTracker can see an older
+    # ts mid-visit. The clock must hold at the newest moment or the visit
+    # would expire while the confirm tracker still calls it open, and the
+    # next window would double-publish one visit.
+    v = gate.VisitTracker(gap_s=60)
+    v.observe(CHICKADEE, 1010, 0.74, "c-best")     # the release's opener
+    v.observe(CHICKADEE, 1000, 0.72, "c-held")     # the older held window
+    assert v.expire(1065) == []                    # 1010 + 60 not yet passed
+    assert v.observe(CHICKADEE, 1069, 0.5, "c3")[0] == "extend"
+
+
 # --- event shaping and clip paths --------------------------------------------
 
 def test_shape_event_shape():

@@ -21,6 +21,24 @@
 #      WIND_GATE_MPH the effective threshold becomes WINDY_THRESHOLD and
 #      surviving events carry wind_suspect=True, so a gusty afternoon thins
 #      the record honestly rather than silently fabricating or suppressing.
+#   4. Per-species operator rules (issue #506): a `rules` map from the box's
+#      own earl.db (species_rules, written only by the Aviary). `exclude`
+#      drops the species outright -- the operator's standing veto, and it
+#      wins over everything below it; a per-species `threshold` is an EXTRA
+#      floor (it can raise the global bar, never lower it, and wind still
+#      raises the result); `always_include` opens a one-species hole in the
+#      region mask for a real local the geo model is shy about -- the mask
+#      itself stays mandatory, and the window still owes the threshold and
+#      the confirm hold. No rules map is exactly today's behavior.
+#
+# Between decide() and the visit tracker sits the confirm hold (issue #506,
+# ConfirmTracker below): the mid-band answer to false positives that
+# BirdNET-Go solves with per-window re-inference. Phase 0's numbers make the
+# bands: false positives clustered 0.25-0.61, true locals 0.89-0.92, so a
+# window at or above CONFIRM_SKIP (0.85) publishes immediately and one in
+# the 0.65-0.85 band must be seconded by another accepted window of the same
+# species inside VISIT_GAP_S before anything reaches the bus. A one-off
+# 0.72 never mints a life-list row; a clear bird still one-shots.
 #
 # Everything here speaks plain Python types (label/confidence pairs), not
 # DataFrames -- the daemon flattens BirdNET's result before calling in, and
@@ -38,6 +56,16 @@ DEFAULT_THRESHOLD = 0.65
 WIND_GATE_MPH = 15.0    # above this, the wind rules kick in
 WINDY_THRESHOLD = 0.75  # the raised bar while they do
 VISIT_GAP_S = 60        # same-species detections closer than this are one visit
+
+# The confirm hold (issue #506). Windows in the 0.65-0.85 band -- above the
+# global threshold, below every true local Phase 0 measured -- wait for a
+# second accepted window of the same species inside VISIT_GAP_S (the one
+# timer; no second gap is invented) before a visit opens. CONFIRM_WINDOWS=1
+# is the break-glass that restores publish-on-first-window (station.env, for
+# a yard the hold turns too quiet); the skip bar keeps mom's clear birds --
+# the 0.86 nighthawk / 0.88 waxwing class -- one-shotting.
+CONFIRM_WINDOWS = 2     # accepted windows needed below the skip bar
+CONFIRM_SKIP = 0.85     # at/above this, publish on the first window
 
 # BirdNET's non-bird "species" labels for people. Matched against the label's
 # scientific half, prefix-wise, because the taxonomy spells them "Human vocal",
@@ -199,7 +227,7 @@ def effective_threshold(threshold, wind_mph):
 
 
 def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
-           allowed_species=None):
+           allowed_species=None, rules=None):
     """The gate. `predictions` is [(label, confidence), ...] for ONE window
     (BirdNET's top-k, any order); returns (accepted, windy) where `accepted`
     is the filtered [(label, confidence), ...] best-first and `windy` says
@@ -211,6 +239,17 @@ def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
     is a price of the invariant, not a bug. Lower-ranked human labels are
     simply dropped: the window was about the bird, the person was incidental
     and still never becomes an event or a clip.
+
+    `rules` (issue #506) is {species_sci: {"exclude": bool, "threshold":
+    float|None, "always_include": bool}} -- the operator's per-species rules
+    from THIS box's earl.db, loaded by the caller (this module stays free of
+    sqlite). None or {} is exactly today's behavior. `exclude` wins over
+    everything, `always_include` included: the veto is the point. A
+    per-species threshold is an extra floor -- max()ed against the global
+    before the wind raise, so it can tighten the gate for one species but
+    never quietly loosen it below the yard's bar. `always_include` bypasses
+    only the region mask; speech, the threshold, and the caller's confirm
+    hold still apply -- it is a one-species hole, not a way to run unmasked.
     """
     ranked = sorted(predictions, key=lambda p: -p[1])
     if ranked and is_human(ranked[0][0]):
@@ -221,11 +260,21 @@ def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
     accepted = []
     for label, conf in ranked:
         if conf < bar:
-            break  # ranked best-first: nothing below clears either
+            break  # ranked best-first: nothing below clears either (a
+            # per-species bar only ever sits at or above this one)
         if is_human(label) or is_noise(label):
             continue
         sci, _ = split_label(label)
-        if allowed_species is not None and sci not in allowed_species:
+        rule = rules.get(sci) if rules else None
+        if rule:
+            if rule.get("exclude"):
+                continue
+            species_floor = rule.get("threshold")
+            if species_floor is not None and conf < effective_threshold(
+                    max(threshold, species_floor), wind_mph):
+                continue
+        if (allowed_species is not None and sci not in allowed_species
+                and not (rule and rule.get("always_include"))):
             continue
         accepted.append((label, conf))
     return accepted, windy
@@ -302,7 +351,13 @@ class VisitTracker:
                 "clip": candidate_clip,
             }
             return "open", candidate_clip
-        visit["last_ts"] = ts
+        # max(), not assignment (issue #506): a confirm release feeds the
+        # BEST held window first (it opens the visit) and the others after,
+        # in ts order -- so an observation can arrive with a ts older than
+        # the visit's last. The visit's clock must never run backwards, or
+        # it would expire while the confirm tracker still calls the species
+        # open and the next window would double-publish one visit.
+        visit["last_ts"] = max(visit["last_ts"], ts)
         visit["windows"] += 1
         if confidence > visit["best_conf"]:
             visit["best_conf"] = confidence
@@ -325,6 +380,115 @@ class VisitTracker:
                 })
                 del self._open[sci]
         return closed
+
+
+class ConfirmTracker:
+    """The confidence-gated confirm (issue #506): a hold on windows we
+    already computed, sitting BETWEEN decide() and VisitTracker.observe().
+    Deliberately not BirdNET-Go's overlap -- that re-runs inference at 0.3 s
+    hops, which is death on a J5005; this spends zero extra model time.
+
+    Per accepted window, observe() answers one of three things:
+      "publish"  proceed to the visit tracker with THIS window, now --
+                 because the config says first-window (windows <= 1, the
+                 station break-glass), or the confidence clears the skip
+                 bar (a true local one-shots), or the species is already
+                 confirmed-open inside the gap (the window extends a visit
+                 that already published; holding it would re-litigate a
+                 settled question).
+      "hold"     the window is in the 0.65-0.85 band with no confirmation
+                 yet: nothing publishes, nothing touches disk. The caller
+                 keeps the audio bytes so the clip can still be written if
+                 confirmation comes.
+      "confirm"  the second (Nth) accepted window landed inside the gap:
+                 the returned list is every held window PLUS this one, ts
+                 ascending. The caller opens the visit with the BEST of
+                 them (its clip, its confidence -- the published opening is
+                 the strongest evidence in hand) and feeds the rest through
+                 as ordinary observations so the visit's clock and stats
+                 stay honest. A skip-bar window seconding a held one takes
+                 this path too: one publish, best wins.
+
+    The gap is VISIT_GAP_S -- the same timer as visits, on purpose (the
+    issue's contract: reuse, do not invent a second one). Expiry rides the
+    caller's once-per-window expire(now_ts) exactly like VisitTracker's --
+    no threads, no timers (the fork-trap rule). A hold whose gap passes
+    with no second window is DROPPED: expire() returns it for the caller's
+    log line ("confirm dropped: ...") and clip-byte cleanup, and a later
+    window of the species starts a fresh hold. Pure: timestamps come in as
+    arguments, and the held dicts carry whatever the caller will need to
+    shape the eventual event (rms, windy) without this class knowing what
+    they mean.
+    """
+
+    def __init__(self, windows=CONFIRM_WINDOWS, skip_conf=CONFIRM_SKIP,
+                 gap_s=VISIT_GAP_S):
+        self._windows = windows
+        self._skip = skip_conf
+        self._gap = gap_s
+        self._pending = {}   # species_sci -> [window dict, ...] ts-ascending
+        self._open = {}      # species_sci -> last confirmed-window ts
+
+    def observe(self, label, ts, confidence, clip, rms=None, windy=False):
+        """One accepted detection. Returns (action, windows) -- see the
+        class docstring; `windows` is non-empty only for "confirm"."""
+        sci, _ = split_label(label)
+        win = {"label": label, "ts": ts, "confidence": confidence,
+               "clip": clip, "rms": rms, "windy": windy}
+
+        # A confirmed species inside the gap: the visit is open and already
+        # published; this window is an extend, not a new question.
+        last = self._open.get(sci)
+        if last is not None:
+            if ts - last <= self._gap:
+                self._open[sci] = ts
+                return "publish", []
+            del self._open[sci]   # stale mark; fall through to the rules
+
+        pending = self._pending.get(sci)
+        # Belt-and-braces beside expire(), the VisitTracker precedent: a
+        # stale hold observe() sees before the caller's sweep does is
+        # discarded here so the two can't disagree about the boundary (the
+        # caller's expire() is where the drop earns its log line).
+        if pending and ts - pending[-1]["ts"] > self._gap:
+            del self._pending[sci]
+            pending = None
+
+        if self._windows <= 1 or confidence >= self._skip:
+            self._open[sci] = ts
+            if pending:
+                del self._pending[sci]
+                return "confirm", pending + [win]
+            return "publish", []
+
+        pending = self._pending.setdefault(sci, [])
+        pending.append(win)
+        if len(pending) >= self._windows:
+            del self._pending[sci]
+            self._open[sci] = ts
+            return "confirm", pending
+        return "hold", []
+
+    def expire(self, now_ts):
+        """Drop every hold whose gap has passed unconfirmed; returns their
+        stats for the caller's log line and clip-byte cleanup -- (label,
+        windows, best_conf, clips). Also forgets confirmed-open marks past
+        the gap, mirroring the visit tracker's own close so the two clocks
+        can never drift apart. Call once per window, before observing."""
+        dropped = []
+        for sci, pending in list(self._pending.items()):
+            if now_ts - pending[-1]["ts"] > self._gap:
+                best = max(pending, key=lambda w: w["confidence"])
+                dropped.append({
+                    "label": best["label"], "windows": len(pending),
+                    "best_conf": best["confidence"],
+                    "clips": [w["clip"] for w in pending],
+                })
+                del self._pending[sci]
+        for sci, last in list(self._open.items()):
+            if now_ts - last > self._gap:
+                del self._open[sci]
+        return dropped
 
 
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]+")

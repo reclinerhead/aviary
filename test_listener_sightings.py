@@ -127,7 +127,7 @@ def _fingerprint(conn):
     """Every table's columns (name, type, notnull, default, pk position) --
     the shape a fresh db and an upgraded old one must land on identically."""
     fp = {}
-    for t in ("locations", "sightings", "life_list"):
+    for t in ("locations", "sightings", "life_list", "species_rules"):
         fp[t] = [(r["name"], r["type"], r["notnull"], r["dflt_value"], r["pk"])
                  for r in conn.execute("PRAGMA table_info(%s)" % t)]
     return fp
@@ -282,6 +282,69 @@ def test_upgraded_db_still_takes_a_park_session(tmp_path):
                         ).fetchone()["c"] == 1   # Home untouched (chickadee)
     assert conn.execute("SELECT COUNT(*) c FROM life_list WHERE location_id=2"
                         ).fetchone()["c"] == 1   # the park finch
+
+
+# --- per-species rules (issue #506) ------------------------------------------
+# connect() creates species_rules as part of the shape every store lands on
+# (the fingerprint test asserts fresh == upgraded); the Aviary writes it and
+# the listener reads it through earl.load_species_rules -- covered here
+# because this file already owns the store's schema and earl's pure helpers.
+
+def test_species_rules_table_exists_and_roundtrips(conn):
+    conn.execute(
+        "INSERT INTO species_rules (species_sci, exclude, threshold,"
+        " always_include, updated_ts) VALUES ('Aix sponsa', 1, NULL, 0, 5)")
+    conn.commit()
+    row = conn.execute("SELECT * FROM species_rules").fetchone()
+    assert (row["species_sci"], row["exclude"], row["threshold"],
+            row["always_include"]) == ("Aix sponsa", 1, None, 0)
+
+
+def test_species_rules_created_on_an_upgraded_old_store(tmp_path):
+    # A pre-#506 (indeed pre-#232) file gains the table on connect -- the
+    # CREATE IF NOT EXISTS is the whole upgrade for a new table.
+    path = str(tmp_path / "old-earl.db")
+    _make_pre232_db(path)
+    conn = sightings.connect(path)
+    assert conn.execute("SELECT COUNT(*) c FROM species_rules"
+                        ).fetchone()["c"] == 0
+    conn.close()
+
+
+def test_load_species_rules_maps_rows_to_decide_shape(tmp_path):
+    path = str(tmp_path / "earl.db")
+    conn = sightings.connect(path)
+    conn.executescript("""
+        INSERT INTO species_rules VALUES ('Aix sponsa', 1, NULL, 0, 5);
+        INSERT INTO species_rules VALUES ('Poecile atricapillus', 0, 0.8, 0, 5);
+        INSERT INTO species_rules VALUES ('Antigone canadensis', 0, NULL, 1, 5);
+    """)
+    conn.commit()
+    conn.close()
+    assert earl.load_species_rules(path) == {
+        "Aix sponsa": {"exclude": True, "threshold": None,
+                       "always_include": False},
+        "Poecile atricapillus": {"exclude": False, "threshold": 0.8,
+                                 "always_include": False},
+        "Antigone canadensis": {"exclude": False, "threshold": None,
+                                "always_include": True},
+    }
+
+
+def test_load_species_rules_quiet_on_missing_store_or_table(tmp_path):
+    # Unset path, a file that doesn't exist yet, and a pre-#506 store
+    # without the table are all "no rules yet", never an error -- and the
+    # read-only open must not create the store as a side effect.
+    assert earl.load_species_rules(None) == {}
+    missing = str(tmp_path / "nope.db")
+    assert earl.load_species_rules(missing) == {}
+    assert not os.path.exists(missing)
+    bare = str(tmp_path / "pre506.db")
+    raw = sightings.sqlite3.connect(bare)
+    raw.execute("CREATE TABLE sightings (id INTEGER PRIMARY KEY)")
+    raw.commit()
+    raw.close()
+    assert earl.load_species_rules(bare) == {}
 
 
 # --- the wire ----------------------------------------------------------------

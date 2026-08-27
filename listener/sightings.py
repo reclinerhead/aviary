@@ -143,6 +143,27 @@ CREATE TABLE IF NOT EXISTS life_list (
     location_id    INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (species_sci, location_id)
 );
+
+-- Per-species operator rules (issue #506), THIS box only -- rules never
+-- sync across stations (birdhouse's ignore list says nothing about
+-- orchid's yard). The Aviary is the writer (its second earl.db write,
+-- after #216's removal); earl-listener reads it read-only every ~60 s and
+-- hands gate.decide() the map. Created here so the table is part of the
+-- shape every store lands on, fresh or upgraded -- the CREATE IF NOT
+-- EXISTS is the whole upgrade, no ALTER needed for a new table.
+--   exclude        drop the species forever going forward (the operator's
+--                  veto; history is untouched -- deletion stays Remove's)
+--   threshold      extra confidence floor; NULL = the global
+--                  MERLE_EARL_THRESHOLD (wind still raises, never lowers)
+--   always_include bypass the region mask for a real local the geo model
+--                  is shy about (still owes threshold + confirm + speech)
+CREATE TABLE IF NOT EXISTS species_rules (
+    species_sci    TEXT PRIMARY KEY,
+    exclude        INTEGER NOT NULL DEFAULT 0,
+    threshold      REAL,
+    always_include INTEGER NOT NULL DEFAULT 0,
+    updated_ts     INTEGER NOT NULL
+);
 """
 
 

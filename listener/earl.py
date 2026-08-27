@@ -100,6 +100,25 @@
 #                         gate.DEFAULT_GATE_FLOOR; speech kills at the
 #                         lower gate.SPEECH_FLOOR regardless -- the
 #                         invariant is not configurable)
+#   MERLE_EARL_CONFIRM_WINDOWS
+#                         accepted windows needed before a mid-band species
+#                         publishes (default gate.CONFIRM_WINDOWS = 2).
+#                         1 is the break-glass that restores publish-on-
+#                         first-window everywhere (issue #506) -- for a
+#                         station whose yard the hold turns too quiet.
+#   MERLE_EARL_CONFIRM_SKIP
+#                         confidence at/above which the confirm hold is
+#                         skipped and the first window publishes (default
+#                         gate.CONFIRM_SKIP = 0.85 -- above Phase 0's
+#                         false-positive ceiling with margin; true locals
+#                         one-shot exactly as before #506)
+#   MERLE_EARL_DB         the bird record, READ here for the species_rules
+#                         table (issue #506: the operator's per-species
+#                         exclude/threshold/map-override rules, written by
+#                         the Aviary, re-read every ~60 s). Read-only open;
+#                         unset means no rules, never an error -- the
+#                         listener keeps its no-default posture for the
+#                         things it OWNS, and this file is sightings'.
 #   MERLE_EARL_CLIPS      clip dir (default "clips" under WorkingDirectory;
 #                         the unit points it at /srv/media-cache/earl)
 #   MERLE_BIRDNET_LIBRARY birdnet.load(..., library=...) for BOTH model
@@ -146,6 +165,7 @@ YAMNET_HOP_SAMPLES = 7800      # half-frame hop, the variant's convention
 YAMNET_LABEL_MEMBER = "yamnet_label_list.txt"   # rides inside the .tflite (zip)
 GATE_TOP_K = 7                        # classes handed to gate.route per window
 GATE_STATS_WINDOWS = 100              # gate counter log cadence (~5 min)
+RULES_RELOAD_S = 60                   # species_rules re-read cadence (#506)
 
 # read_exact's third answer, distinct from EOF's None: the pipe is still open
 # but nothing is coming. A sentinel object rather than a falsy value so the
@@ -269,6 +289,40 @@ def birdnet_load_kwargs(environ=None):
     environ = os.environ if environ is None else environ
     library = environ.get("MERLE_BIRDNET_LIBRARY", "").strip()
     return {"library": library} if library else {}
+
+
+def load_species_rules(db_path):
+    """The operator's per-species rules (issue #506) from THIS box's
+    earl.db -- the species_rules table the Aviary writes (its second write
+    after #216) and sightings' connect() creates. Returns exactly what
+    gate.decide's `rules` argument takes: {species_sci: {"exclude": bool,
+    "threshold": float|None, "always_include": bool}}.
+
+    Read-only URI open, deliberately: the listener may neither create the
+    store (the removal route's write-mode lesson, one process over) nor
+    hold anything against the two processes that do write it. A missing
+    file, an unset path, or a pre-#506 store without the table is an empty
+    map -- a box before its first rule, not an error. Anything else raises
+    and the caller keeps the rules it had."""
+    if not db_path or not os.path.exists(db_path):
+        return {}
+    import sqlite3
+    conn = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro",
+                           uri=True)
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT species_sci, exclude, threshold, always_include"
+                " FROM species_rules").fetchall()
+        except sqlite3.OperationalError:
+            return {}   # pre-#506 store: no table yet
+        return {sci: {"exclude": bool(exclude),
+                      "threshold": (float(floor) if floor is not None
+                                    else None),
+                      "always_include": bool(always)}
+                for sci, exclude, floor, always in rows}
+    finally:
+        conn.close()
 
 
 def allowed_species_set(lat, lon, week):
@@ -400,12 +454,14 @@ def load_yamnet(np, log):
 
 
 def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
-                  clips_dir, queue, wind_mph):
+                  clips_dir, queue, wind_mph, confirm_windows, confirm_skip,
+                  rules_db):
     """Worker main (spawn target). Owns: the capture subprocess (restarted
     with backoff forever), the YAMNet gate, the BirdNET session, the geo
-    mask, the clip ring. Reports to the parent over `queue` as
-    ("state", name, state) and ("event", name, payload). Reads current wind
-    from `wind_mph` (a shared Value; negative means unknown)."""
+    mask, the clip ring, the confirm hold and the species-rules reload
+    (#506). Reports to the parent over `queue` as ("state", name, state)
+    and ("event", name, payload). Reads current wind from `wind_mph` (a
+    shared Value; negative means unknown)."""
     import numpy as np
 
     import birdnet
@@ -429,8 +485,25 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
     sound_visits = gate.VisitTracker()   # notable-sound visits (#174) --
     # separate tracker: AudioSet class names and species names are different
     # vocabularies and must not share a debounce namespace
+    confirms = gate.ConfirmTracker(confirm_windows, confirm_skip)   # #506
+    # A held window's raw audio, keyed by its candidate clip path, so the
+    # clip can still be written if a second window confirms -- and simply
+    # dropped with the hold if none does (a one-off 0.72 leaves no file).
+    # Outside the capture loop, like the trackers: a hold rides out a brief
+    # source blip exactly as an open visit does.
+    held_clips = {}
+    held_await = []   # held paths still waiting on their post-roll window
     counters = {"windows": 0, "speech": 0, "notable": 0, "listen": 0,
                 "ungated": 0, "gate_ms": 0.0}
+
+    # The operator's per-species rules (#506), re-read every RULES_RELOAD_S
+    # so an Aviary edit lands within a minute without a restart. No
+    # MERLE_EARL_DB on the unit means no rules -- said once, out loud.
+    rules = {}
+    rules_ts = 0.0
+    if not rules_db:
+        log("species rules: MERLE_EARL_DB not set on this unit -- running "
+            "without per-species rules")
     with model.predict_session(top_k=3, show_stats=None) as session:
         while True:
             if birdnet_week() != week:
@@ -490,6 +563,15 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                         log(f"clip write failed ({relpath}): {e}")
                 pending = []
 
+                # Held windows collect their post-roll the same way pending
+                # writes do (#506) -- in memory, though: nothing touches
+                # disk until a second window confirms the species.
+                for relpath in held_await:
+                    chunks = held_clips.get(relpath)
+                    if chunks is not None:
+                        chunks.append(buf)
+                held_await = []
+
                 audio = (np.frombuffer(buf, np.int16)
                          .astype(np.float32) / 32768.0)
                 rms = float(np.sqrt((audio ** 2).mean()))
@@ -502,12 +584,39 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                     queue.put(("state", name, state))
 
                 ts = time.time()
+                if rules_db and ts - rules_ts >= RULES_RELOAD_S:
+                    first = rules_ts == 0.0
+                    rules_ts = ts
+                    try:
+                        fresh = load_species_rules(rules_db)
+                    except Exception as e:
+                        log(f"species rules reload failed ({e}) -- keeping "
+                            f"the {len(rules)} in hand")
+                    else:
+                        if first or fresh != rules:
+                            excluded = sum(1 for r in fresh.values()
+                                           if r["exclude"])
+                            log(f"species rules: {len(fresh)} loaded "
+                                f"({excluded} excluded)")
+                        rules = fresh
+
                 for tracker in (visits, sound_visits):
                     for closed in tracker.expire(ts):
                         _, common = gate.split_label(closed["label"])
                         log(f"visit closed: {common}, {closed['windows']} "
                             f"windows, {closed['duration_s']:.0f}s, "
                             f"best {closed['best_conf']:.2f}")
+                # Unconfirmed holds past the gap are dropped -- no event,
+                # no clip, no life-list row (#506) -- and the journal says
+                # so, because a bird the hold silenced should be findable.
+                for gone in confirms.expire(ts):
+                    _, common = gate.split_label(gone["label"])
+                    for clip in gone["clips"]:
+                        held_clips.pop(clip, None)
+                    n = gone["windows"]
+                    log(f"confirm dropped: {common}, {n} window"
+                        f"{'' if n == 1 else 's'}, "
+                        f"best {gone['best_conf']:.2f}")
 
                 wind = wind_mph.value if wind_mph.value >= 0 else None
                 windy = wind is not None and wind > gate.WIND_GATE_MPH
@@ -580,38 +689,86 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                 predictions = list(zip(df["species_name"], df["confidence"]))
                 accepted, windy = gate.decide(
                     predictions, threshold=threshold, wind_mph=wind,
-                    allowed_species=allowed)
+                    allowed_species=allowed, rules=rules)
                 if not accepted:
                     prev_window = buf
                     continue
 
                 for label, conf in accepted:
-                    action, relpath = visits.observe(
-                        label, ts, conf, gate.clip_relpath(name, ts, label))
-                    if action == "extend":
-                        continue
-                    pending.append((relpath, list(context)))
+                    candidate = gate.clip_relpath(name, ts, label)
                     common = gate.split_label(label)[1]
-                    if action == "open":
-                        payload = gate.shape_event(
-                            source=name, ts=ts, label=label, confidence=conf,
-                            clip_relpath=relpath, windy=windy, rms=rms)
-                        queue.put(("event", name, payload))
-                        log(f"{common} {conf:.2f}"
-                            f"{' (wind-suspect)' if windy else ''}")
-                    else:   # "best": rewrite the visit's clip in place
-                        log(f"{common} {conf:.2f} -- visit best, "
-                            f"clip upgraded")
+                    # The confirm hold (#506) sits between decide() and the
+                    # visit tracker: a mid-band window waits for a second
+                    # accepted window of its species before anything
+                    # publishes; the skip bar and the break-glass config
+                    # pass straight through. Speech never gets here --
+                    # decide() already killed it (rule 1 is upstream of
+                    # everything, including this).
+                    verdict, held = confirms.observe(
+                        label, ts, conf, candidate, rms=rms, windy=windy)
+                    if verdict == "hold":
+                        held_clips[candidate] = list(context)
+                        held_await.append(candidate)
+                        log(f"{common} {conf:.2f} -- held for a second "
+                            "window")
+                        continue
+                    if verdict == "publish":
+                        window_batch = [{"label": label, "ts": ts,
+                                         "confidence": conf,
+                                         "clip": candidate, "rms": rms,
+                                         "windy": windy}]
+                    else:   # "confirm": the best held window opens the
+                        # visit and publishes; the rest feed through as
+                        # ordinary observations so the visit's clock and
+                        # stats stay honest (they extend, never publish).
+                        best = max(held, key=lambda w: w["confidence"])
+                        window_batch = ([best]
+                                        + [w for w in held if w is not best])
+                    for w in window_batch:
+                        action, relpath = visits.observe(
+                            w["label"], w["ts"], w["confidence"], w["clip"])
+                        if action == "extend":
+                            held_clips.pop(w["clip"], None)
+                            continue
+                        held_bytes = held_clips.pop(w["clip"], None)
+                        if held_bytes is not None:
+                            # A held window's bytes, post-roll already in
+                            # hand: the clip the hold delayed is written
+                            # the moment its species confirms.
+                            try:
+                                write_clip(clips_dir, relpath, held_bytes)
+                            except OSError as e:
+                                log(f"clip write failed ({relpath}): {e}")
+                        else:
+                            pending.append((relpath, list(context)))
+                        w_common = gate.split_label(w["label"])[1]
+                        if action == "open":
+                            payload = gate.shape_event(
+                                source=name, ts=w["ts"], label=w["label"],
+                                confidence=w["confidence"],
+                                clip_relpath=relpath, windy=w["windy"],
+                                rms=w["rms"])
+                            queue.put(("event", name, payload))
+                            log(f"{w_common} {w['confidence']:.2f}"
+                                f"{' (wind-suspect)' if w['windy'] else ''}")
+                        else:   # "best": rewrite the visit's clip in place
+                            log(f"{w_common} {w['confidence']:.2f} -- visit "
+                                "best, clip upgraded")
                 prev_window = buf
 
             # EOF: finish clips with the context in hand (a 6s clip beats a
-            # dangling event pointer). Visits deliberately survive the drop.
+            # dangling event pointer). Visits deliberately survive the drop,
+            # and so do confirm holds (#506) -- their bytes just stop
+            # waiting for a post-roll the dead capture will never deliver
+            # (a confirmed release writes the 6s it has, the pending-at-EOF
+            # rule one stage earlier).
             for relpath, chunks in pending:
                 try:
                     write_clip(clips_dir, relpath, chunks)
                 except OSError as e:
                     log(f"clip write failed ({relpath}): {e}")
             pending = []
+            held_await = []
 
             capture.wait()
             queue.put(("state", name, "offline"))
@@ -629,7 +786,9 @@ class Earl:
     """The orchestrator. All MQTT lives here (paho's network thread never
     shares a process with birdnet's forks); all audio lives in the workers."""
 
-    def __init__(self, commands, latlon, threshold, gate_floor, clips_dir):
+    def __init__(self, commands, latlon, threshold, gate_floor, clips_dir,
+                 confirm_windows=gate.CONFIRM_WINDOWS,
+                 confirm_skip=gate.CONFIRM_SKIP, rules_db=None):
         self._ctx = multiprocessing.get_context("spawn")
         self._queue = self._ctx.Queue()
         self._wind = self._ctx.Value("d", -1.0)   # <0 = unknown
@@ -639,6 +798,9 @@ class Earl:
         self._threshold = threshold
         self._gate_floor = gate_floor
         self._clips_dir = clips_dir
+        self._confirm_windows = confirm_windows
+        self._confirm_skip = confirm_skip
+        self._rules_db = rules_db
         self._states = {name: "starting" for name in commands}
         self._last_window = {name: None for name in commands}
         self._workers = {}
@@ -694,7 +856,8 @@ class Earl:
             target=source_worker, name=f"earl-{name}",
             args=(name, argv, redacted, self._latlon, self._threshold,
                   self._gate_floor, self._clips_dir, self._queue,
-                  self._wind),
+                  self._wind, self._confirm_windows, self._confirm_skip,
+                  self._rules_db),
             daemon=False)
         worker.start()
         self._workers[name] = worker
@@ -706,9 +869,13 @@ class Earl:
         self._client.loop_start()
         for name in self._commands:
             self._spawn(name)
+        confirm = ("off (publish on first window)"
+                   if self._confirm_windows <= 1
+                   else f"{self._confirm_windows} windows, "
+                        f"skip at {self._confirm_skip}")
         print(f"[earl] listening: {', '.join(self._commands)} "
-              f"(threshold {self._threshold}, lat/lon {self._latlon[0]},"
-              f"{self._latlon[1]})", flush=True)
+              f"(threshold {self._threshold}, confirm {confirm}, "
+              f"lat/lon {self._latlon[0]},{self._latlon[1]})", flush=True)
 
         try:
             while True:
@@ -773,9 +940,19 @@ def main():
     gate_floor = float(os.environ.get("MERLE_EARL_GATE_FLOOR",
                                       gate.DEFAULT_GATE_FLOOR))
     clips_dir = os.environ.get("MERLE_EARL_CLIPS", "").strip() or "clips"
+    confirm_windows = int(os.environ.get("MERLE_EARL_CONFIRM_WINDOWS",
+                                         gate.CONFIRM_WINDOWS))
+    confirm_skip = float(os.environ.get("MERLE_EARL_CONFIRM_SKIP",
+                                        gate.CONFIRM_SKIP))
+    # The bird record, read here only for species_rules (#506). Optional on
+    # purpose: the file is sightings' to own and create, and a unit without
+    # the env runs ruleless (each worker says so at startup).
+    rules_db = os.environ.get("MERLE_EARL_DB", "").strip() or None
     commands = source_commands()
     bus.broker_address()   # fail now, not after the model loads
-    Earl(commands, latlon, threshold, gate_floor, clips_dir).run()
+    Earl(commands, latlon, threshold, gate_floor, clips_dir,
+         confirm_windows=confirm_windows, confirm_skip=confirm_skip,
+         rules_db=rules_db).run()
 
 
 if __name__ == "__main__":
