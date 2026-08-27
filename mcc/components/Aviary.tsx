@@ -78,8 +78,13 @@ import {
   mastheadSub,
   pickVisibleNotice,
   readLifeListQuery,
+  removalUrl,
   rivalLine,
   rosterOrder,
+  ruleStamp,
+  RULE_THRESHOLD_STEPS,
+  type SpeciesRule,
+  coerceRuleThreshold,
   speciesMatches,
   shareOfYard,
   writeLifeListQuery,
@@ -2461,6 +2466,19 @@ export function SpeciesProfile({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeFailed, setRemoveFailed] = useState(false);
+  // #506: the remove dialog's one checkbox -- DEFAULT OFF, preserving the
+  // #216 contract (heard again = brand-new lifer); reset on every open so a
+  // veto is always this removal's explicit choice, never a leftover.
+  const [excludeFuture, setExcludeFuture] = useState(false);
+  // The detection overlay (#506): the operator's per-species rules, drafted
+  // here and written to species_rules by /aviary/rules. Draft state is
+  // seeded from the entry's stored rule each time the dialog opens.
+  const [ruleOpen, setRuleOpen] = useState(false);
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const [ruleFailed, setRuleFailed] = useState(false);
+  const [draftThreshold, setDraftThreshold] = useState<number | null>(null);
+  const [draftIgnore, setDraftIgnore] = useState(false);
+  const [draftMapOverride, setDraftMapOverride] = useState(false);
   const router = useRouter();
   const player = useClipPlayer();
 
@@ -2475,10 +2493,21 @@ export function SpeciesProfile({
     return () => window.removeEventListener("keydown", onKey);
   }, [confirmOpen, removing]);
 
+  // Same idiom for the detection overlay: Escape cancels, never a save
+  // already in flight.
+  useEffect(() => {
+    if (!ruleOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !ruleSaving) setRuleOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ruleOpen, ruleSaving]);
+
   const removeSpecies = () => {
     setRemoving(true);
     setRemoveFailed(false);
-    fetch(`/aviary/species/${encodeURIComponent(sci)}`, { method: "DELETE" })
+    fetch(removalUrl(sci, excludeFuture), { method: "DELETE" })
       .then((r) => {
         if (!r.ok) throw new Error(String(r.status));
         // The roster, archive, and ticker hydration all read the tables the
@@ -2490,6 +2519,48 @@ export function SpeciesProfile({
       .catch(() => {
         setRemoving(false);
         setRemoveFailed(true);
+      });
+  };
+
+  const openRuleDialog = () => {
+    const rule = entry?.rule;
+    // coerceRuleThreshold seats a stored value on the overlay's steps (a
+    // hand-edited store may hold anything; the control renders steps).
+    setDraftThreshold(coerceRuleThreshold(rule?.threshold));
+    setDraftIgnore(Boolean(rule?.exclude));
+    setDraftMapOverride(Boolean(rule?.always_include));
+    setRuleFailed(false);
+    setRuleOpen(true);
+  };
+
+  const saveRule = () => {
+    setRuleSaving(true);
+    setRuleFailed(false);
+    const body: SpeciesRule = {
+      exclude: draftIgnore,
+      threshold: draftThreshold,
+      always_include: draftMapOverride,
+    };
+    fetch(`/aviary/rules/${encodeURIComponent(sci)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
+      .then((b: { rule?: SpeciesRule | null }) => {
+        // The hero stamp reads the STORE's answer, not the draft's -- an
+        // all-defaults save comes back as rule: null (row deleted) and the
+        // stamp returns to "default".
+        setEntry((e) => (e ? { ...e, rule: b.rule ?? null } : e));
+        setRuleSaving(false);
+        setRuleOpen(false);
+      })
+      .catch(() => {
+        setRuleSaving(false);
+        setRuleFailed(true);
       });
   };
 
@@ -2716,24 +2787,41 @@ export function SpeciesProfile({
                 </div>
                 <p className="text-sm italic text-inkdim">{sci}</p>
               </div>
-              {/* Species removal (#216): the misidentification eraser, worn
-                  quietly -- the sort control's chrome in the faint ink, and
-                  the destructive weight carried by the confirm step rather
-                  than by color (the palette's only red means "chipmunk",
-                  never "danger"). Always rendered, merely disabled until
-                  the entry lands (the now-button idiom): a control that
-                  appeared with the fetch would nudge the header. */}
-              <button
-                type="button"
-                disabled={!entry}
-                onClick={() => {
-                  setRemoveFailed(false);
-                  setConfirmOpen(true);
-                }}
-                className="stamp mt-1 shrink-0 rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkfaint"
-              >
-                remove species
-              </button>
+              {/* The hero's two quiet verdict controls, both always
+                  rendered and merely disabled until the entry lands (the
+                  now-button idiom): a control that appeared with the fetch
+                  would nudge the header.
+                  Detection (#506) opens the per-species rules overlay --
+                  new chrome at the text-xs floor, deliberately NOT the
+                  legacy 10px remove size: this one is an everyday setting,
+                  not a last resort, and the operator has to be able to
+                  read and hit it.
+                  Remove (#216) keeps its faint chrome -- the destructive
+                  weight is carried by the confirm step rather than by
+                  color (the palette's only red means "chipmunk", never
+                  "danger"). */}
+              <div className="mt-1 flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!entry}
+                  onClick={openRuleDialog}
+                  className="stamp rounded-sm border border-line px-2.5 py-1.5 text-xs text-inkdim transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkdim"
+                >
+                  detection
+                </button>
+                <button
+                  type="button"
+                  disabled={!entry}
+                  onClick={() => {
+                    setRemoveFailed(false);
+                    setExcludeFuture(false);
+                    setConfirmOpen(true);
+                  }}
+                  className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkfaint"
+                >
+                  remove species
+                </button>
+              </div>
             </div>
             {/* The metadata row owns both recordings (#339, reshaping #333):
                 the best take LEADS as the row's first and loudest entry --
@@ -2806,6 +2894,16 @@ export function SpeciesProfile({
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">today</dt>
                 <dd className="text-inkdim">{entry ? entry.today : "—"}</dd>
+              </div>
+              {/* The active detection rule (#506), RESERVED: the entry
+                  renders in every state -- "default" when no rule stands
+                  -- so a rule landing (or clearing) can never pop in and
+                  shift the row (house rule #1). */}
+              <div>
+                <dt className="stamp text-[9px] text-inkfaint">detection</dt>
+                <dd className="text-inkdim">
+                  {entry ? ruleStamp(entry.rule) : "—"}
+                </dd>
               </div>
             </dl>
             {/* The magazine body (#192): the portrait + its CC-BY credit
@@ -3110,6 +3208,24 @@ export function SpeciesProfile({
               books since {dateOf(entry.first_ts)}. If Earl ever hears it
               again, it starts over as a brand-new lifer.
             </p>
+            {/* The standing veto (#506), DEFAULT OFF -- unchecked keeps the
+                #216 contract above word for word. This is the only place to
+                exclude a bird you are also erasing: after the remove there
+                is no species page left to set it from. */}
+            <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-sm leading-relaxed text-inkdim">
+              <input
+                type="checkbox"
+                checked={excludeFuture}
+                disabled={removing}
+                onChange={(e) => setExcludeFuture(e.target.checked)}
+                className="mt-1 size-4 shrink-0 accent-squirrel"
+              />
+              <span>
+                <span className="text-ink">don’t let it come back</span> —
+                future detections of this species are dropped before they
+                reach the record, so it can never re-mint itself as a lifer.
+              </span>
+            </label>
             {/* The failure line reserves its height empty -- an error
                 appearing must not bump the buttons (house rule #1). */}
             <p className="stamp mt-3 min-h-[14px] text-[10px] text-inkdim">
@@ -3136,6 +3252,128 @@ export function SpeciesProfile({
                 className="stamp min-w-[96px] rounded-sm border border-linebright bg-panel2 px-3 py-1.5 text-center text-[10px] text-ink transition-colors hover:bg-panel disabled:opacity-40"
               >
                 {removing ? "removing …" : "remove it"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* The detection overlay (#506): the remove confirm's pattern (#216)
+          -- fixed on the viewport, mounted OUTSIDE every .panel (the panel
+          reveal animates a transform, and a transformed ancestor becomes a
+          fixed element's containing block), backdrop click and Escape
+          cancel, reserved error line. Everything the operator must read
+          sits at the text-xs floor in inkdim, and the controls are
+          touch-sized -- deliberately not the legacy remove stamp's
+          py-0.5/text-[10px] chrome. */}
+      {ruleOpen && entry && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Detection rules for the ${entry.species_common}`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+          onClick={() => !ruleSaving && setRuleOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-sm border border-linebright bg-panel p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="stamp text-[9px] text-inkfaint">
+              how earl hears this bird
+            </p>
+            <h3
+              className="mt-1 text-xl text-ink"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              {entry.species_common}: detection
+            </h3>
+            {/* Confidence: steps, not a slider (the clip-gain idiom).
+                Default is the absence of a step -- no rule row, the yard's
+                global bar governs alone. The steps go quiet while ignore
+                is checked: an ignored bird's floor is moot, and the gate
+                treats it exactly that way. */}
+            <div className="mt-4">
+              <p className="stamp text-xs text-inkdim">confidence floor</p>
+              <div className="mt-1.5 flex gap-2">
+                {([null, ...RULE_THRESHOLD_STEPS] as (number | null)[]).map(
+                  (step) => (
+                    <button
+                      key={step ?? "default"}
+                      type="button"
+                      disabled={ruleSaving || draftIgnore}
+                      onClick={() => setDraftThreshold(step)}
+                      aria-pressed={draftThreshold === step}
+                      className={`stamp min-w-[72px] rounded-sm border px-3 py-2 text-xs transition-colors ${
+                        draftThreshold === step
+                          ? "border-linebright bg-panel2 text-ink"
+                          : "border-line text-inkdim hover:border-linebright hover:text-ink"
+                      } disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkdim`}
+                    >
+                      {step === null ? "default" : step.toFixed(2)}
+                    </button>
+                  ),
+                )}
+              </div>
+              <p className="mt-1.5 text-xs leading-relaxed text-inkdim">
+                an extra confidence floor for this species alone — the
+                yard’s own bar still applies, and wind can only raise
+                whichever is higher
+              </p>
+            </div>
+            <label className="mt-4 flex cursor-pointer items-start gap-2.5 text-xs leading-relaxed text-inkdim">
+              <input
+                type="checkbox"
+                checked={draftIgnore}
+                disabled={ruleSaving}
+                onChange={(e) => setDraftIgnore(e.target.checked)}
+                className="mt-0.5 size-4 shrink-0 accent-squirrel"
+              />
+              <span>
+                <span className="text-ink">ignore from now on</span> —
+                future detections of this species never publish: no events,
+                no new visits. It does <span className="text-ink">not</span>{" "}
+                delete history; erasing the record is remove species.
+              </span>
+            </label>
+            <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-xs leading-relaxed text-inkdim">
+              <input
+                type="checkbox"
+                checked={draftMapOverride}
+                disabled={ruleSaving}
+                onChange={(e) => setDraftMapOverride(e.target.checked)}
+                className="mt-0.5 size-4 shrink-0 accent-squirrel"
+              />
+              <span>
+                <span className="text-ink">allow even if the map says no</span>{" "}
+                — for a real local the region model is shy about. It still
+                has to clear the confidence bar and a confirming window.
+              </span>
+            </label>
+            {/* The failure line reserves its height empty -- an error
+                appearing must not bump the buttons (house rule #1). */}
+            <p className="stamp mt-3 min-h-[14px] text-[10px] text-inkdim">
+              {ruleFailed
+                ? "the record refused the save — nothing changed"
+                : ""}
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                disabled={ruleSaving}
+                onClick={() => setRuleOpen(false)}
+                className="stamp rounded-sm border border-line px-3 py-2 text-xs text-inkdim transition-colors hover:border-linebright hover:text-ink disabled:opacity-40"
+              >
+                cancel
+              </button>
+              {/* min-w so "saving …" wears "save"'s footprint -- the label
+                  change resizes nothing. */}
+              <button
+                type="button"
+                disabled={ruleSaving}
+                onClick={saveRule}
+                className="stamp min-w-[96px] rounded-sm border border-linebright bg-panel2 px-3 py-2 text-center text-xs text-ink transition-colors hover:bg-panel disabled:opacity-40"
+              >
+                {ruleSaving ? "saving …" : "save"}
               </button>
             </div>
           </div>

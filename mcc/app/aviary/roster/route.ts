@@ -32,7 +32,9 @@ import {
   parseSince,
   portraitVersion,
   shapeRoster,
+  speciesRuleFrom,
   speciesThumbName,
+  type SpeciesRule,
 } from "@/lib/aviary";
 
 const LIFE_SQL =
@@ -94,6 +96,13 @@ const SIGHTINGS_SQL =
   " ORDER BY ts";
 const SIGHTINGS_PRE442_SQL =
   "SELECT species_sci, ts, confidence, clip FROM sightings ORDER BY ts";
+// The operator's detection rules (#506) ride the roster so the profile page
+// needs no second fetch -- a SEPARATE tiny query merged in code, deliberately
+// not another rung on the LEFT JOIN cascade above (a new rung per column
+// generation is that cascade's contract; a whole optional TABLE is cheaper
+// to ask about on its own, and a pre-#506 store simply answers with none).
+const RULES_SQL =
+  "SELECT species_sci, exclude, threshold, always_include FROM species_rules";
 
 const empty = () => species([]);
 
@@ -201,7 +210,24 @@ export async function GET(req: NextRequest) {
       // Store predates #442's vocal_fill column — confidence-only best.
       rows = db.prepare(SIGHTINGS_PRE442_SQL).all() as SightRows;
     }
-    return species(await withPortraitVersions(shapeRoster(life, rows, today)));
+    const rules = new Map<string, SpeciesRule>();
+    try {
+      for (const r of db.prepare(RULES_SQL).all() as {
+        species_sci: string;
+        exclude: number | null;
+        threshold: number | null;
+        always_include: number | null;
+      }[])
+        rules.set(r.species_sci, speciesRuleFrom(r));
+    } catch {
+      // Pre-#506 store: no species_rules table, no rules — every entry
+      // ships without one and the profile stamp reads "default".
+    }
+    const shaped = shapeRoster(life, rows, today).map((r) => {
+      const rule = rules.get(r.species_sci);
+      return rule ? { ...r, rule } : r;
+    });
+    return species(await withPortraitVersions(shaped));
   } catch {
     return empty(); // a store without the tables yet: still just no birds
   } finally {

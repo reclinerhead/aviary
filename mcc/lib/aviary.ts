@@ -326,6 +326,130 @@ export function removalPlan(
   return { moves, deletes };
 }
 
+// --- Per-species detection rules (issue #506) --------------------------------
+// The operator's standing answers to "how should Earl hear this bird":
+// exclude (the veto -- future detections never publish, history untouched),
+// an extra confidence floor, or a one-species hole in the region mask. Rows
+// live in THIS box's earl.db (species_rules -- rules never sync across
+// stations); the MCC writes them (its second earl.db write, after #216's
+// removal) and earl-listener re-reads them every ~60 s.
+
+export type SpeciesRule = {
+  exclude: boolean;
+  /** Extra confidence floor; null = the global MERLE_EARL_THRESHOLD. The
+   * listener max()es it against the global bar, so a rule can tighten the
+   * gate for one species but never loosen the yard's own. */
+  threshold: number | null;
+  always_include: boolean;
+};
+
+/** The table both writer routes must be able to create (the negatives DDL
+ * precedent: DDL lives with the writer, CREATE IF NOT EXISTS in the same
+ * transaction, so a pre-#506 store upgrades on its first rule). sightings'
+ * connect() carries the same shape so a station's store grows the table on
+ * the next unit restart either way -- deploy order can't strand a rule. */
+export const SPECIES_RULES_DDL = `
+CREATE TABLE IF NOT EXISTS species_rules (
+    species_sci    TEXT PRIMARY KEY,
+    exclude        INTEGER NOT NULL DEFAULT 0,
+    threshold      REAL,
+    always_include INTEGER NOT NULL DEFAULT 0,
+    updated_ts     INTEGER NOT NULL
+);
+`;
+
+/** The overlay's confidence choices (the clip-gain idiom: steps, not a
+ * slider). "Default" is the absence of a step -- threshold null. */
+export const RULE_THRESHOLD_STEPS = [0.8, 0.9] as const;
+
+/** A stored rule row (sqlite integers) -> the wire/UI shape. */
+export function speciesRuleFrom(row: {
+  exclude: number | null;
+  threshold: number | null;
+  always_include: number | null;
+}): SpeciesRule {
+  return {
+    exclude: Boolean(row.exclude),
+    threshold: row.threshold ?? null,
+    always_include: Boolean(row.always_include),
+  };
+}
+
+/** The PUT body -> a rule, or null for anything malformed (the route
+ * answers 400; never trust the wire). Strict on purpose: the overlay is
+ * the only writer, so a shape it would never send is a bug worth refusing
+ * rather than coercing. A threshold must be a real number strictly inside
+ * (0, 1) -- 0 and 1 are not confidences BirdNET emits and a rule carrying
+ * one is a typo, not a policy. */
+export function parseRulePayload(body: unknown): SpeciesRule | null {
+  if (typeof body !== "object" || body === null || Array.isArray(body))
+    return null;
+  const b = body as Record<string, unknown>;
+  const threshold = b.threshold ?? null;
+  if (
+    threshold !== null &&
+    (typeof threshold !== "number" ||
+      !Number.isFinite(threshold) ||
+      threshold <= 0 ||
+      threshold >= 1)
+  )
+    return null;
+  for (const flag of [b.exclude, b.always_include])
+    if (flag !== undefined && typeof flag !== "boolean") return null;
+  return {
+    exclude: b.exclude === true,
+    threshold: threshold as number | null,
+    always_include: b.always_include === true,
+  };
+}
+
+/** An all-defaults rule holds no policy: the route deletes the row instead
+ * of storing a no-op, so "clearing" and "never ruled" are the same state
+ * and the listener's map stays exactly as big as the operator's opinions. */
+export function ruleIsEmpty(rule: SpeciesRule): boolean {
+  return !rule.exclude && rule.threshold === null && !rule.always_include;
+}
+
+/** The hero-meta stamp's copy, one string per rule state. Always a string
+ * -- "default" when no rule stands -- because the stamp is RESERVED: the
+ * meta entry renders in every state so a rule landing can never pop in and
+ * shift the page (house rule #1). Exclude speaks alone (it makes the other
+ * fields moot, exactly as the listener treats them). */
+export function ruleStamp(rule?: SpeciesRule | null): string {
+  if (!rule) return "default";
+  if (rule.exclude) return "ignored";
+  const parts: string[] = [];
+  if (rule.threshold !== null)
+    parts.push(`threshold ${rule.threshold.toFixed(2)}`);
+  if (rule.always_include) parts.push("map override");
+  return parts.length ? parts.join(" · ") : "default";
+}
+
+/** Snap a stored threshold onto the overlay's steps (coerceGain's rule,
+ * ties toward the LOWER bar): the store may hold any value -- a hand edit,
+ * a future step set -- but the control renders steps, and the nearest one
+ * is the honest seat for it. null stays Default. */
+export function coerceRuleThreshold(
+  raw: number | null | undefined,
+): number | null {
+  if (raw == null || !Number.isFinite(raw)) return null;
+  let best: number = RULE_THRESHOLD_STEPS[0];
+  for (const step of RULE_THRESHOLD_STEPS)
+    if (Math.abs(step - raw) < Math.abs(best - raw)) best = step;
+  return best;
+}
+
+/** The removal DELETE's URL (#216), with #506's one addition: the
+ * "don't let it come back" checkbox rides as ?exclude_future=1 so the
+ * route can write the standing veto in the same transaction that erases
+ * the record -- after the remove there is no species page left to set it
+ * from. */
+export function removalUrl(sci: string, excludeFuture: boolean): string {
+  return `/aviary/species/${encodeURIComponent(sci)}${
+    excludeFuture ? "?exclude_future=1" : ""
+  }`;
+}
+
 // --- Portrait framing (issue #185) ------------------------------------------
 
 /** `object-position` for a portrait inside a FIXED box (grid tiles at 4:3,
@@ -519,6 +643,11 @@ export type RosterEntry = {
   best_clip?: string | null;
   best_confidence?: number | null;
   best_ts?: number | null;
+  // The operator's detection rule (#506), attached by the roster ROUTE from
+  // species_rules (a separate tiny query, deliberately not another rung on
+  // the LEFT JOIN cascade). Absent on a pre-#506 store and on every unruled
+  // species -- ruleStamp() reads both as "default".
+  rule?: SpeciesRule | null;
 };
 
 /** The credit line under the "What It Sounds Like" panel (#317).
