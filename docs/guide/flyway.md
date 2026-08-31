@@ -9,8 +9,8 @@
 ## What the Flyway is
 
 The network layer of epic #212: everything on the house orchestrator (orchid after #371 Phase 3; was pearl) that concerns the
-*remote* stations (birdhouse live at Mom's; kestrel = Kathy's Aviary,
-station 2, bench #498). A station is
+*remote* stations (birdhouse live at Mom's; kestrel live at Kathy's
+since 2026-08-29, station 2). A station is
 fully self-contained by principle — own broker, own `earl.db`, own dashboard
 — so nothing here is load-bearing for a station. The Flyway is where the
 family's boxes become visible to each other: liveness today, the aggregated
