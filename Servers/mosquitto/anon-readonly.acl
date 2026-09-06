@@ -1,0 +1,9 @@
+# Anonymous clients on the WebSocket listener (every browser): subscribe to
+# anything, publish nothing. Issue #534.
+#
+# Installed as /etc/mosquitto/anon-readonly.acl on orchid and on the stations,
+# referenced by the `acl_file` line under `listener 9001` in squirrel.conf /
+# station.conf. Topic lines before any `user` line are what anonymous clients
+# get; with no write rule a publish is dropped (MQTT 3.1.1) or refused with
+# "not authorized" (MQTT 5), and the subscriber side sees nothing different.
+topic read #
