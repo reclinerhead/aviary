@@ -1011,6 +1011,16 @@ def test_attempt_due_gates_by_age_never_by_existence():
         now - species_profile.PROFILE_RETRY_S, now) is True
 
 
+def test_profile_retry_is_thirty_minutes():
+    # #501: 24 h parked a transient DNS miss as a blank tile for a day
+    # (kestrel bench). Pin the value so a silent revert fails the suite
+    # instead of costing another station a day of undressed lifers.
+    assert species_profile.PROFILE_RETRY_S == 1800
+    now = 1_000_000
+    assert species_profile.attempt_due(now - 1799, now) is False
+    assert species_profile.attempt_due(now - 1800, now) is True
+
+
 def test_record_attempt_upserts_one_row(conn):
     species_profile.record_attempt(conn, "A sci", 123)
     species_profile.record_attempt(conn, "A sci", 456)
