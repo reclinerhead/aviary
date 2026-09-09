@@ -39,7 +39,7 @@
 # at the first section heading, so the SAME call and the SAME function still
 # yield byte-identical `description` prose -- measured, and asserted by a
 # test. Still two calls per species. The payload grows ~1.7 KB -> ~15 KB,
-# which against a life list this size behind a ~daily gate is nothing.
+# which against a life list this size behind the retry gate is nothing.
 #
 # ONLY A REAL HEADING COUNTS. Measured on 30 yard species: 22 have a section
 # whose heading names a sound (Vocalization/Vocalizations/Vocals/Voice/Song/
@@ -162,15 +162,20 @@ _adw_last_request = [None]
 DEFAULT_DB_PATH = "earl.db"
 SPECIES_DIR = "species"
 
-# How long the ENRICHMENT LOOP (issue #217) waits before giving a
-# no-page/failed species another look. The worklist deliberately keeps such
-# a species listed forever ("re-runs get another look for free") -- right
-# for a hand-run pass, but under a 15-minute loop that would be ~100
-# Wikipedia queries a day for a bird with no article. Attempts live in
-# their own table rather than a stub profile row, because "no profile row"
-# is the semantic both the worklist and the roster's LEFT JOIN rely on.
-# The CLI never consults this -- a hand run still gets its look for free.
-PROFILE_RETRY_S = 24 * 3600
+# How long the ENRICHMENT LOOP (issue #217, resized #501) waits before
+# giving a no-page/failed species another look. The worklist deliberately
+# keeps such a species listed forever ("re-runs get another look for free")
+# -- right for a hand-run pass, but under a looping tick that would otherwise
+# be ~100 Wikipedia queries a day (house, 15 min) or ~288 (station, 5 min)
+# for a bird with no article. 24 h was the original size; it also parked a
+# transient DNS miss as a blank tile for a full day (kestrel bench, #498).
+# 30 minutes is the next-tick-plus-a-few on a station, ~48 lookups/day for a
+# no-article species -- acceptable at life-list scale; nearly all succeed on
+# the first try and leave the worklist. Attempts live in their own table
+# rather than a stub profile row, because "no profile row" is the semantic
+# both the worklist and the roster's LEFT JOIN rely on. The CLI never
+# consults this -- a hand run still gets its look for free.
+PROFILE_RETRY_S = 30 * 60
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS species_profile (

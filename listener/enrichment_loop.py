@@ -12,9 +12,9 @@
 #   python -m listener.enrichment_loop          # the earl-enrichment unit
 #
 # ONE TICK, FIVE PASSES, IN THIS ORDER:
-#   1. Profile pass -- drain species_profile.worklist() through the ~daily
-#      retry gate. Depends only on the network, so it runs even when no
-#      model is up anywhere.
+#   1. Profile pass -- drain species_profile.worklist() through the
+#      30-minute retry gate (#501). Depends only on the network, so it
+#      runs even when no model is up anywhere.
 #   1b. Thumb pass (#495) -- drain species_profile.thumb_worklist(), bounded
 #      per tick: every shelf original without a current -thumb sibling gets
 #      the tile-sized one. Purely local, fs-mtime-driven (owner drops

@@ -3,7 +3,7 @@
 #
 # The crank that turns itself (issue #217) -- the loop's pure logic and its
 # wiring of the two passes' gates, with every wire faked. The load-bearing
-# cases: model picking by rank, per-host caps, the ~daily retry gate around
+# cases: model picking by rank, per-host caps, the 30-minute retry gate around
 # the profile worklist, and THE tick-ordering guarantee -- a brand-new lifer
 # gets its Wikipedia background written BEFORE its first field note is
 # generated, so the note's prompt can carry it.
@@ -328,7 +328,7 @@ def test_no_page_species_retry_daily_not_per_tick(store, monkeypatch):
     loop.tick(now=1_000_900)                          # 15 minutes later: gated
     assert len(calls) == 1
     loop.tick(now=1_000_000 + species_profile.PROFILE_RETRY_S)
-    assert len(calls) == 2                            # a day later: another look
+    assert len(calls) == 2                            # retry interval later: another look
 
 
 def test_a_failed_fetch_is_stamped_and_the_tick_survives(store, monkeypatch,
@@ -344,6 +344,6 @@ def test_a_failed_fetch_is_stamped_and_the_tick_survives(store, monkeypatch,
 
     assert results["profile"]["failed"] == 1
     assert "FAILED" in capsys.readouterr().out        # loud, once
-    # Stamped like any attempt, so a persistent failure is a daily retry,
-    # never a per-tick hammer.
+    # Stamped like any attempt, so a persistent failure is a 30-minute
+    # retry, never a per-tick hammer.
     assert species_profile.attempts_map(store) == {"A sci": NOW}
