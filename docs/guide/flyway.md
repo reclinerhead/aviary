@@ -2,7 +2,7 @@
 
 > Spoke of the [Merle Technical Guide](../../TechnicalGuide.md) — read the hub first for the machine roster, quick start, and cross-cutting conventions.
 >
-> **Covers:** the station network layer — `flyway/` (the liveness watcher today; epic #212 Phase 3's hub store + sync and Phase 4's bus bridge land here later)
+> **Covers:** the station network layer — `flyway/` (the liveness watcher; the front-door check-in, #545) and `frontdoor/` (the public redirect site, the repo's one Vercel surface); epic #212 Phase 3's hub store + sync and Phase 4's bus bridge land here later
 > **Runs on:** pearl
 > **Related:** epic #212 (remote stations + The Flyway); issue #342
 
@@ -64,6 +64,63 @@ comma-separated `name=url` pairs, names topic-safe `[a-z0-9_-]` because
 they become topic segments) and `MERLE_LIVENESS_INTERVAL_S` (default 60).
 Ops detail, unit file, and desk tests: `Servers/Pearl.md` § The station
 liveness watcher.
+
+## The front door (`flyway/checkin.py` + `frontdoor/`, issue #545)
+
+A station's address on a LAN we don't administer is whatever the router
+leased the Wi-Fi stick, and `<station>.local` never resolved at either
+house. So the bookmark is a **stable public URL that redirects to the
+station's current LAN address**:
+
+```
+https://aviary.toddtech.llc/<MERLE_STATION_ID>[/path]   -> 302 http://<lan ip>/[path]
+https://aviary.toddtech.llc/<id>/status                  -> last check-in + address (for us)
+POST https://aviary.toddtech.llc/api/checkin             -> the station reporting itself
+```
+
+Two halves, one contract, one repo:
+
+- **The station reports itself.** `flyway/checkin.py` (stdlib only) reads
+  `ip -j -4 addr show`, picks the RFC 1918 address on the Wi-Fi interface
+  (`wl*` first, any private address as fallback — **never** `169.254/16`
+  or the tailnet's `100.64/10`, neither reachable from a relative's
+  browser), and POSTs `{station, ip, iface, sha, ts}` with a per-station
+  bearer token. It runs as the `station-checkin` oneshot: on boot, every
+  15 minutes from a timer, and the moment NetworkManager fires
+  `up`/`dhcp4-change` (a dispatcher hook that carries no secrets — the
+  unit's `EnvironmentFile` does). Env: `MERLE_STATION_ID`,
+  `MERLE_FRONTDOOR_URL`, `MERLE_FRONTDOOR_TOKEN`, all required-no-default.
+  Pure logic (`pick_lan_addr`, `build_payload`) in `test_flyway_checkin.py`.
+- **The site remembers and redirects.** `frontdoor/` is a Next.js app of
+  route handlers only (no React tree), deployed as its own Vercel project
+  with Root Directory `frontdoor` — the repo's **one** Vercel surface. The
+  check-in resolves the bearer token to a station in constant time against
+  the `FRONTDOOR_STATIONS` roster (`id:token,…`), requires the body's
+  station to be that one, rejects anything but a private IPv4, and stores
+  `{ip, iface, sha, seen_at}` in Upstash Redis (Vercel Marketplace; the
+  SSID is never sent or stored). The redirect is **302, never 301, with
+  `no-store`** — a cached permanent redirect would bake the IP into the
+  browser, the exact failure this replaces — and goes to the last-known
+  address regardless of age (the address stays right until the router
+  changes it; a station whose internet is down is in a house whose
+  internet is down). Pure logic (slug/IP validation, roster parsing,
+  redirect-target building that cannot leave the station origin) in
+  `frontdoor/lib/frontdoor.test.ts`.
+
+Why this is principle-7-clean: the station's only new traffic is HTTPS
+egress to one public endpoint — the "ordinary internet egress" class the
+epic already uses for autodeploy and the courier. No ACL rule, nothing
+inbound. The station page itself stays plain HTTP on the LAN
+(`Caddyfile.station`); the HTTPS→HTTP redirect is followed by every
+browser, and the "Not Secure" label on the Aviary is the same one the IP
+bookmarks showed. A fully-HTTPS station (public DNS name carrying the
+private address + a DNS-01 certificate) is a possible follow-up, not this.
+
+Deployment-day rule: **Todd sets the bookmarks**, home-screen icons, and
+the QR sticker to the front-door URL — a person who bookmarks after
+landing bookmarks the IP again. The DHCP reservation becomes optional.
+Ops (units, hook, rollout, failure modes): `Servers/Birdhouse.md` § The
+units and step 13; Vercel project setup: `frontdoor/README.md`.
 
 ## What arrives here later (decided in epic #212, not yet built)
 
