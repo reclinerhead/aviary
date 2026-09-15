@@ -347,3 +347,92 @@ def test_a_failed_fetch_is_stamped_and_the_tick_survives(store, monkeypatch,
     # Stamped like any attempt, so a persistent failure is a 30-minute
     # retry, never a per-tick hammer.
     assert species_profile.attempts_map(store) == {"A sci": NOW}
+
+# --- the showcase pass (#551): plan here, encode over there --------------------
+
+def _clip_store(store, tmp_path, n=3):
+    """Sightings rows WITH clips on disk, so the showcase pass has a pool."""
+    import wave
+    import numpy as np
+    from listener import clip_showcase as sc
+    media = tmp_path / "clips" / "rear"
+    media.mkdir(parents=True)
+    for i in range(n):
+        clip = f"rear/{1000 + i}-x.wav"
+        store.execute(
+            "INSERT INTO sightings (ts, source, species_sci, species_common,"
+            " confidence, clip, wind_suspect, rms, vocal_fill)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (1000 + i, "rear", "P sci", "Pewee", 0.95, clip, 0, 0.01, 0.5))
+        pcm = np.zeros(9 * sc.SR, "<i2")
+        with wave.open(str(tmp_path / "clips" / clip), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sc.SR)
+            w.writeframes(pcm.tobytes())
+    store.commit()
+
+
+def test_showcase_without_an_encoder_says_so_once_and_still_crowns_slot_one(
+        store, tmp_path, monkeypatch, capsys):
+    from listener import clip_showcase as sc
+    _clip_store(store, tmp_path)
+    monkeypatch.delenv("MERLE_SHOWCASE_PYTHON", raising=False)
+    monkeypatch.setattr(loop, "_showcase_warned", False)
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: None)
+
+    results = loop.tick(now=NOW)
+    out = capsys.readouterr().out
+    assert results["showcase"] == {"picked": 1}
+    assert "MERLE_SHOWCASE_PYTHON not set" in out and "3 clips" in out
+    conn = sc.connect(sc.db_path())
+    assert list(sc.stored_slots(conn, "P sci")) == [1]   # champion protected
+    conn.close()
+
+    loop.tick(now=NOW + 900)
+    assert "MERLE_SHOWCASE_PYTHON" not in capsys.readouterr().out  # once
+
+
+def test_showcase_spawns_the_encoder_under_the_birdnet_venv(
+        store, tmp_path, monkeypatch, capsys):
+    _clip_store(store, tmp_path)
+    monkeypatch.setenv("MERLE_SHOWCASE_PYTHON", "/fake/earl-venv/bin/python")
+    monkeypatch.setattr(loop, "_showcase_warned", False)
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: None)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw))
+        return subprocess_result(0, "[showcase] done: embedded=3\n", "")
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    results = loop.tick(now=NOW)
+    (cmd, kw), = calls
+    assert cmd[:4] == ["/fake/earl-venv/bin/python", "-m",
+                       "listener.clip_showcase", "--embed-only"]
+    assert cmd[-2:] == ["--limit", str(loop.SHOWCASE_TICK_CAP)]
+    assert kw["cwd"] == loop.repo_root() and kw["timeout"] == loop.SHOWCASE_TIMEOUT_S
+    assert results["showcase"]["embedded"] == 3
+    assert "[enrich] done: embedded=3" in capsys.readouterr().out
+
+
+def test_showcase_encoder_failure_is_loud_and_the_tick_survives(
+        store, tmp_path, monkeypatch, capsys):
+    _clip_store(store, tmp_path)
+    monkeypatch.setenv("MERLE_SHOWCASE_PYTHON", "/fake/python")
+    monkeypatch.setattr(loop, "_showcase_warned", False)
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: None)
+    monkeypatch.setattr(
+        loop.subprocess, "run",
+        lambda cmd, **kw: subprocess_result(1, "", "ImportError: no birdnet"))
+    results = loop.tick(now=NOW)
+    assert results["showcase"]["encoder-failed"] == 1
+    assert "exited 1 (ImportError: no birdnet)" in capsys.readouterr().out
+
+
+def subprocess_result(rc, out, err):
+    class R:
+        returncode = rc
+        stdout = out
+        stderr = err
+    return R()

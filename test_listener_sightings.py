@@ -544,6 +544,22 @@ def test_exempt_clips_reads_the_life_list(conn):
     assert sightings.exempt_clips(conn) == {"amcrest/1-first.wav"}
 
 
+def test_exempt_clips_includes_the_showcase_when_the_pass_has_run(conn):
+    # #551: the three best recordings per species are part of the permanent
+    # record too. The table is the showcase pass's, created by its connect();
+    # here it is created by hand so this test stays paho-only.
+    sightings.record(conn, sightings.parse_event(
+        event(clip="amcrest/1-first.wav")))
+    conn.execute("CREATE TABLE species_showcase (species_sci TEXT, slot "
+                 "INTEGER, clip TEXT, chosen_ts INTEGER)")
+    conn.execute("INSERT INTO species_showcase VALUES "
+                 "('Poecile atricapillus', 1, 'amcrest/9-song.wav', 1), "
+                 "('Poecile atricapillus', 2, 'amcrest/8-chip.wav', 1), "
+                 "('Poecile atricapillus', 3, NULL, 1)")
+    assert sightings.exempt_clips(conn) == {
+        "amcrest/1-first.wav", "amcrest/9-song.wav", "amcrest/8-chip.wav"}
+
+
 def test_prune_clips_end_to_end(tmp_path):
     # Real files, real store: the old commoner dies, the equally old lifer
     # and the young file live.

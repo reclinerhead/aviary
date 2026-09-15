@@ -1,0 +1,96 @@
+{
+  "_comment": "The bestClips rule (#333 / #442) pinned in one place for both stacks: mcc/lib/aviary.test.ts and test_listener_clip_showcase.py read this file, so slot 1 of the showcase (#551, Python) can never drift from the Aviary's best recording (TypeScript). Add a case here, never only in one suite.",
+  "cases": [
+    {
+      "name": "highest confidence wins when unscored",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.7, "clip": "a.wav", "vocal_fill": null},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.95, "clip": "b.wav", "vocal_fill": null},
+        {"species_sci": "Cardinalis cardinalis", "ts": 300, "confidence": 0.8, "clip": "c.wav", "vocal_fill": null}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "b.wav", "confidence": 0.95, "ts": 200}}
+    },
+    {
+      "name": "a clip-less sighting is never crowned",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.99, "clip": null, "vocal_fill": null},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.6, "clip": "b.wav", "vocal_fill": null}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "b.wav", "confidence": 0.6, "ts": 200}}
+    },
+    {
+      "name": "only clip-less rows means no champion",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.99, "clip": null, "vocal_fill": null}
+      ],
+      "expected": {}
+    },
+    {
+      "name": "confidence tie keeps the earlier take",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.9, "clip": "old.wav", "vocal_fill": null},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.9, "clip": "new.wav", "vocal_fill": null}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "old.wav", "confidence": 0.9, "ts": 100}}
+    },
+    {
+      "name": "species are independent",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.9, "clip": "card.wav", "vocal_fill": null},
+        {"species_sci": "Turdus migratorius", "ts": 200, "confidence": 0.5, "clip": "robin.wav", "vocal_fill": null}
+      ],
+      "expected": {
+        "Cardinalis cardinalis": {"clip": "card.wav", "confidence": 0.9, "ts": 100},
+        "Turdus migratorius": {"clip": "robin.wav", "confidence": 0.5, "ts": 200}
+      }
+    },
+    {
+      "name": "fuller song wins inside the confidence window",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.98, "clip": "chirp.wav", "vocal_fill": 0.08},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.94, "clip": "song.wav", "vocal_fill": 0.72}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "song.wav", "confidence": 0.94, "ts": 200}}
+    },
+    {
+      "name": "a low-confidence full song cannot steal the crown",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.98, "clip": "chirp.wav", "vocal_fill": 0.05},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.55, "clip": "long.wav", "vocal_fill": 0.95}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "chirp.wav", "confidence": 0.98, "ts": 100}}
+    },
+    {
+      "name": "the 0.90 floor competes even below cMax minus the window",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 1.0, "clip": "chirp.wav", "vocal_fill": 0.1},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.91, "clip": "song.wav", "vocal_fill": 0.6}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "song.wav", "confidence": 0.91, "ts": 200}}
+    },
+    {
+      "name": "equal fill prefers higher confidence",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.92, "clip": "a.wav", "vocal_fill": 0.5},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.96, "clip": "b.wav", "vocal_fill": 0.5}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "b.wav", "confidence": 0.96, "ts": 200}}
+    },
+    {
+      "name": "equal fill and confidence keeps the earlier take",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.95, "clip": "old.wav", "vocal_fill": 0.5},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.95, "clip": "new.wav", "vocal_fill": 0.5}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "old.wav", "confidence": 0.95, "ts": 100}}
+    },
+    {
+      "name": "an unscored row ranks as fill minus one once any fill exists",
+      "rows": [
+        {"species_sci": "Cardinalis cardinalis", "ts": 100, "confidence": 0.99, "clip": "unscored.wav", "vocal_fill": null},
+        {"species_sci": "Cardinalis cardinalis", "ts": 200, "confidence": 0.95, "clip": "scored.wav", "vocal_fill": 0.0}
+      ],
+      "expected": {"Cardinalis cardinalis": {"clip": "scored.wav", "confidence": 0.95, "ts": 200}}
+    }
+  ]
+}

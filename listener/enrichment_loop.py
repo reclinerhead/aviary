@@ -32,6 +32,15 @@
 #      backfill so composite bestClips (and the new-best announcement) can
 #      crown a full song, not only a pre-scored archive. Lazy numpy import
 #      like the clip pass -- lean boxes without numpy log once and continue.
+#   3b. Showcase pass (#551) -- the three best recordings per species, each
+#      a different call. Plans in-process (SQL + stat, no TensorFlow): if
+#      pool clips await a signature, spawns `clip_showcase --embed-only`
+#      under MERLE_SHOWCASE_PYTHON (the BirdNET venv -- this loop's repo
+#      venv has numpy but no encoder), bounded per tick; then re-picks the
+#      species whose embedded pool changed, in-process (numpy only). No
+#      MERLE_SHOWCASE_PYTHON on the unit: said once per loop life, slot 1
+#      is still written (bestClips needs no vector) so the champion is
+#      protected from retention, slots 2/3 wait for an encoder.
 #   4. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
 #      order via /api/tags (liveness + which models the host holds, one
 #      cheap call); the first that answers wins; drain a bounded slice of
@@ -73,6 +82,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import time
 import urllib.request
 
@@ -87,6 +98,12 @@ CLIP_TICK_CAP = 200   # clips enhanced per tick (#325): bounds the first
                       # idempotent, so what defers this tick lands next
 FILL_TICK_CAP = 200   # vocal_fill scores per tick (#447 Phase 0): same
                       # bound shape as the enhance pass
+SHOWCASE_TICK_CAP = 200   # clips embedded per tick (#551): ~10 s on orchid;
+                          # a whole-store backfill is the hand CLI's job
+SHOWCASE_TIMEOUT_S = 900  # the encode subprocess: model load + 200 clips
+                          # is well under a minute; a hang must not eat
+                          # the loop
+_showcase_warned = False  # "no encoder on this unit", once per loop life
 THUMB_TICK_CAP = 200  # thumbs per tick (#495): a whole-shelf backfill fits
                       # one tick at today's life-list size; the bound is for
                       # a future --refresh-all landing the lot at once
@@ -303,6 +320,79 @@ def run_vocal_fill_pass(cap=None):
     return counts
 
 
+def repo_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def run_showcase_pass(cap=None, now=None):
+    """The species showcase (#551): plan in-process, encode in the BirdNET
+    venv, pick in-process. Same per-species functions as the hand CLI (the
+    reusable-pass rule). Lazy import of clip_showcase (numpy) so a lean box
+    still runs the other passes -- one loud line, not a dead loop.
+
+    Quiet when idle: a tick with nothing awaiting an encoder and no species
+    whose pool changed does no work and logs nothing. The encode step is a
+    SUBPROCESS because TensorFlow lives in ~/earl-venv, not here, and
+    because a model that loads per call must not become a permanent
+    gigabyte in a loop that mostly sleeps."""
+    global _showcase_warned
+    from listener import clip_showcase as sc
+
+    cap = SHOWCASE_TICK_CAP if cap is None else cap
+    media = sc.clips_dir()
+    counts = {}
+    conn = sc.connect(sc.db_path())
+    try:
+        if not has_table(conn, "sightings"):
+            return counts
+        n_todo, stale = sc.plan(conn, media)
+    finally:
+        conn.close()
+    if not n_todo and not stale:
+        return counts
+
+    python = os.environ.get("MERLE_SHOWCASE_PYTHON", "").strip()
+    if n_todo and python:
+        cmd = [python, "-m", "listener.clip_showcase", "--embed-only",
+               "--limit", str(cap)]
+        try:
+            proc = subprocess.run(cmd, cwd=repo_root(), capture_output=True,
+                                  text=True, timeout=SHOWCASE_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"[enrich] showcase: encoder FAILED to run ({e}) -- "
+                  f"{n_todo} clips stay on the worklist", flush=True)
+            counts["encoder-failed"] = 1
+            proc = None
+        if proc is not None:
+            for line in proc.stdout.splitlines():
+                if line.startswith("[showcase]"):
+                    print(f"[enrich] {line[len('[showcase] '):]}", flush=True)
+            if proc.returncode != 0:
+                tail = proc.stderr.strip().splitlines()[-1:] or ["no stderr"]
+                print(f"[enrich] showcase: encoder exited {proc.returncode} "
+                      f"({tail[0]}) -- clips stay on the worklist", flush=True)
+                counts["encoder-failed"] = 1
+            else:
+                counts["embedded"] = min(n_todo, cap)
+                if n_todo > cap:
+                    counts["deferred"] = n_todo - cap   # no silent caps
+    elif n_todo and not _showcase_warned:
+        print(f"[enrich] showcase: MERLE_SHOWCASE_PYTHON not set on this "
+              f"unit -- {n_todo} clips await an encoder; slot 1 only",
+              flush=True)
+        _showcase_warned = True
+
+    conn = sc.connect(sc.db_path())
+    try:
+        picks = sc.pick_pass(conn, media, now=now)
+    finally:
+        conn.close()
+    for k, v in picks.items():
+        if k != "unchanged":
+            counts[k] = v
+    return counts
+
+
 def drain_analysis(host, port, model, cap, now=None):
     """A bounded slice of the field-notes worklist against one host. The cap
     counts GENERATIONS, not gate-skips -- a tick that finds forty settled
@@ -366,8 +456,9 @@ def run_analysis_pass(now=None):
 def tick(now=None):
     """One turn of the crank: profiles first (the description a note wants
     background from), then thumbs (#495 -- a fresh portrait's tile sibling,
-    same tick), then clips (#325), then vocal_fill (#447 Phase 0), then
-    notes. A failed pass is one loud line, never a dead service -- the
+    same tick), then clips (#325), then vocal_fill (#447 Phase 0), then the
+    showcase (#551 -- it ranks by the fill the previous pass just wrote and
+    encodes the sibling the clip pass just made), then notes. A failed pass is one loud line, never a dead service -- the
     other passes still run."""
     results = {}
     try:
@@ -386,6 +477,10 @@ def tick(now=None):
         results["vocal_fill"] = run_vocal_fill_pass()
     except Exception as e:
         print(f"[enrich] vocal-fill pass FAILED ({e})", flush=True)
+    try:
+        results["showcase"] = run_showcase_pass(now=now)
+    except Exception as e:
+        print(f"[enrich] showcase pass FAILED ({e})", flush=True)
     try:
         results["analysis"] = run_analysis_pass(now=now)
     except Exception as e:
