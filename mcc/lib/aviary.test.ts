@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
@@ -838,6 +840,28 @@ describe("bestClips (#333 / #442)", () => {
     ).toMatchObject({
       "Cardinalis cardinalis": { clip: "chirp.wav", confidence: 0.98 },
     });
+  });
+
+  it("matches the shared fixture the Python showcase pass reads (#551)", () => {
+    // fixtures/best_clips.json is read by BOTH suites: slot 1 of the species
+    // showcase (listener/clip_showcase.py, retention-protected) must be the
+    // same clip this function crowns on the page. Add cases there, not here.
+    const fixture = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../../fixtures/best_clips.json", import.meta.url)),
+        "utf8",
+      ),
+    ) as {
+      cases: {
+        name: string;
+        rows: Parameters<typeof bestClips>[0];
+        expected: ReturnType<typeof bestClips>;
+      }[];
+    };
+    expect(fixture.cases.length).toBeGreaterThan(5);
+    for (const c of fixture.cases) {
+      expect(bestClips(c.rows), c.name).toEqual(c.expected);
+    }
   });
 
   it("on equal fill, prefers higher confidence then earlier ts", () => {

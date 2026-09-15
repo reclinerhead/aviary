@@ -540,10 +540,26 @@ def exempt_clips(conn):
     #232 composite key this is automatically PER-LOCATION -- one row per
     (species, location) means a park lifer's first clip and Home's first clip
     for the same species are both in the set, so the 90-day sweep spares the
-    first recording of each species at each place, no extra logic needed."""
-    return {r["first_clip"] for r in
-            conn.execute("SELECT first_clip FROM life_list")
-            if r["first_clip"]}
+    first recording of each species at each place, no extra logic needed.
+
+    Since #551 the species showcase's clips are in the set too: the three
+    best recordings of each species (slot 1 IS the Aviary's best recording)
+    are what the page presents as the bird, and before this the champion
+    could age out or be budget-evicted under it (orchid: 80 GB cap at
+    ~1 GB/day -- a champion older than ~80 days went "faded"). Plain SQL on
+    the pass's table, the ENH_SUFFIX-mirror rule: this unit stays paho-only.
+    A store the pass has never run on has no table and nothing to add."""
+    out = {r["first_clip"] for r in
+           conn.execute("SELECT first_clip FROM life_list")
+           if r["first_clip"]}
+    has_showcase = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table'"
+        " AND name='species_showcase'").fetchone() is not None
+    if has_showcase:
+        out |= {r["clip"] for r in
+                conn.execute("SELECT clip FROM species_showcase")
+                if r["clip"]}
+    return out
 
 
 def prune_clips(clips_dir, store_path, keep_days, now_ts=None,
