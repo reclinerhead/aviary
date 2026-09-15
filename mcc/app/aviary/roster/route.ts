@@ -32,6 +32,7 @@ import {
   parseSince,
   portraitVersion,
   shapeRoster,
+  showcaseBySpecies,
   speciesRuleFrom,
   speciesThumbName,
   type SpeciesRule,
@@ -103,6 +104,15 @@ const SIGHTINGS_PRE442_SQL =
 // to ask about on its own, and a pre-#506 store simply answers with none).
 const RULES_SQL =
   "SELECT species_sci, exclude, threshold, always_include FROM species_rules";
+// The species showcase (#551): the listener pass's three best recordings per
+// species, each a different call. The RULES_SQL shape -- a whole optional
+// table asked about on its own, never a cascade rung -- joined to its
+// sighting for the date the page stamps beside the confidence. A store the
+// pass has never run on has no table and answers with none.
+const SHOWCASE_SQL =
+  "SELECT s.species_sci, s.slot, s.clip, s.confidence, s.vocal_fill, g.ts" +
+  " FROM species_showcase s LEFT JOIN sightings g ON g.id = s.sighting_id" +
+  " ORDER BY s.species_sci, s.slot";
 
 const empty = () => species([]);
 
@@ -223,7 +233,18 @@ export async function GET(req: NextRequest) {
       // Pre-#506 store: no species_rules table, no rules — every entry
       // ships without one and the profile stamp reads "default".
     }
-    const shaped = shapeRoster(life, rows, today).map((r) => {
+    let showcase: ReturnType<typeof showcaseBySpecies> = {};
+    try {
+      showcase = showcaseBySpecies(
+        db.prepare(SHOWCASE_SQL).all() as Parameters<
+          typeof showcaseBySpecies
+        >[0],
+      );
+    } catch {
+      // Pre-#551 store: no species_showcase table -- every entry ships with
+      // an empty showcase and the page reserves the slots.
+    }
+    const shaped = shapeRoster(life, rows, today, showcase).map((r) => {
       const rule = rules.get(r.species_sci);
       return rule ? { ...r, rule } : r;
     });

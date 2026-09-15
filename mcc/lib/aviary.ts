@@ -643,6 +643,14 @@ export type RosterEntry = {
   best_clip?: string | null;
   best_confidence?: number | null;
   best_ts?: number | null;
+  // The species showcase (#551): the listener pass's three best recordings,
+  // each a different call, from species_showcase. Slot 1 there IS best_clip
+  // (the same rule, fixture-pinned across both stacks), so the page renders
+  // slot 1 from best_clip and takes only slots 2 and 3 from here. Absent on
+  // a store the pass has never run on; a species with no distinct second
+  // call simply has no slot-2 entry, which the page renders as a reserved
+  // empty slot.
+  showcase?: ShowcaseSlot[];
   // The operator's detection rule (#506), attached by the roster ROUTE from
   // species_rules (a separate tiny query, deliberately not another rung on
   // the LEFT JOIN cascade). Absent on a pre-#506 store and on every unruled
@@ -824,6 +832,44 @@ export function bestClips(
   return out;
 }
 
+/** One showcase slot (#551) as the roster carries it. */
+export type ShowcaseSlot = {
+  slot: number;
+  clip: string;
+  confidence: number | null;
+  vocal_fill: number | null;
+  ts: number | null;
+};
+
+/** species_showcase rows (joined to their sighting's ts by the route) ->
+ * per-species slot lists, slot-ordered. Pure; a malformed row (no clip, a
+ * slot outside 1..3) is dropped rather than rendered as a broken button. */
+export function showcaseBySpecies(
+  rows: {
+    species_sci: string;
+    slot: number;
+    clip: string | null;
+    confidence?: number | null;
+    vocal_fill?: number | null;
+    ts?: number | null;
+  }[],
+): Record<string, ShowcaseSlot[]> {
+  const out: Record<string, ShowcaseSlot[]> = {};
+  for (const r of rows) {
+    if (!r.clip || !Number.isInteger(r.slot) || r.slot < 1 || r.slot > 3)
+      continue;
+    (out[r.species_sci] ??= []).push({
+      slot: r.slot,
+      clip: r.clip,
+      confidence: typeof r.confidence === "number" ? r.confidence : null,
+      vocal_fill: typeof r.vocal_fill === "number" ? r.vocal_fill : null,
+      ts: typeof r.ts === "number" ? r.ts : null,
+    });
+  }
+  for (const list of Object.values(out)) list.sort((a, b) => a.slot - b.slot);
+  return out;
+}
+
 /** life_list rows + raw sighting rows -> the roster the grid renders.
  * Species-common order for determinism; the client owns the sort control. A
  * life_list species with no sighting rows (shouldn't happen -- the same
@@ -849,6 +895,7 @@ export function shapeRoster(
     vocal_fill?: number | null;
   }[],
   todayStart: number | null,
+  showcase: Record<string, ShowcaseSlot[]> = {},
 ): RosterEntry[] {
   const tallies = tallyVisits(sightingRows, todayStart);
   // One extra walk of rows the tally already had in hand -- no second query,
@@ -863,6 +910,7 @@ export function shapeRoster(
       best_clip: best[r.species_sci]?.clip ?? null,
       best_confidence: best[r.species_sci]?.confidence ?? null,
       best_ts: best[r.species_sci]?.ts ?? null,
+      showcase: showcase[r.species_sci] ?? [],
     }))
     .sort((a, b) => a.species_common.localeCompare(b.species_common));
 }
