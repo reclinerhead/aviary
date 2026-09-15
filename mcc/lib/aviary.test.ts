@@ -11,6 +11,7 @@ import {
   VISIT_GAP_S,
   archiveStats,
   bestClips,
+  showcaseBySpecies,
   clampVisitWindow,
   clipRelPath,
   clipUrl,
@@ -884,6 +885,31 @@ describe("bestClips (#333 / #442)", () => {
   });
 });
 
+describe("showcaseBySpecies (#551)", () => {
+  it("groups rows per species in slot order and drops malformed ones", () => {
+    const out = showcaseBySpecies([
+      { species_sci: "A", slot: 3, clip: "a3.wav", confidence: 0.8, vocal_fill: 0.3, ts: 300 },
+      { species_sci: "A", slot: 1, clip: "a1.wav", confidence: 0.95, vocal_fill: 0.6, ts: 100 },
+      { species_sci: "B", slot: 1, clip: "b1.wav", confidence: null, vocal_fill: null, ts: null },
+      { species_sci: "A", slot: 2, clip: null, confidence: 0.9, vocal_fill: 0.5, ts: 200 },
+      { species_sci: "A", slot: 4, clip: "a4.wav", confidence: 0.9, vocal_fill: 0.5, ts: 400 },
+    ]);
+    expect(out.A.map((s) => s.slot)).toEqual([1, 3]);
+    expect(out.A[0]).toEqual({
+      slot: 1,
+      clip: "a1.wav",
+      confidence: 0.95,
+      vocal_fill: 0.6,
+      ts: 100,
+    });
+    // A pre-#551-sighting join miss (no ts) and NULL numbers are honest nulls.
+    expect(out.B).toEqual([
+      { slot: 1, clip: "b1.wav", confidence: null, vocal_fill: null, ts: null },
+    ]);
+    expect(showcaseBySpecies([])).toEqual({});
+  });
+});
+
 describe("shapeRoster", () => {
   const life = [
     {
@@ -948,6 +974,19 @@ describe("shapeRoster", () => {
       // First contact is untouched -- the historical record keeps its place.
       first_clip: "amcrest/100-Northern_Cardinal.wav",
     });
+  });
+  it("carries the showcase onto the entry, empty when the pass never ran (#551)", () => {
+    const withShowcase = shapeRoster(life.slice(0, 1), [], null, {
+      "Cardinalis cardinalis": [
+        { slot: 1, clip: "a.wav", confidence: 0.95, vocal_fill: 0.6, ts: 100 },
+        { slot: 2, clip: "b.wav", confidence: 0.9, vocal_fill: 0.5, ts: 200 },
+      ],
+    });
+    expect(withShowcase[0].showcase).toEqual([
+      { slot: 1, clip: "a.wav", confidence: 0.95, vocal_fill: 0.6, ts: 100 },
+      { slot: 2, clip: "b.wav", confidence: 0.9, vocal_fill: 0.5, ts: 200 },
+    ]);
+    expect(shapeRoster(life.slice(0, 1), [], null)[0].showcase).toEqual([]);
   });
   it("leaves the best null when no sighting carries a clip", () => {
     const roster = shapeRoster(

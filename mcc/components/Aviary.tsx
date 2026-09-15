@@ -823,7 +823,64 @@ function NewArrivals({
  * quiet "faded" stamp once its file is known pruned, and a dim placeholder
  * dot when the clip write failed -- never a missing element, never a broken
  * player. Playing wears --led: green means live. */
-function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer }) {
+/** One entry of the species hero's recordings row (#551 Phase 2): a play
+ * slot beside a stamp label and the take's confidence + date in the display
+ * face. Three callers (best recording, second call, third call) share it so
+ * the three can never drift apart; an unfilled slot keeps the exact same
+ * geometry with the reserved dot and a dash (house rule #1). */
+function RecordingEntry({
+  label,
+  clip,
+  confidence,
+  ts,
+  player,
+  emptyTitle,
+}: {
+  label: string;
+  clip: string | null;
+  confidence: number | null;
+  ts: number | null;
+  player: ClipPlayer;
+  emptyTitle?: string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <PlaySlot clip={clip} player={player} emptyTitle={emptyTitle} />
+      <div className="min-w-0">
+        <dt className="stamp text-[9px] text-inkfaint">{label}</dt>
+        <dd
+          className="text-sm leading-tight text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+          title="BirdNET's confidence in this identification (0–1)"
+        >
+          {/* The dt says which recording; the number still needs to say
+              what KIND of number it is (#189). */}
+          {confidence != null ? (
+            <>
+              <span className="stamp text-[9px] text-inkfaint">conf </span>
+              {confidence.toFixed(2)}
+            </>
+          ) : (
+            "—"
+          )}
+          {ts != null && (
+            <span className="text-inkfaint"> · {dateOf(ts)}</span>
+          )}
+        </dd>
+      </div>
+    </div>
+  );
+}
+
+function PlaySlot({
+  clip,
+  player,
+  emptyTitle,
+}: {
+  clip: string | null;
+  player: ClipPlayer;
+  emptyTitle?: string;
+}) {
   // One size everywhere (#341). The best-recording slot wore a larger `big`
   // variant from #333, when it led a block of its own; since #339 put it at
   // the head of the metadata row, POSITION carries the prominence and the
@@ -832,7 +889,10 @@ function PlaySlot({ clip, player }: { clip: string | null; player: ClipPlayer })
   const glyph = "h-3 w-3";
   if (!clip)
     return (
-      <span className={`${box} border-line text-inkfaint`} title="no clip">
+      <span
+        className={`${box} border-line text-inkfaint`}
+        title={emptyTitle ?? "no clip"}
+      >
         <span className="text-[9px]">·</span>
       </span>
     );
@@ -2823,73 +2883,76 @@ export function SpeciesProfile({
                 </button>
               </div>
             </div>
-            {/* The metadata row owns both recordings (#339, reshaping #333):
-                the best take LEADS as the row's first and loudest entry --
-                its play slot first, the confidence in the display face -- and
-                first contact's slot sits beside the first-heard entry it
-                was always restating (first contact IS first_ts; a separate
-                row carried one button and a duplicate date). Both slots
-                inherit PlaySlot's state coverage -- a pre-clip-era lifer
-                shows the reserved no-clip dot, a pruned file the faded
-                stamp, an un-enhanced one its raw notch (#331) -- so the
-                row is one geometry in every state. When best IS first
-                contact (30 of 73 species) the two slots share a clip path
-                and light together: one file, honestly presented twice. */}
+            {/* The recordings row (#551 Phase 2, reshaping #339/#333): the
+                bird's repertoire in three play slots of one geometry. The
+                best recording LEADS (bestClips, #333/#442), then the
+                showcase's second and third calls -- the listener pass's
+                fullest clips that sound DIFFERENT from every earlier slot
+                (species_showcase; listener/clip_showcase.py owns the rule).
+                Slot 1 renders from best_clip, not from the table, so the
+                #447 new-best announcement keeps observing exactly what it
+                observed before. All three slots ALWAYS render: an unfilled
+                call is the reserved dot with a dash and a title that says
+                why, never a missing element, so a species growing a second
+                call reflows nothing (house rule #1). First contact's play
+                button is gone (#551): first heard IS a date, kept on the
+                facts row below, and its clip was a mediocre take by
+                construction for 43 of 73 species. */}
             <dl className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
-              <div className="flex items-center gap-3">
-                <PlaySlot clip={entry?.best_clip ?? null} player={player} />
-                <div className="min-w-0">
-                  <dt className="stamp text-[9px] text-inkfaint">
-                    best recording
-                  </dt>
-                  <dd
-                    className="text-sm leading-tight text-ink"
-                    style={{ fontFamily: "var(--font-display)" }}
-                    title="BirdNET's confidence in this identification (0–1)"
-                  >
-                    {/* The dt says which recording; the number still needs
-                        to say what KIND of number it is (#189). */}
-                    {entry?.best_confidence != null ? (
-                      <>
-                        <span className="stamp text-[9px] text-inkfaint">
-                          conf{" "}
-                        </span>
-                        {entry.best_confidence.toFixed(2)}
-                      </>
-                    ) : (
-                      "—"
-                    )}
-                    {entry?.best_ts != null && (
+              <RecordingEntry
+                label="best recording"
+                clip={entry?.best_clip ?? null}
+                confidence={entry?.best_confidence ?? null}
+                ts={entry?.best_ts ?? null}
+                player={player}
+              />
+              {([2, 3] as const).map((n) => {
+                const s = entry?.showcase?.find((x) => x.slot === n) ?? null;
+                return (
+                  <RecordingEntry
+                    key={n}
+                    label={n === 2 ? "second call" : "third call"}
+                    clip={s?.clip ?? null}
+                    confidence={s?.confidence ?? null}
+                    ts={s?.ts ?? null}
+                    player={player}
+                    emptyTitle={
+                      entry
+                        ? "no distinct call recorded yet — the showcase fills in as the bird shows more of its repertoire"
+                        : "no clip"
+                    }
+                  />
+                );
+              })}
+            </dl>
+            {/* The facts row: what the recordings row used to carry beside
+                the takes, on a line of its own so the three slots read as
+                one group. Same stamps, same reserved dashes. */}
+            <dl className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+              <div>
+                <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
+                <dd className="text-inkdim">
+                  {entry ? (
+                    <>
+                      {dateOf(entry.first_ts)}
                       <span className="text-inkfaint">
                         {" "}
-                        · {dateOf(entry.best_ts)}
+                        · via {entry.first_source}
                       </span>
-                    )}
-                  </dd>
-                </div>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <PlaySlot clip={entry?.first_clip ?? null} player={player} />
-                <div>
-                  <dt className="stamp text-[9px] text-inkfaint">first heard</dt>
-                  <dd className="text-inkdim">
-                    {entry ? (
-                      <>
-                        {dateOf(entry.first_ts)}
-                        <span className="text-inkfaint">
-                          {" "}
-                          · via {entry.first_source}
-                        </span>
-                      </>
-                    ) : (
-                      "—"
-                    )}
-                  </dd>
-                </div>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </dd>
               </div>
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">visits</dt>
-                <dd className="text-inkdim">{entry ? entry.visits : "—"}</dd>
+                {/* Thousands separators (#551): a species past 1,000 visits
+                    is the common case on the house list, and "3003" reads
+                    as a year. */}
+                <dd className="text-inkdim">
+                  {entry ? entry.visits.toLocaleString("en-US") : "—"}
+                </dd>
               </div>
               <div>
                 <dt className="stamp text-[9px] text-inkfaint">today</dt>
