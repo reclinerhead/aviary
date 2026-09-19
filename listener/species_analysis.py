@@ -126,7 +126,16 @@ PROMPT_VERSION = 1
 # regenerates a row only when it OUTRANKS the stored one (see outranks()).
 # Unknown models sort last. Override without a deploy via MERLE_MODEL_RANK
 # (comma-separated, best first).
-MODEL_RANK = ("gemma3:27b", "gemma3:12b", "gemma3:4b")
+#
+# gemma3:27b was dropped from the rank (issue #493). This task does not need
+# it: the arithmetic is done above, and "eight fact lines into two capped
+# paragraphs" is prompt-bound, not model-bound. It cost ~33 s a note at
+# 19 GB split across CPU and GPU on bluejay, and evicted every other tenant.
+# Staying in the gemma3 family is deliberate -- the prompts below are
+# hand-tuned against gemma3 quirks (hedge-lifting, magnitude phrasing). A
+# stored 27b row now sorts as UNKNOWN, i.e. last, so 12b outranks it and the
+# archive re-narrates downward exactly once, paced by the loop's tick cap.
+MODEL_RANK = ("gemma3:12b", "gemma3:4b")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS species_analysis (
