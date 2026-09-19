@@ -53,6 +53,7 @@ import {
   reconcileOrder,
   reconcileRail,
   removalUrl,
+  rhythmCellExplain,
   rhythmStrip,
   rivalLine,
   rosterOrder,
@@ -1983,6 +1984,12 @@ describe("rivalLine", () => {
       "one visit behind the A Bird",
     );
   });
+  it("separates thousands in a four-digit gap (#558)", () => {
+    const far = [entry("a", "A Bird", 3003), entry("b", "B Bird", 1)];
+    expect(rivalLine(standingFor(far, "b", (e) => e.visits)!, "quiet")).toBe(
+      "3,002 visits behind the A Bird",
+    );
+  });
   it("calls a shared lead a tie", () => {
     const tied = [entry("a", "A Bird", 5), entry("b", "B Bird", 5)];
     expect(rivalLine(standingFor(tied, "a", (e) => e.visits)!, "quiet")).toBe(
@@ -2100,7 +2107,7 @@ describe("liferNumber", () => {
 });
 
 describe("rhythmStrip", () => {
-  it("normalizes the stored histogram to the busiest hour", () => {
+  it("normalizes the stored histogram to the busiest hour and carries the count", () => {
     const hours = Array.from({ length: 24 }, () => 0);
     hours[7] = 20;
     hours[8] = 10;
@@ -2108,10 +2115,10 @@ describe("rhythmStrip", () => {
       hours,
       peak_window: { start_hour: 7, end_hour: 10 },
     })!;
-    expect(cells[7]).toEqual({ frac: 1, peak: true });
-    expect(cells[8]).toEqual({ frac: 0.5, peak: true });
-    expect(cells[12]).toEqual({ frac: 0, peak: false });
-    expect(cells[6].peak).toBe(false);
+    expect(cells[7]).toEqual({ frac: 1, count: 20, tier: "peak" });
+    expect(cells[8]).toEqual({ frac: 0.5, count: 10, tier: "peak" });
+    expect(cells[12]).toEqual({ frac: 0, count: 0, tier: "rest" });
+    expect(cells[6].tier).toBe("rest");
   });
   it("wraps a midnight-spanning peak -- an owl's peak is one stretch", () => {
     const hours = Array.from({ length: 24 }, () => 1);
@@ -2119,19 +2126,99 @@ describe("rhythmStrip", () => {
       hours,
       peak_window: { start_hour: 23, end_hour: 2 },
     })!;
-    expect(cells[23].peak).toBe(true);
-    expect(cells[0].peak).toBe(true);
-    expect(cells[1].peak).toBe(true);
-    expect(cells[2].peak).toBe(false);
+    expect(cells[23].tier).toBe("peak");
+    expect(cells[0].tier).toBe("peak");
+    expect(cells[1].tier).toBe("peak");
+    expect(cells[2].tier).not.toBe("peak");
   });
-  it("keeps all-zero hours honest flat cells, never NaN", () => {
+  it("lights the three busiest non-peak hours as the second tier, non-contiguous (#558)", () => {
+    const hours = Array.from({ length: 24 }, () => 2);
+    hours[12] = 40; // peak noon-3
+    hours[13] = 38;
+    hours[14] = 35;
+    hours[11] = 30; // the shoulders...
+    hours[15] = 28;
+    hours[6] = 25; // ...and a dawn burst far from the peak
+    hours[16] = 24; // fourth-busiest outside: cut by the cap of three
+    const cells = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 12, end_hour: 15 },
+    })!;
+    const second = cells.flatMap((c, h) => (c.tier === "second" ? [h] : []));
+    expect(second).toEqual([6, 11, 15]);
+    expect(cells[16].tier).toBe("rest");
+  });
+  it("breaks second-tier ties toward the earlier hour", () => {
+    const hours = Array.from({ length: 24 }, () => 0);
+    hours[9] = 10; // peak 9-12
+    for (const h of [5, 7, 14, 20]) hours[h] = 6; // four tied candidates
+    const cells = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 9, end_hour: 12 },
+    })!;
+    const second = cells.flatMap((c, h) => (c.tier === "second" ? [h] : []));
+    expect(second).toEqual([5, 7, 14]);
+  });
+  it("never lights a flat tail: second tier needs a quarter of the busiest hour", () => {
+    const hours = Array.from({ length: 24 }, () => 2);
+    hours[7] = 100;
+    const cells = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 7, end_hour: 10 },
+    })!;
+    expect(cells.some((c) => c.tier === "second")).toBe(false);
+    // Exactly a quarter qualifies; just under does not.
+    hours[18] = 25;
+    hours[19] = 24;
+    const again = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 7, end_hour: 10 },
+    })!;
+    expect(again[18].tier).toBe("second");
+    expect(again[19].tier).toBe("rest");
+  });
+  it("never demotes a peak hour, however quiet it is", () => {
+    const hours = Array.from({ length: 24 }, () => 0);
+    hours[7] = 50;
+    hours[8] = 0; // a hollow inside the stored window stays peak
+    hours[9] = 1;
+    hours[20] = 50; // busier than most of the window, but outside it
+    const cells = rhythmStrip({
+      hours,
+      peak_window: { start_hour: 7, end_hour: 10 },
+    })!;
+    expect(cells[8].tier).toBe("peak");
+    expect(cells[20].tier).toBe("second");
+  });
+  it("keeps all-zero hours honest flat rest cells, never NaN", () => {
     const cells = rhythmStrip({ hours: Array.from({ length: 24 }, () => 0) })!;
-    expect(cells.every((c) => c.frac === 0)).toBe(true);
+    expect(cells.every((c) => c.frac === 0 && c.count === 0)).toBe(true);
+    expect(cells.every((c) => c.tier === "rest")).toBe(true);
   });
   it("returns null without a usable histogram -- the reserved placeholder", () => {
     expect(rhythmStrip(null)).toBeNull();
     expect(rhythmStrip({})).toBeNull();
     expect(rhythmStrip({ hours: [1, 2, 3] })).toBeNull();
+  });
+});
+
+describe("rhythmCellExplain", () => {
+  const cell = (count: number) => ({ frac: 0.5, count, tier: "rest" as const });
+  it("names the hour span in the prose's clock and the count", () => {
+    expect(rhythmCellExplain(6, cell(312))).toBe("6am–7am · 312 visits");
+    expect(rhythmCellExplain(13, cell(2))).toBe("1pm–2pm · 2 visits");
+  });
+  it("wraps noon and midnight the way the strip's axis does", () => {
+    expect(rhythmCellExplain(11, cell(5))).toBe("11am–12pm · 5 visits");
+    expect(rhythmCellExplain(23, cell(5))).toBe("11pm–12am · 5 visits");
+    expect(rhythmCellExplain(0, cell(5))).toBe("12am–1am · 5 visits");
+  });
+  it("speaks singular at one and 'no visits' at zero", () => {
+    expect(rhythmCellExplain(6, cell(1))).toBe("6am–7am · 1 visit");
+    expect(rhythmCellExplain(6, cell(0))).toBe("6am–7am · no visits");
+  });
+  it("separates thousands -- the house rule for every count (#558)", () => {
+    expect(rhythmCellExplain(6, cell(1234))).toBe("6am–7am · 1,234 visits");
   });
 });
 

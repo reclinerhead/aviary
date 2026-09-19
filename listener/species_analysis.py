@@ -117,7 +117,7 @@ ANALYSIS_TIMEOUT_S = 300
 # A stored row whose prompt_version differs is due for regeneration on the
 # next tick a model is up -- which is how a prompt edit re-narrates the whole
 # archive with no migration and no manual pass.
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 
 # Model preference, best first (issue #217). Two hosts running different
 # models would otherwise thrash -- the basement box narrates everything on a
@@ -522,7 +522,7 @@ def build_stats(visit_ts, observations, now, first_ts=None, sources=None):
 def plural(n, singular, suffix="s"):
     """"1 visit" / "2 visits". The model reads these lines as its source of
     truth, and ungrammatical input invites ungrammatical prose."""
-    return f"{n} {singular}{'' if n == 1 else suffix}"
+    return f"{n:,} {singular}{'' if n == 1 else suffix}"
 
 
 def hour_label(h):
@@ -538,7 +538,7 @@ def describe_stats(stats):
     possibly use is already here, pre-computed, so it never has to derive
     one."""
     thin_overall = stats["total_visits"] < MIN_VISITS_FOR_WEATHER
-    lines = [f"Total visits on record: {stats['total_visits']}."
+    lines = [f"Total visits on record: {stats['total_visits']:,}."
              + (" Evidence: THIN throughout -- this bird has barely been "
                 "heard, and the whole note should say so." if thin_overall
                 else "")]
@@ -565,7 +565,7 @@ def describe_stats(stats):
         weekday_thin = stats["total_visits"] < 7 * MIN_BUCKET_VISITS
         lines.append(
             f"Busiest weekday: {stats['busiest_weekday']}, with "
-            f"{plural(top, 'visit')} of {stats['total_visits']}. "
+            f"{plural(top, 'visit')} of {stats['total_visits']:,}. "
             f"Evidence: {evidence(weekday_thin)}.")
     day = stats["busiest_day"]
     if day:
@@ -612,9 +612,9 @@ def describe_weather(stats):
     percentages so the model never multiplies anything."""
     w = stats["weather"]
     if not w["enough"]:
-        return (f"Only {w['visits_matched']} visits line up with the weather "
+        return (f"Only {w['visits_matched']:,} visits line up with the weather "
                 "archive so far -- too few to claim a pattern.")
-    lines = [f"These weather figures rest on {w['visits_matched']} visits "
+    lines = [f"These weather figures rest on {w['visits_matched']:,} visits "
              "that line up with the weather archive.",
              "Hours are only counted during this bird's own active hours ("
              + ", ".join(hour_label(h) for h in stats["active_hours"])
@@ -675,6 +675,9 @@ RULES = (
     "- Do not assert WHY a bird behaves as the figures show -- you were given "
     "no causes. You may wonder aloud ONCE, clearly marked as a guess "
     "(\"perhaps\"), and you may repeat habits stated in the background.\n"
+    "- Address the reader as \"you\". The driveway, the microphone, the "
+    "weather station and the yard are the reader's -- write \"your driveway "
+    "microphone\", never \"our\" or \"my\".\n"
     "- Two short paragraphs at most. No preamble, no sign-off, no restating "
     "the bird's name as a heading."
 )
@@ -693,7 +696,7 @@ def rhythm_prompt(common, description, stats):
     return (
         f"The bird: {common}.\n"
         + (f"Background: {description.strip()[:900]}\n" if description else "")
-        + "\nWhat our own driveway microphone has recorded:\n"
+        + "\nWhat your reader's driveway microphone has recorded:\n"
         + describe_stats(stats)
         + "\n\nWrite the note about WHEN this bird shows up -- its rhythm "
           "through the day and week, and whether it is coming around more or "
@@ -704,7 +707,7 @@ def rhythm_prompt(common, description, stats):
 def weather_prompt(common, stats):
     return (
         f"The bird: {common}.\n"
-        "\nWhat our own weather station and microphone say together:\n"
+        "\nWhat your reader's weather station and microphone say together:\n"
         + describe_weather(stats)
         + "\n\nWrite the note about how WEATHER and conditions move this "
           "bird's odds of turning up. If the evidence is too thin to say "
