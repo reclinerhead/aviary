@@ -519,9 +519,20 @@ def test_outranks_only_ever_triggers_upward():
     assert sa.outranks("mystery", "small", rank) is False
     assert sa.outranks("small", "mystery", rank) is True
     assert sa.outranks("mystery", "other-mystery", rank) is False
-    # The default order holds without env: 27b sweeps a 12b archive upward.
-    assert sa.outranks("gemma3:27b", "gemma3:12b") is True
-    assert sa.outranks("gemma3:12b", "gemma3:27b") is False
+    # The default order holds without env: 12b sweeps a 4b archive upward.
+    assert sa.MODEL_RANK == ("gemma3:12b", "gemma3:4b")
+    assert sa.outranks("gemma3:12b", "gemma3:4b") is True
+    assert sa.outranks("gemma3:4b", "gemma3:12b") is False
+
+
+def test_dropped_27b_regenerates_downward_exactly_once():
+    """#493: gemma3:27b left MODEL_RANK. A stored 27b row sorts as unknown,
+    so the house model outranks it and re-narrates it once; after that the
+    row says 12b and nothing outranks it again. The env override can still
+    put 27b back on top without a deploy."""
+    assert sa.outranks("gemma3:12b", "gemma3:27b") is True    # the wave
+    assert sa.outranks("gemma3:27b", "gemma3:12b") is False   # never back
+    assert sa.outranks("gemma3:12b", "gemma3:12b") is False   # then settles
 
 
 def test_stats_fingerprint_is_stable_and_sensitive():
