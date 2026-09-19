@@ -326,6 +326,35 @@ def test_prompts_forbid_invented_numbers():
         assert "Never invent" in prompt
 
 
+def test_prompts_speak_in_one_voice_the_reader_is_you():
+    # #558: the system prompt already said the READER keeps the microphone,
+    # but the fact lines said "our own" and the model copied whichever
+    # pronoun it saw last -- "Your driveway" on one page, "Our driveway" on
+    # the facing one. Now every mention agrees, and a rule says so outright.
+    stats = sa.build_stats([at(2026, 7, 18, 7)], [], at(2026, 7, 19, 12))
+    for prompt in (sa.rhythm_prompt("Northern Cardinal", "A red bird.", stats),
+                   sa.weather_prompt("Northern Cardinal", stats)):
+        assert "your reader's" in prompt
+        assert "What our own" not in prompt
+        assert 'Address the reader as "you"' in prompt
+        assert 'never "our" or "my"' in prompt
+    assert sa.PROMPT_VERSION == 2  # the bump that re-narrates the archive once
+
+
+def test_fact_lines_separate_thousands_so_the_prose_copies_the_comma():
+    # The rules forbid the model re-formatting a figure, so the comma has to
+    # be in the figure it reads (#558's house rule: every count, everywhere).
+    assert sa.plural(1234, "visit") == "1,234 visits"
+    assert sa.plural(1, "visit") == "1 visit"
+    assert sa.plural(999, "visit") == "999 visits"
+    visits = [at(2026, 7, 18, 7) + i * 3600 for i in range(1500)]
+    stats = sa.build_stats(visits, [], visits[-1] + 3600)
+    assert stats["total_visits"] == 1500
+    text = sa.describe_stats(stats)
+    assert "Total visits on record: 1,500." in text
+    assert "1500" not in text
+
+
 # --- the store ---------------------------------------------------------------
 
 @pytest.fixture

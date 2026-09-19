@@ -1738,7 +1738,7 @@ export function rivalLine(s: Standing, quiet: string): string {
   if (s.leader === null)
     return s.tied ? "tied for the lead" : "leading the yard";
   const gap = s.leader.count - s.count;
-  return `${gap === 1 ? "one visit" : `${gap} visits`} behind the ${s.leader.species_common}`;
+  return `${gap === 1 ? "one visit" : `${gap.toLocaleString("en-US")} visits`} behind the ${s.leader.species_common}`;
 }
 
 /** "1 in 6 of everything Earl hears" -- the nearest whole ratio of the
@@ -1905,14 +1905,27 @@ export type StatsFinding = {
   thin: boolean;
 };
 
-export type RhythmCell = { frac: number; peak: boolean };
+export type RhythmTier = "peak" | "second" | "rest";
+export type RhythmCell = { frac: number; count: number; tier: RhythmTier };
 
-/** stats_json's 24 hour counts -> bar fractions for the rhythm strip, peak
- * window flagged (wrapping midnight the way peak_window does -- an owl's
- * peak is one stretch, not two). SERVER-local hours by design: these must
- * match the prose beside them, not the chart below (see the section note).
- * Null when the stats carry no usable histogram; all-zero hours are honest
- * flat cells, not NaN. */
+/** How many hours the second tier may hold: the peak window is three hours
+ * wide (species_analysis.peak_window's default), so its runners-up get the
+ * same allowance. */
+const RHYTHM_SECOND_TIER_HOURS = 3;
+/** A second-tier hour must hold at least this share of the busiest hour, so
+ * a flat tail never lights arbitrary hours just for being non-zero. */
+const RHYTHM_SECOND_TIER_FLOOR = 0.25;
+
+/** stats_json's 24 hour counts -> the rhythm strip's cells (#558): bar
+ * fraction, the raw count for the hover bubble, and a tier. `peak` is the
+ * stored peak window (wrapping midnight the way peak_window does -- an
+ * owl's peak is one stretch, not two); `second` is the up-to-three busiest
+ * hours OUTSIDE it, each holding at least a quarter of the busiest hour,
+ * ties to the earlier hour -- non-contiguous by design, the shoulders of
+ * the peak more often than not; everything else is `rest`. SERVER-local
+ * hours by design: these must match the prose beside them, not the chart
+ * below (see the section note). Null when the stats carry no usable
+ * histogram; all-zero hours are honest flat cells, not NaN. */
 export function rhythmStrip(stats: AnalysisStats | null): RhythmCell[] | null {
   const hours = stats?.hours;
   if (!Array.isArray(hours) || hours.length !== 24) return null;
@@ -1923,10 +1936,43 @@ export function rhythmStrip(stats: AnalysisStats | null): RhythmCell[] | null {
     const { start_hour: a, end_hour: b } = peak;
     return a < b ? h >= a && h < b : h >= a || h < b;
   };
+  const second = new Set(
+    hours
+      .map((count, h) => ({ count, h }))
+      .filter(
+        ({ count, h }) =>
+          !inPeak(h) && count > 0 && count >= max * RHYTHM_SECOND_TIER_FLOOR,
+      )
+      .sort((a, b) => b.count - a.count || a.h - b.h)
+      .slice(0, RHYTHM_SECOND_TIER_HOURS)
+      .map(({ h }) => h),
+  );
   return hours.map((count, h) => ({
     frac: max > 0 ? count / max : 0,
-    peak: inPeak(h),
+    count,
+    tier: inPeak(h) ? "peak" : second.has(h) ? "second" : "rest",
   }));
+}
+
+/** 0 -> "12am", 13 -> "1pm": the clock the prose speaks in
+ * (species_analysis.hour_label, mirrored). */
+function rhythmHourLabel(h: number): string {
+  const hour = h % 12 || 12;
+  return `${hour}${h < 12 ? "am" : "pm"}`;
+}
+
+/** The rhythm strip's hover bubble, one line: the hour's span in the
+ * prose's clock and its visit count -- "6am–7am · 312 visits". Singular at
+ * one, "no visits" at zero, thousands separated past 999 (the house rule). */
+export function rhythmCellExplain(hour: number, cell: RhythmCell): string {
+  const span = `${rhythmHourLabel(hour)}–${rhythmHourLabel((hour + 1) % 24)}`;
+  const visits =
+    cell.count === 0
+      ? "no visits"
+      : cell.count === 1
+        ? "1 visit"
+        : `${cell.count.toLocaleString("en-US")} visits`;
+  return `${span} · ${visits}`;
 }
 
 export type StatChip = { label: string; pct: number; thin: boolean };

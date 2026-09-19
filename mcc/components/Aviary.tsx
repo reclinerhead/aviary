@@ -69,6 +69,7 @@ import {
   portraitUrl,
   reconcileOrder,
   reconcileRail,
+  rhythmCellExplain,
   rhythmStrip,
   AviaryNotice,
   aviaryTitle,
@@ -1420,7 +1421,7 @@ function ArchiveHero({
     loaded && stats.since !== null && stats.days !== null
       ? stats.days === 1
         ? `listening since ${sinceOf(stats.since)} · 1 day`
-        : `listening since ${sinceOf(stats.since)} · ${stats.days} days`
+        : `listening since ${sinceOf(stats.since)} · ${stats.days.toLocaleString("en-US")} days`
       : dash;
 
   return (
@@ -1927,7 +1928,9 @@ export function Aviary({
                             {sci}
                           </span>
                           <span className="block text-xs text-inkdim">
-                            {e.visits === 1 ? "1 visit" : `${e.visits} visits`}
+                            {e.visits === 1
+                              ? "1 visit"
+                              : `${e.visits.toLocaleString("en-US")} visits`}
                             {e.today > 0 && (
                               <span className="text-led"> · {e.today} today</span>
                             )}
@@ -2159,7 +2162,7 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
           text={analysis?.rhythm ?? null}
           stamp={
             stats?.total_visits != null
-              ? `${stats.total_visits} visits`
+              ? `${stats.total_visits.toLocaleString("en-US")} visits`
               : null
           }
           figure={<RhythmStrip stats={stats} />}
@@ -2171,7 +2174,7 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
           text={analysis?.weather ?? null}
           stamp={
             stats?.weather?.visits_matched != null
-              ? `${stats.weather.visits_matched} matched`
+              ? `${stats.weather.visits_matched.toLocaleString("en-US")} matched`
               : null
           }
           figure={<WeatherChipsRow stats={stats} />}
@@ -2253,10 +2256,18 @@ function JournalPage({
 }
 
 /** The rhythm page's margin figure (#220): the stored 24-hour histogram as
- * a strip, peak-window hours lit in --wing. STATS_JSON VERBATIM -- the same
- * numbers the prose beside it was written from, server-local hours and all
- * (the deliberate split: the chart above speaks viewer-local, the figures
- * speak the prose's clock). Reserved height in every state. */
+ * a strip in three shades of --wing (#558) -- the peak window lit, the
+ * second-busiest hours outside it at a middle opacity, the rest dim; one
+ * hue throughout, since hue carries identity on this page and a second hue
+ * would read as a second bird. STATS_JSON VERBATIM -- the same numbers the
+ * prose beside it was written from, server-local hours and all (the
+ * deliberate split: the chart above speaks viewer-local, the figures speak
+ * the prose's clock). Each hour is a full-height column so the hover target
+ * is the column, not a two-pixel bar; the bubble is the weather pills'
+ * (desktop-only, out of flow -- see WeatherChipsRow for why). Reserved
+ * height in every state. */
+const RHYTHM_TIER_OPACITY = { peak: 1, second: 0.6, rest: 0.3 } as const;
+
 function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
   const cells = rhythmStrip(stats);
   return (
@@ -2267,13 +2278,23 @@ function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
             {cells.map((c, h) => (
               <div
                 key={h}
-                className="min-w-0 flex-1 rounded-[1px]"
-                style={{
-                  height: `${Math.max(6, Math.round(c.frac * 100))}%`,
-                  background: "var(--wing)",
-                  opacity: c.peak ? 1 : 0.3,
-                }}
-              />
+                className="group relative flex h-full min-w-0 flex-1 items-end"
+              >
+                <div
+                  className="w-full rounded-[1px] transition-opacity duration-150 group-hover:opacity-100"
+                  style={{
+                    height: `${Math.max(6, Math.round(c.frac * 100))}%`,
+                    background: "var(--wing)",
+                    opacity: RHYTHM_TIER_OPACITY[c.tier],
+                  }}
+                />
+                <span
+                  role="tooltip"
+                  className="stamp pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden w-max -translate-x-1/2 translate-y-1 whitespace-nowrap rounded-sm border border-line bg-panel2 px-2 py-1 text-[10px] text-inkdim opacity-0 shadow-lg transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 md:block"
+                >
+                  {rhythmCellExplain(h, c)}
+                </span>
+              </div>
             ))}
           </div>
           <div className="stamp mt-1 flex justify-between text-[8px] text-inkfaint">
@@ -3266,8 +3287,10 @@ export function SpeciesProfile({
             <p className="mt-3 text-sm leading-relaxed text-inkdim">
               This deletes the whole record for{" "}
               <span className="italic">{sci}</span> — all{" "}
-              {entry.visits === 1 ? "1 recorded visit" : `${entry.visits} recorded visits`},
-              every clip including first contact, and the portrait. On the
+              {entry.visits === 1
+                ? "1 recorded visit"
+                : `${entry.visits.toLocaleString("en-US")} recorded visits`}
+              , every clip including first contact, and the portrait. On the
               books since {dateOf(entry.first_ts)}. If Earl ever hears it
               again, it starts over as a brand-new lifer.
             </p>
@@ -3727,7 +3750,9 @@ export function AviaryEvents({
                   className={pillClass(selected.has(sci))}
                 >
                   <span>{e.species_common}</span>
-                  <span className="text-inkfaint">{e.visits}</span>
+                  <span className="text-inkfaint">
+                    {e.visits.toLocaleString("en-US")}
+                  </span>
                 </button>
               );
             })}
@@ -3807,7 +3832,9 @@ export function AviaryEvents({
                   <dl className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-xs">
                     <div>
                       <dt className="stamp text-[9px] text-inkfaint">visits</dt>
-                      <dd className="text-inkdim">{solo.visits}</dd>
+                      <dd className="text-inkdim">
+                        {solo.visits.toLocaleString("en-US")}
+                      </dd>
                     </div>
                     <div>
                       <dt className="stamp text-[9px] text-inkfaint">today</dt>
