@@ -10,7 +10,7 @@
 # never transcribes and never records speech (design invariant, enforced in
 # gate.decide -- see listener/gate.py rule 1).
 #
-#   python -m listener.earl        (from the earl venv -- see Servers/Pearl.md)
+#   python -m listener.earl        (from the earl venv -- see toddtech-infrastructure/servers/Pearl.md)
 #
 # Bus contract (topics in bus.py):
 #   publishes  audio/events    one JSON object per accepted event, two kinds

@@ -60,7 +60,7 @@
 #
 # QUIET WHEN IDLE: a tick with nothing to do -- empty worklists, no host
 # answering -- logs NOTHING. A loop service rather than a systemd timer for
-# exactly this reason (Servers/Pearl.md's #35 journal-spam disease); the
+# exactly this reason (toddtech-infrastructure/servers/Pearl.md's #35 journal-spam disease); the
 # journal reads as a history of actual work.
 #
 # NOTHING HERE IS PASS LOGIC. The per-species functions belong to the

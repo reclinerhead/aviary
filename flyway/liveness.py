@@ -40,7 +40,7 @@
 #                              means default; malformed fails at startup --
 #                              the env_float convention)
 #
-# Runs on pearl as the station-liveness unit -- see Servers/Pearl.md.
+# Runs on pearl as the station-liveness unit -- see toddtech-infrastructure/servers/Pearl.md.
 # =============================================================================
 
 import http.client
