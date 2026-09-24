@@ -62,8 +62,8 @@ and speaks for the station on its own bus:
 Config is the `bus.py` ethos — `MERLE_STATIONS` (required, no default;
 comma-separated `name=url` pairs, names topic-safe `[a-z0-9_-]` because
 they become topic segments) and `MERLE_LIVENESS_INTERVAL_S` (default 60).
-Ops detail, unit file, and desk tests: `toddtech-infrastructure/servers/Pearl.md` § The station
-liveness watcher.
+Ops detail, unit file, and desk tests: `toddtech-infrastructure/servers/Orchid.md` § The station
+liveness watcher (the unit moved there in #371 Phase 3).
 
 ## The front door (`flyway/checkin.py` + `frontdoor/`, issue #545)
 
