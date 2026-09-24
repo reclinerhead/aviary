@@ -20,7 +20,7 @@
 # Import cost: yaml only. `yaml` sits on every venv in the fleet including
 # the Pi's two-package one (test_import_boundary.py's PI_DEPS) -- the one
 # venv that needs a deploy step is Earl's separate py3.11 venv on pearl
-# (Servers/Pearl.md).
+# (toddtech-infrastructure/servers/Pearl.md).
 # =============================================================================
 
 import os

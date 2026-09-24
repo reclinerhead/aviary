@@ -14,7 +14,7 @@
 #
 # A feed's name doubles as its published source label (audio/events, the bird
 # record's `source` column, the clip directory under MERLE_EARL_CLIPS), so
-# renaming one is a data migration (#270's runbook: Servers/Pearl.md) --
+# renaming one is a data migration (#270's runbook: toddtech-infrastructure/servers/Pearl.md) --
 # choose names that will stay.
 #
 # Kinds:

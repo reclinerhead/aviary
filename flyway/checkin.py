@@ -7,7 +7,7 @@
 #
 # Runs as the station-checkin oneshot unit -- on boot, every 15 minutes from
 # the timer, and immediately when NetworkManager reports a new lease (the
-# dispatcher hook in Servers/Birdhouse.md starts the same unit; it carries no
+# dispatcher hook in toddtech-infrastructure/servers/Birdhouse.md starts the same unit; it carries no
 # secrets, the unit's EnvironmentFile does). One POST per run, then exit:
 # non-zero on any failure so the journal says so.
 #

@@ -3,4 +3,4 @@
 # bus consumer that keeps the bird record; `gate.py` is the pure decision
 # logic both are tested through. Runs on pearl from its OWN Python 3.11 venv
 # (BirdNET's TensorFlow does not exist for the repo venv's Python yet) -- see
-# Servers/Pearl.md.
+# toddtech-infrastructure/servers/Pearl.md.

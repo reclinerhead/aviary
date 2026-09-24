@@ -35,7 +35,7 @@
 #     drift (the ts-PRIMARY-KEY dedupe reasoning).
 #   - This file is the second irreplaceable store the stack owns (the weather
 #     archive's honor): a deleted first-heard date is a moment no one sells
-#     back. Servers/Pearl.md says so where it can be acted on.
+#     back. toddtech-infrastructure/servers/Pearl.md says so where it can be acted on.
 #
 # Clip retention (issue #175) also lives HERE, not in earl.py -- deliberate:
 # the store is the thing that knows which clips are irreplaceable, so the
@@ -80,9 +80,10 @@
 #                              missing locator, so an absent/invalid value logs
 #                              a warning and seeds Home with placeholder coords
 #                              (self-healed the moment a real value arrives).
-#                              Set it on the earl-sightings unit -- Servers/
-#                              Pearl.md -- so Home's coords are right from day
-#                              one; the Phase 3 import pass reads them.
+#                              Set it on the earl-sightings unit -- see
+#                              toddtech-infrastructure/servers/Pearl.md -- so
+#                              Home's coords are right from day one; the
+#                              Phase 3 import pass reads them.
 # =============================================================================
 
 import json
@@ -604,7 +605,7 @@ def home_latlon_from_env():
     if not raw:
         print("[sightings] MERLE_LATLON not set -- location 1 (Home) seeded "
               "with placeholder coords; set it on this unit (this box's "
-              "runbook under Servers/) so the import pass can mask Home "
+              "runbook in toddtech-infrastructure/servers/) so the import pass can mask Home "
               "correctly", flush=True)
         return None
     try:

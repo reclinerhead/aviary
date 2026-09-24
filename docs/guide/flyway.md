@@ -62,7 +62,7 @@ and speaks for the station on its own bus:
 Config is the `bus.py` ethos — `MERLE_STATIONS` (required, no default;
 comma-separated `name=url` pairs, names topic-safe `[a-z0-9_-]` because
 they become topic segments) and `MERLE_LIVENESS_INTERVAL_S` (default 60).
-Ops detail, unit file, and desk tests: `Servers/Pearl.md` § The station
+Ops detail, unit file, and desk tests: `toddtech-infrastructure/servers/Pearl.md` § The station
 liveness watcher.
 
 ## The front door (`flyway/checkin.py` + `frontdoor/`, issue #545)
@@ -119,7 +119,7 @@ private address + a DNS-01 certificate) is a possible follow-up, not this.
 Deployment-day rule: **Todd sets the bookmarks**, home-screen icons, and
 the QR sticker to the front-door URL — a person who bookmarks after
 landing bookmarks the IP again. The DHCP reservation becomes optional.
-Ops (units, hook, rollout, failure modes): `Servers/Birdhouse.md` § The
+Ops (units, hook, rollout, failure modes): `toddtech-infrastructure/servers/Birdhouse.md` § The
 units and step 13; Vercel project setup: `frontdoor/README.md`.
 
 ## What arrives here later (decided in epic #212, not yet built)

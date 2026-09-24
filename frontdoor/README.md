@@ -58,7 +58,7 @@ On the Vercel side: add `id:token` to `FRONTDOOR_STATIONS`, redeploy (env
 changes need one). On the station: the two lines in `station.env`
 (`MERLE_FRONTDOOR_URL`, `MERLE_FRONTDOOR_TOKEN` — `station.env.example` §
 The front door), the `station-checkin` service + timer and the
-NetworkManager dispatcher hook (`Servers/Birdhouse.md` § The units), then
+NetworkManager dispatcher hook (`toddtech-infrastructure/servers/Birdhouse.md` § The units), then
 `systemctl start station-checkin.service` and watch `/<id>/status` fill
 in. Autodeploy ships the code; it never ships env or units.
 

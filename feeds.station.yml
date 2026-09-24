@@ -21,7 +21,7 @@
 # error, station deaf, and only the honest `silent` state to show for it.
 # `CARD=S3` is this dongle's ALSA name (`card N: S3 [Sound Blaster Play! 3]`),
 # stable across enumeration order. A future card swap is a rename here
-# (and in Servers/Birdhouse.md § The mic), not an index hunt.
+# (and in toddtech-infrastructure/servers/Birdhouse.md § The mic), not an index hunt.
 #
 # The feed name is its published source label, its clip directory under
 # MERLE_EARL_CLIPS, and the bird record's `source` column -- renaming it is a
