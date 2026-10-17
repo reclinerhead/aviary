@@ -1,0 +1,37 @@
+# =============================================================================
+# project-squirrel -- feeds.kestrel.yml (issue #580)
+#
+# Kestrel's own feed registry: Kathy's station is the first station with two
+# ears. Kestrel's /home/todd/station.env points MERLE_FEEDS here instead of
+# at the shared feeds.station.yml, which birdhouse also loads and which must
+# never carry a Kathy-only feed (a worker there could never connect).
+#
+# window-mic is feeds.station.yml's entry exactly (test_feeds.py holds them
+# equal): the Play! 3 + Movo lav under the front eave. See that file's header
+# before touching the device name.
+#
+# house-rear is the Warbler32 under the rear eave (#512 built it). It is found
+# by its MAC on every capture (re)start, never by address: no mDNS on the
+# board, no router login at Kathy's for a DHCP reservation. This file holds
+# no LAN address, which is what makes it safe to commit and ship on the
+# aviary-station-stable channel. The cmd is shlex-split with no shell, so the
+# interpreter is absolute (earl-listener's own ExecStart venv); the worker
+# inherits the unit's WorkingDirectory, the checkout, so `-m` resolves.
+# Mechanism and logging: listener/mic_by_mac.py.
+#
+# Feed names are source labels, clip directories, and the bird record's
+# `source` column -- renaming one is a data migration (#270). `house-rear`
+# shares the home Amcrest's label, which is fine: labels are per station
+# (each has its own earl.db and Aviary), and Flyway (#556) keys digests by
+# station, so the two never meet.
+# =============================================================================
+
+feeds:
+  window-mic:
+    kind: command
+    cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q
+    earl: true
+  house-rear:
+    kind: command
+    cmd: /home/todd/earl-venv/bin/python -m listener.mic_by_mac 90:70:69:1a:1c:a8
+    earl: true

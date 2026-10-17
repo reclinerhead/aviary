@@ -210,6 +210,28 @@ def test_shipped_station_registry_is_a_working_ear():
     assert not re.search(r"plughw:\d", device), device
 
 
+def test_shipped_kestrel_registry_is_two_ears():
+    """Kestrel's own registry (feeds.kestrel.yml, issue #580): the shared
+    station mic plus the rear Warbler32, found by MAC. The file ships on the
+    station channel, so it must hold no LAN address -- an address is exactly
+    what Kathy's router can change without telling anyone."""
+    root = feeds.DEFAULT_PATH.parent
+    kestrel_path = root / "feeds.kestrel.yml"
+    kestrel = feeds.load_feeds(kestrel_path)
+    assert [f.name for f in feeds.feeds_for("earl", kestrel_path)] == \
+        ["window-mic", "house-rear"]
+    assert not any(f.naturalist for f in kestrel.values())
+    # The front ear is the shared station entry exactly, not a fork of it.
+    station = feeds.load_feeds(root / "feeds.station.yml")
+    assert kestrel["window-mic"] == station["window-mic"]
+    rear = kestrel["house-rear"]
+    assert rear.kind == "command"
+    argv = shlex.split(rear.cmd)
+    assert argv[0].startswith("/") and argv[0].endswith("/python")
+    assert argv[1:] == ["-m", "listener.mic_by_mac", "90:70:69:1a:1c:a8"]
+    assert not re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", rear.cmd), rear.cmd
+
+
 def test_shipped_rover_cmd_carries_ssh_keepalives():
     """Layer 2 of the stall defenses (issue #201), now data: merle powered
     off mid-capture half-opens the TCP, and the kernel's own keepalive is
