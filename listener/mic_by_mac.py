@@ -26,13 +26,19 @@
 # `journalctl -u earl-listener` shows which address the mic was found at, or
 # that it wasn't; a hand run prints the same lines to the terminal.
 #
+# The capture binary is ffmpeg, which a station only has if someone installed
+# it (window-mic is arecord): a missing one is a named LOG_ERR line, not a
+# silent `rc 1`.
+#
 # Pure logic -- the neighbor pick and the sweep's targets -- is under
-# test_listener_mic_by_mac.py. The sweep and the exec are I/O at the
-# boundary, desk-checked on orchid (#580 step 1).
+# test_listener_mic_by_mac.py, along with main()'s exits around the exec.
+# The sweep and the exec itself are I/O at the boundary, desk-checked on
+# orchid (#580 step 1).
 # =============================================================================
 
 import ipaddress
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -153,8 +159,23 @@ def main(args=None):
 
     from listener import earl   # lazy: the sweep path never needs paho
     argv, redacted = earl.rtsp_argv(f"rtsp://{ip}{RTSP_PATH}")
+    # Stations never needed ffmpeg (window-mic is arecord), and kestrel's
+    # install day found every exec dying on FileNotFoundError -- a traceback
+    # on the stderr Earl discards, so the journal showed only `rc 1`. Say
+    # what's missing, through the channel that reaches the journal.
+    if shutil.which(argv[0]) is None:
+        syslog.syslog(syslog.LOG_ERR,
+                      f"{mac} at {ip}, but {argv[0]} is not installed -- "
+                      f"sudo apt-get install --no-install-recommends "
+                      f"{argv[0]}")
+        return 1
     syslog.syslog(f"{mac} at {ip}; exec {redacted}")
-    os.execvp(argv[0], argv)
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as e:
+        syslog.syslog(syslog.LOG_ERR, f"{mac} at {ip}: exec {argv[0]} "
+                                      f"failed ({e})")
+        return 1
 
 
 if __name__ == "__main__":

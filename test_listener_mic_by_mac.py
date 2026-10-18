@@ -8,9 +8,20 @@
 # just reads `offline` a hundred miles away -- so the table's edge cases are
 # pinned here. The sweep itself and the exec into ffmpeg are I/O, desk-
 # checked on orchid.
+#
+# main()'s exits around the exec are pinned too, after kestrel's install day
+# (2026-10-18): stations had no ffmpeg, every exec died on FileNotFoundError,
+# and Earl's discarded stderr left the journal saying only `rc 1`. syslog is
+# faked through sys.modules (it is POSIX-only and imported inside main), the
+# neighbor table is canned, and os.execvp is replaced, so nothing here
+# touches the network or replaces the test process.
 # =============================================================================
 
-from listener import mic_by_mac
+import sys
+
+import pytest
+
+from listener import earl, mic_by_mac
 
 MAC = "90:70:69:1a:1c:a8"
 
@@ -91,3 +102,70 @@ def test_a_wider_prefix_is_narrowed_to_the_slash_24():
     targets = mic_by_mac.sweep_targets("10.0.5.9/16")
     assert len(targets) == 253
     assert all(t.startswith("10.0.5.") for t in targets)
+
+
+# --- main()'s exits around the exec -------------------------------------------
+
+class FakeSyslog:
+    """Stands in for the POSIX-only syslog module; keeps (priority, line)."""
+    LOG_PERROR, LOG_ERR, LOG_WARNING, LOG_INFO = 0x20, 3, 4, 6
+
+    def __init__(self):
+        self.lines = []
+
+    def openlog(self, *args, **kwargs):
+        pass
+
+    def syslog(self, *args):
+        priority = args[0] if len(args) == 2 else self.LOG_INFO
+        self.lines.append((priority, args[-1]))
+
+
+@pytest.fixture
+def wired(monkeypatch):
+    """main() on a box whose neighbor table already holds the mic (TABLE:
+    192.168.12.77, REACHABLE), with exec recorded instead of performed."""
+    log = FakeSyslog()
+    monkeypatch.setitem(sys.modules, "syslog", log)
+    monkeypatch.setattr(mic_by_mac, "_run", lambda argv: TABLE)
+    execs = []
+    monkeypatch.setattr(mic_by_mac.os, "execvp",
+                        lambda file, argv: execs.append(argv))
+    return log, execs
+
+
+def test_found_mic_execs_earls_rtsp_argv(wired, monkeypatch):
+    log, execs = wired
+    monkeypatch.setattr(mic_by_mac.shutil, "which", lambda f: "/usr/bin/" + f)
+    mic_by_mac.main([MAC])
+    assert execs == [earl.rtsp_argv("rtsp://192.168.12.77/audio")[0]]
+    assert any("at 192.168.12.77; exec ffmpeg" in line for _, line in log.lines)
+
+
+def test_missing_ffmpeg_is_a_named_error_not_an_exec(wired, monkeypatch):
+    # The install-day bug: say what's missing, through the channel that
+    # reaches the journal, and never attempt the exec.
+    log, execs = wired
+    monkeypatch.setattr(mic_by_mac.shutil, "which", lambda f: None)
+    assert mic_by_mac.main([MAC]) == 1
+    assert execs == []
+    errors = [line for priority, line in log.lines
+              if priority == FakeSyslog.LOG_ERR]
+    assert len(errors) == 1
+    assert "ffmpeg is not installed" in errors[0]
+    assert "apt-get install" in errors[0]
+
+
+def test_exec_failure_is_logged_and_returns_1(wired, monkeypatch):
+    # which() can say yes and the exec still fail (permissions, a broken
+    # binary): that is a logged exit too, never a bare traceback.
+    log, _ = wired
+    monkeypatch.setattr(mic_by_mac.shutil, "which", lambda f: "/usr/bin/" + f)
+
+    def refuse(file, argv):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(mic_by_mac.os, "execvp", refuse)
+    assert mic_by_mac.main([MAC]) == 1
+    assert any(priority == FakeSyslog.LOG_ERR and "exec ffmpeg failed" in line
+               for priority, line in log.lines)
