@@ -75,6 +75,26 @@
      green means LIVE) is deutan ΔE 13.2 against a target of 12. --led also
      never appears as a bar, so the two never share a mark. */
   --wing: #9db35c;
+
+  /* Notice ink (epic #447). The palette's THIRD non-species accent, and it
+     names neither a thing nor a module but a MOMENT: the announcement strip,
+     where the yard says "something happened, come look". Two consumers
+     shipped on the house green and vanished into it -- a notice must be the
+     one lit card on a cold-green page, and warm against cold is how a card
+     reads as lit rather than as another panel. Gold, not amber: it is the
+     page's own cream ink (--ink, hue 90) with the chroma turned up, so it
+     belongs to the type rather than to a species. Never --led (live), never
+     --squirrel (a species, hue 42), never --turkey (a species, and the
+     nearest yellow, hue 111).
+
+     Measured, not eyeballed (the --rain rule): #d9a441 is OKLCH L 0.751 /
+     C 0.130 / h 80 -- clears the 0.10 chroma floor, 7.8:1 on --panel and
+     7.2:1 on --panel-2 (AAA for the 12px stamp it inks), and sits between
+     --squirrel and --turkey in hue, 38 degrees from the nearer. The wash is
+     the same ink at 9% over --panel-2: lighter than the panels around it
+     by exactly one hue's worth, never a second surface color. */
+  --notice: #d9a441;
+  --notice-wash: color-mix(in oklab, var(--notice) 9%, var(--panel-2));
 }
 
 @theme inline {
@@ -93,6 +113,8 @@
   --color-rain: var(--rain);
   --color-sky: var(--sky);
   --color-wing: var(--wing);
+  --color-notice: var(--notice);
+  --color-noticewash: var(--notice-wash);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
 }
