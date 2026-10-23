@@ -74,17 +74,22 @@ import {
   rhythmStrip,
   AviaryNotice,
   aviaryTitle,
-  demoNotice,
   dismissNotice,
   isNoticeDismissed,
   mastheadSub,
   pickVisibleNotice,
+  championPaths,
+  demoNoticesFor,
+  mergeNewBestNotices,
+  newBestChanges,
+  newBestNotice,
   rareReturnNotice,
   rareReturns,
   readLifeListQuery,
   removalUrl,
   rivalLine,
   rosterOrder,
+  undismissNotice,
   ruleStamp,
   RULE_THRESHOLD_STEPS,
   type SpeciesRule,
@@ -1161,25 +1166,40 @@ function AviaryNoticeStrip({
 
 /**
  * Post-mount notice selection so localStorage / URL demo never hydration-
- * mismatch. `queued` is the product queue (Phase 2+); `?notice=demo` adds
- * a desk-check notice without shipping permanent chrome.
+ * mismatch. `queued` is the product queue; `?notice=demo|rare_return|
+ * new_best|all` adds desk-check samples (demoNoticesFor) dressed on
+ * `samples`, the roster the page holds, without shipping permanent chrome.
  */
-function useAviaryNoticeStrip(queued: AviaryNotice[] = []) {
+function useAviaryNoticeStrip(
+  queued: AviaryNotice[] = [],
+  samples: RosterEntry[] = [],
+) {
   const [visible, setVisible] = useState<AviaryNotice | null>(null);
   const queuedKey = queued.map((n) => n.id).join("|");
   // The current candidates, kept for dismiss to re-pick from (#549): closing
   // the visible notice reveals the next one the queue holds, in rank order,
   // rather than leaving the strip empty until the queue key changes.
   const candidates = useRef<AviaryNotice[]>([]);
+  // Sample ids whose dismissal this page load has already forgotten: the
+  // flag means "show me", once per load -- not once per poll tick.
+  const undismissed = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const all = [...queued];
     try {
-      if (
-        typeof window !== "undefined" &&
-        new URLSearchParams(window.location.search).get("notice") === "demo"
-      ) {
-        all.push(demoNotice());
+      if (typeof window !== "undefined") {
+        const flag = new URLSearchParams(window.location.search).get("notice");
+        for (const d of demoNoticesFor(
+          flag,
+          samples,
+          Math.floor(Date.now() / 1000),
+        )) {
+          if (!undismissed.current.has(d.id)) {
+            undismissNotice(localStorage, d.id);
+            undismissed.current.add(d.id);
+          }
+          all.push(d);
+        }
       }
     } catch {
       // ignore
@@ -1199,7 +1219,7 @@ function useAviaryNoticeStrip(queued: AviaryNotice[] = []) {
         ? cur
         : next,
     );
-  }, [queued, queuedKey]);
+  }, [queued, queuedKey, samples]);
 
   const onDismiss = useCallback((id: string) => {
     dismissNotice(localStorage, id);
@@ -1555,22 +1575,42 @@ export function Aviary({
   const midnightRef = useRef<number | null>(null);
   const player = useClipPlayer();
 
+  // New best recording (#447 Phase 2): the champion clip path per species
+  // as of the last roster snapshot. Seeded by the hydrate (openedWith: the
+  // store's historical champions never announce on first paint) and
+  // advanced by every reconciliation poll, which is where champions move:
+  // a live audio/events row carries no vocal_fill, so the client never
+  // re-ranks on it (notices observe bestClips, they don't invent a second
+  // ranking) and the store's truth lands within the minute. Null until
+  // seeded. Detected notices accumulate for the session; dismiss is the
+  // existing per-id localStorage key.
+  const championRef = useRef<Record<string, string> | null>(null);
+  const [newBestQueue, setNewBestQueue] = useState<AviaryNotice[]>([]);
+
   // Announcement strip (#447): the dashboard's product queue is the rare
   // visitors (#549) -- pure roster math off the roster the grid already
   // holds and the poll-advanced clock, so a live rare visit enqueues the
   // moment the bus says so and a notice ages out when its window truly
   // passes (the New Arrivals clock rule), never mid-read. First paint may
   // show one: the day-keyed id plus localStorage dismiss is the whole
-  // nag policy, and "come back and see it" is the point. Memoized on the
+  // nag policy, and "come back and see it" is the point. New-best notices
+  // ride behind them; pickVisibleNotice ranks the kinds. Memoized on the
   // same inputs so the strip hook sees a stable queue between events.
-  // Desk-check the shell with /aviary?notice=demo.
+  // Desk-check with /aviary?notice=all (or one kind: demo, rare_return,
+  // new_best) -- samples dressed on a real roster species.
+  const rosterEntries = useMemo(() => Object.values(roster), [roster]);
   const noticeQueue = useMemo(() => {
-    if (nowTs === null) return [];
-    const entries = Object.values(roster);
-    const since = archiveStats(entries, nowTs).since;
-    return rareReturns(entries, nowTs, since).map(rareReturnNotice);
-  }, [roster, nowTs]);
-  const { notice, onDismiss } = useAviaryNoticeStrip(noticeQueue);
+    const rare =
+      nowTs === null
+        ? []
+        : rareReturns(
+            rosterEntries,
+            nowTs,
+            archiveStats(rosterEntries, nowTs).since,
+          ).map(rareReturnNotice);
+    return [...rare, ...newBestQueue];
+  }, [rosterEntries, nowTs, newBestQueue]);
+  const { notice, onDismiss } = useAviaryNoticeStrip(noticeQueue, rosterEntries);
 
   // Session-persist the life-list query (#410): same post-mount pattern as
   // clip gain -- sessionStorage is not available on the server render, so
@@ -1607,6 +1647,8 @@ export function Aviary({
         // visits first) -- the literals here and in useState must agree.
         setOrder(rosterOrder(entries, "visits", "desc"));
         setRail(todayVisitors(entries));
+        // The new-best baseline: everything on record is old news.
+        championRef.current = championPaths(entries);
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -1763,6 +1805,18 @@ export function Aviary({
         .then((body: { species?: RosterEntry[] } | null) => {
           const entries = body?.species;
           if (!Array.isArray(entries)) return;
+          // New best (#447 Phase 2): diff champion paths against the last
+          // snapshot before the roster swap; a tick that beat the hydrate
+          // (visibility fired early) just seeds instead.
+          const seeded = championRef.current;
+          if (seeded !== null) {
+            const changed = newBestChanges(seeded, entries);
+            if (changed.length > 0)
+              setNewBestQueue((prev) =>
+                mergeNewBestNotices(prev, changed.map(newBestNotice)),
+              );
+          }
+          championRef.current = championPaths(entries);
           midnightRef.current = mid;
           setMidnight(mid);
           setNowTs(Math.floor(Date.now() / 1000));

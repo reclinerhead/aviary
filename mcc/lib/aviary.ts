@@ -1104,6 +1104,19 @@ export function dismissNotice(
   }
 }
 
+/** Forget a dismissal -- the desk-check flag's "show me again". */
+export function undismissNotice(
+  store: Pick<Storage, "removeItem"> | null | undefined,
+  id: string,
+): void {
+  if (!store) return;
+  try {
+    store.removeItem(noticeDismissKey(id));
+  } catch {
+    // private mode: fail quiet
+  }
+}
+
 /**
  * Pick the single notice to show: highest priority kind among undismissed
  * candidates (stable order within a kind = first in the list wins). Empty
@@ -1997,6 +2010,136 @@ export function rareReturnNotice(e: RosterEntry): AviaryNotice {
     species_common: e.species_common,
     portrait_file: e.image_file ?? null,
   };
+}
+
+// --- New best recording (#447 Phase 2, the strip's second event consumer) --
+//
+// Earl rewrites a visit's clip in place when a window beats it, and the
+// roster's champion per species (`best_clip`, from bestClips) moves as the
+// store's best VISIT changes. Nothing ever said so: a new champion simply
+// replaced the old one in slot 1. This observes that move -- notices watch
+// the ranking, they never invent a second one -- as a diff of champion clip
+// PATHS between two roster snapshots. The path is the identity: an in-place
+// rewrite that keeps its path stays silent in v1.
+
+/** Champion clip path per species, for the species that have one. */
+export function championPaths(entries: RosterEntry[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const e of entries) if (e.best_clip) out[e.species_sci] = e.best_clip;
+  return out;
+}
+
+/** Entries whose champion clip path CHANGED since `prev`: a previous
+ * champion existed and the new one is a different path. A species earning
+ * its first clip ever is first contact (New Arrivals' moment), not a new
+ * best; a species losing its clip (pruned files) is a gap, not news. Name
+ * order for determinism within one snapshot. */
+export function newBestChanges(
+  prev: Record<string, string>,
+  entries: RosterEntry[],
+): RosterEntry[] {
+  return entries
+    .filter((e) => {
+      const was = prev[e.species_sci];
+      return Boolean(was) && Boolean(e.best_clip) && e.best_clip !== was;
+    })
+    .sort((a, b) => a.species_common.localeCompare(b.species_common));
+}
+
+/** The notice for a new champion: the stamp says "new best recording", the
+ * display line is the bird, the body its opening confidence. Id = species +
+ * clip path (newBestNoticeId), so the same champion never nags after a
+ * dismiss and a later champion for the same bird announces again. */
+export function newBestNotice(e: RosterEntry): AviaryNotice {
+  return {
+    id: newBestNoticeId(e.species_sci, e.best_clip ?? ""),
+    kind: "new_best",
+    title: e.species_common,
+    body:
+      e.best_confidence != null
+        ? `confidence ${e.best_confidence.toFixed(2)}`
+        : undefined,
+    href: `/aviary/${encodeURIComponent(e.species_sci)}`,
+    species_sci: e.species_sci,
+    species_common: e.species_common,
+    portrait_file: e.image_file ?? null,
+  };
+}
+
+/** Fold freshly detected notices into the session's queue: one per species,
+ * the newest champion replacing an older undismissed notice for the same
+ * bird (a "new best" for a clip no longer on top would be a lie), appended
+ * in arrival order so the strip's within-kind order is first-come. */
+export function mergeNewBestNotices(
+  prev: AviaryNotice[],
+  incoming: AviaryNotice[],
+): AviaryNotice[] {
+  if (incoming.length === 0) return prev;
+  const replaced = new Set(incoming.map((n) => n.species_sci));
+  return [...prev.filter((n) => !replaced.has(n.species_sci)), ...incoming];
+}
+
+// --- Desk-check samples: ?notice=<kind[,kind]|all> ---------------------------
+//
+// Real notices are rare by design (that is the point of them), so nobody
+// should have to wait a week to see what one looks like. The flag dresses a
+// REAL roster species in placeholder numbers, so the portrait thumb and the
+// click-through are the genuine article; only the story is made up. Ids
+// wear a `demo:` prefix so a sample never collides with a real notice's
+// dismiss key, and the hook forgets a sample's dismissal on each page load
+// so the flag always shows it again. `all` queues every kind, which also
+// walks the queue: dismiss reveals the next by rank. Not a product surface.
+
+/** The kinds `?notice=all` stands for, in rank order. */
+export const DEMO_NOTICE_KINDS = ["rare_return", "new_best", "demo"] as const;
+
+/** One sample notice of `kind`, dressed on `model` (a real roster entry);
+ * null for an unknown kind, or for a species kind with no model to dress. */
+export function sampleNotice(
+  kind: string,
+  model: RosterEntry | null,
+  now: number,
+): AviaryNotice | null {
+  if (kind === "demo") return demoNotice();
+  if (!model) return null;
+  if (kind === "rare_return")
+    return {
+      ...rareReturnNotice({ ...model, visits: 3, last_ts: now }),
+      id: "demo:rare_return",
+    };
+  if (kind === "new_best")
+    return {
+      ...newBestNotice({
+        ...model,
+        best_clip: model.best_clip ?? "demo/sample.wav",
+        best_confidence: model.best_confidence ?? 0.97,
+      }),
+      id: "demo:new_best",
+    };
+  return null;
+}
+
+/** Parse the flag and build its samples. The model species is the first by
+ * name that has a portrait (so the thumb is real), else the first by name,
+ * else none -- a page with no roster (the profile) can only show `demo`. */
+export function demoNoticesFor(
+  flag: string | null | undefined,
+  entries: RosterEntry[],
+  now: number,
+): AviaryNotice[] {
+  if (!flag) return [];
+  const kinds =
+    flag === "all" ? [...DEMO_NOTICE_KINDS] : flag.split(",").map((k) => k.trim());
+  const byName = [...entries].sort((a, b) =>
+    a.species_common.localeCompare(b.species_common),
+  );
+  const model = byName.find((e) => e.image_file) ?? byName[0] ?? null;
+  const out: AviaryNotice[] = [];
+  for (const k of kinds) {
+    const n = sampleNotice(k, model, now);
+    if (n && !out.some((o) => o.id === n.id)) out.push(n);
+  }
+  return out;
 }
 
 /** The slice of stats_json the margin figures read. Everything optional:

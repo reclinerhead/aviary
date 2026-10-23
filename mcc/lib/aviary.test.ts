@@ -47,6 +47,14 @@ import {
   parseRulePayload,
   parseSpeciesFilter,
   pickVisibleNotice,
+  championPaths,
+  DEMO_NOTICE_KINDS,
+  demoNoticesFor,
+  mergeNewBestNotices,
+  newBestChanges,
+  newBestNotice,
+  sampleNotice,
+  undismissNotice,
   RARE_RETURN_MATURITY_S,
   RARE_RETURN_MAX_VISITS,
   RARE_RETURN_WINDOW_S,
@@ -2495,6 +2503,179 @@ describe("rare-return notice helpers (#549)", () => {
       species_common: "Pileated Woodpecker",
       portrait_file: "Dryocopus_pileatus.jpg",
     });
+  });
+});
+
+describe("new best recording (#447 Phase 2)", () => {
+  const champ = (
+    sci: string,
+    common: string,
+    clip: string | null,
+    confidence: number | null = 0.9,
+  ) =>
+    ({
+      ...entry(sci, common, 10, 0, 1, 0),
+      best_clip: clip,
+      best_confidence: confidence,
+      best_ts: 1000,
+    }) as RosterEntry;
+  const hydrated = [
+    champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/100-NC.wav"),
+    champ("Turdus migratorius", "American Robin", "amcrest/200-AR.wav"),
+    champ("Strix varia", "Barred Owl", null, null), // no clip yet
+  ];
+
+  it("championPaths keeps only species with a clip", () => {
+    expect(championPaths(hydrated)).toEqual({
+      "Cardinalis cardinalis": "amcrest/100-NC.wav",
+      "Turdus migratorius": "amcrest/200-AR.wav",
+    });
+  });
+
+  it("first paint never floods: a snapshot diffed against itself is silent", () => {
+    expect(newBestChanges(championPaths(hydrated), hydrated)).toEqual([]);
+  });
+
+  it("a new champion path fires; a same-path rewrite stays silent", () => {
+    const seed = championPaths(hydrated);
+    const later = [
+      champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/900-NC.wav", 0.97),
+      // Same path, better number: the in-place rewrite case, quiet in v1.
+      champ("Turdus migratorius", "American Robin", "amcrest/200-AR.wav", 0.99),
+      champ("Strix varia", "Barred Owl", null, null),
+    ];
+    expect(newBestChanges(seed, later).map((e) => e.species_sci)).toEqual([
+      "Cardinalis cardinalis",
+    ]);
+  });
+
+  it("a species' first clip ever is first contact, not a new best; a lost clip is a gap", () => {
+    const seed = championPaths(hydrated);
+    const later = [
+      champ("Cardinalis cardinalis", "Northern Cardinal", null, null), // pruned
+      champ("Turdus migratorius", "American Robin", "amcrest/200-AR.wav"),
+      champ("Strix varia", "Barred Owl", "amcrest/300-BO.wav", 0.8), // first clip
+      champ("Sitta carolinensis", "White-breasted Nuthatch", "x.wav"), // lifer
+    ];
+    expect(newBestChanges(seed, later)).toEqual([]);
+  });
+
+  it("orders several changes by name within one snapshot", () => {
+    const seed = championPaths(hydrated);
+    const later = [
+      champ("Turdus migratorius", "American Robin", "amcrest/901-AR.wav"),
+      champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/900-NC.wav"),
+    ];
+    expect(newBestChanges(seed, later).map((e) => e.species_common)).toEqual([
+      "American Robin",
+      "Northern Cardinal",
+    ]);
+  });
+
+  it("builds the strip notice keyed by species + clip path", () => {
+    const e = {
+      ...champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/900-NC.wav", 0.973),
+      image_file: "Cardinalis_cardinalis.jpg",
+    } as RosterEntry;
+    expect(newBestNotice(e)).toEqual({
+      id: newBestNoticeId("Cardinalis cardinalis", "amcrest/900-NC.wav"),
+      kind: "new_best",
+      title: "Northern Cardinal",
+      body: "confidence 0.97",
+      href: "/aviary/Cardinalis%20cardinalis",
+      species_sci: "Cardinalis cardinalis",
+      species_common: "Northern Cardinal",
+      portrait_file: "Cardinalis_cardinalis.jpg",
+    });
+    expect(
+      newBestNotice(champ("Strix varia", "Barred Owl", "b.wav", null)).body,
+    ).toBeUndefined();
+  });
+
+  it("merging keeps one notice per species, newest champion winning, arrival order kept", () => {
+    const a1 = newBestNotice(champ("A", "Alpha", "a1.wav"));
+    const b1 = newBestNotice(champ("B", "Beta", "b1.wav"));
+    const a2 = newBestNotice(champ("A", "Alpha", "a2.wav"));
+    const queue = mergeNewBestNotices(mergeNewBestNotices([], [a1, b1]), [a2]);
+    expect(queue.map((n) => n.id)).toEqual([b1.id, a2.id]);
+    // A later champion is a new id: the dismissed a1 never blocks a2.
+    expect(a2.id).not.toBe(a1.id);
+    // Nothing incoming: the same array back, no churn for the strip hook.
+    expect(mergeNewBestNotices(queue, [])).toBe(queue);
+  });
+});
+
+describe("desk-check samples: ?notice=<kinds> (#447)", () => {
+  const now = 1_700_000_000;
+  const yard = [
+    { ...entry("Zz", "Zebra Finch", 40, 0, 1, 0), image_file: null },
+    { ...entry("Cc", "Carolina Wren", 300, 0, 1, 0), image_file: "Cc.jpg", best_clip: "c.wav", best_confidence: 0.91 },
+    { ...entry("Aa", "Acadian Flycatcher", 1, 0, 0, 0), image_file: null },
+  ] as RosterEntry[];
+
+  it("no flag, no samples", () => {
+    expect(demoNoticesFor(null, yard, now)).toEqual([]);
+    expect(demoNoticesFor("", yard, now)).toEqual([]);
+  });
+  it("dresses the first species BY NAME that has a portrait", () => {
+    const [n] = demoNoticesFor("rare_return", yard, now);
+    expect(n).toMatchObject({
+      id: "demo:rare_return",
+      kind: "rare_return",
+      title: "Carolina Wren",
+      body: "only its 3rd visit ever",
+      species_sci: "Cc",
+      portrait_file: "Cc.jpg",
+    });
+  });
+  it("falls back to the first by name when no portrait exists, and to nothing on an empty roster", () => {
+    const bare = yard.map((e) => ({ ...e, image_file: null }));
+    expect(demoNoticesFor("new_best", bare, now)[0]?.title).toBe(
+      "Acadian Flycatcher",
+    );
+    expect(demoNoticesFor("new_best", [], now)).toEqual([]);
+    // The bare shell needs no species: the profile page can still show it.
+    expect(demoNoticesFor("demo", [], now).map((n) => n.kind)).toEqual(["demo"]);
+  });
+  it("new_best borrows the real champion when there is one, invents one otherwise", () => {
+    expect(sampleNotice("new_best", yard[1], now)).toMatchObject({
+      id: "demo:new_best",
+      kind: "new_best",
+      title: "Carolina Wren",
+      body: "confidence 0.91",
+    });
+    expect(sampleNotice("new_best", yard[0], now)?.body).toBe("confidence 0.97");
+    expect(sampleNotice("bogus", yard[0], now)).toBeNull();
+    expect(sampleNotice("rare_return", null, now)).toBeNull();
+  });
+  it("`all` is every kind in rank order, and a list dedupes", () => {
+    expect(demoNoticesFor("all", yard, now).map((n) => n.kind)).toEqual([
+      ...DEMO_NOTICE_KINDS,
+    ]);
+    expect(
+      demoNoticesFor("new_best, new_best,demo", yard, now).map((n) => n.id),
+    ).toEqual(["demo:new_best", "demo:announcement-strip"]);
+  });
+  it("sample ids never collide with a real notice's dismiss key", () => {
+    const real = newBestNotice(yard[1]);
+    const sample = sampleNotice("new_best", yard[1], now);
+    expect(sample?.id).not.toBe(real.id);
+  });
+  it("undismissNotice forgets a dismissal", () => {
+    const mem = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        mem.set(k, v);
+      },
+      removeItem: (k: string) => {
+        mem.delete(k);
+      },
+    };
+    dismissNotice(store, "demo:new_best");
+    expect(isNoticeDismissed(store, "demo:new_best")).toBe(true);
+    undismissNotice(store, "demo:new_best");
+    expect(isNoticeDismissed(store, "demo:new_best")).toBe(false);
   });
 });
 
