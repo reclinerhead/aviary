@@ -4333,6 +4333,24 @@ export function AviaryMask({
           }
         />
         <div className="px-4 pb-4">
+          {/* What the mask is, for whoever lands here from the tab bar: the
+              one paragraph of context the page needs, static so it never
+              moves. Prose width capped so a wide monitor doesn't run the
+              sentences into one long line. */}
+          <p className="mb-3 max-w-3xl text-sm leading-relaxed text-inkdim">
+            Earl listens with BirdNET, a model from the Cornell Lab of
+            Ornithology that recognizes more than six thousand bird species by
+            sound. Most of them will never come near this yard, so before a
+            detection counts, Earl checks it against a species mask: the list
+            of birds BirdNET’s range model expects at this station’s
+            coordinates in this week of the year. The list is rebuilt as each
+            BirdNET week turns over, swelling in migration season and thinning
+            in winter, and a sound that matches a species outside it is set
+            aside. Lit tiles are species in this week’s mask the yard has
+            already heard; dimmed tiles are plausible here and still waiting
+            for a first visit. The geo score is the range model’s confidence
+            that a species occurs here right now.
+          </p>
           {/* The readout line: what the yard has heard of what it could.
               Fixed height so the figure landing shifts the grid by nothing. */}
           <p className="stamp mb-3 min-h-[20px] text-xs leading-5">{readout}</p>
