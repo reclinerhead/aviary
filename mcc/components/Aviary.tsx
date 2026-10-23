@@ -1084,13 +1084,27 @@ const MASTHEAD_TABS = [
  * Announcement strip under the tab bar (epic #447 Phase 1). Null notice →
  * zero footprint. One visible notice at a time; parent owns the queue and
  * dismiss persistence (pure helpers in lib/aviary.ts).
+ *
+ * It wears the notice ink (--notice, gold) on a warm wash: the one lit card
+ * on a cold-green page, so a moment reads as a moment and not as another
+ * panel -- the owner's ask after the first two consumers shipped on the
+ * house green and vanished into it. Still one border, one wash, one stamp:
+ * lit, not loud.
+ *
+ * A notice that carries a `clip` gets the page's play slot (the same
+ * PlaySlot every recording row uses, the same shared player, so one clip
+ * at a time across the page still holds) -- the owner's amendment to the
+ * epic's "no play slot in the strip" line: no AUTOplay stays the rule. The
+ * slot sits outside the link so a tap to listen never navigates.
  */
 function AviaryNoticeStrip({
   notice,
   onDismiss,
+  player,
 }: {
   notice: AviaryNotice | null;
   onDismiss: (id: string) => void;
+  player?: ClipPlayer;
 }) {
   if (!notice) return null;
   const kindLabel =
@@ -1112,18 +1126,18 @@ function AviaryNoticeStrip({
           // policy rather than plumbing a lookup for a dismissible strip.
           src={portraitUrl(portraitSci, { thumb: true })}
           alt=""
-          className="h-12 w-12 shrink-0 rounded-sm border border-line object-cover object-top bg-panel2"
+          className="h-12 w-12 shrink-0 rounded-sm border border-notice/40 object-cover object-top bg-panel2"
         />
       ) : (
         <span
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-sm border border-line bg-panel2 text-sm text-inkdim"
+          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-sm border border-notice/40 bg-panel2 text-sm text-inkdim"
           aria-hidden
         >
           ·
         </span>
       )}
       <span className="min-w-0 flex-1">
-        <span className="stamp block text-xs text-inkdim">{kindLabel}</span>
+        <span className="stamp block text-xs text-notice">{kindLabel}</span>
         <span
           className="mt-0.5 block text-sm text-ink"
           style={{ fontFamily: "var(--font-display)" }}
@@ -1138,7 +1152,7 @@ function AviaryNoticeStrip({
   );
   return (
     <div
-      className="mt-3 flex items-stretch gap-3 rounded-sm border border-line bg-panel2 px-3 py-2.5"
+      className="mt-3 flex items-stretch gap-3 rounded-sm border border-notice bg-noticewash px-3 py-2.5"
       role="status"
       aria-live="polite"
     >
@@ -1152,10 +1166,15 @@ function AviaryNoticeStrip({
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
       )}
+      {notice.clip && player ? (
+        <span className="flex shrink-0 items-center">
+          <PlaySlot clip={notice.clip} player={player} />
+        </span>
+      ) : null}
       <button
         type="button"
         onClick={() => onDismiss(notice.id)}
-        className="stamp shrink-0 self-center rounded-sm border border-line px-2.5 py-2 text-xs text-inkdim transition-colors hover:border-linebright hover:text-ink"
+        className="stamp shrink-0 self-center rounded-sm border border-notice/40 px-2.5 py-2 text-xs text-inkdim transition-colors hover:border-notice hover:text-ink"
         aria-label="Dismiss notice"
       >
         ✕
@@ -1244,6 +1263,7 @@ function AviaryMasthead({
   tab = "aviary",
   notice = null,
   onDismissNotice,
+  player,
 }: {
   lamp?: {
     busUp: boolean;
@@ -1274,6 +1294,8 @@ function AviaryMasthead({
   /** Announcement strip under the tabs (#447). Null = zero footprint. */
   notice?: AviaryNotice | null;
   onDismissNotice?: (id: string) => void;
+  /** The page's clip player, for notices that carry a clip (#447). */
+  player?: ClipPlayer;
 }) {
   const heading = aviaryTitle(title);
   return (
@@ -1356,6 +1378,7 @@ function AviaryMasthead({
       <AviaryNoticeStrip
         notice={notice}
         onDismiss={onDismissNotice ?? (() => {})}
+        player={player}
       />
     </header>
   );
@@ -1584,7 +1607,7 @@ export function Aviary({
   // ranking) and the store's truth lands within the minute. Null until
   // seeded. Detected notices accumulate for the session; dismiss is the
   // existing per-id localStorage key.
-  const championRef = useRef<Record<string, string> | null>(null);
+  const championRef = useRef<Record<string, string[]> | null>(null);
   const [newBestQueue, setNewBestQueue] = useState<AviaryNotice[]>([]);
 
   // Announcement strip (#447): the dashboard's product queue is the rare
@@ -1887,6 +1910,7 @@ export function Aviary({
         ]}
         notice={notice}
         onDismissNotice={onDismiss}
+        player={player}
       />
       {/* The whole record's numbers, above both columns (#260). */}
       <ArchiveHero roster={roster} loaded={loaded} now={nowTs} />

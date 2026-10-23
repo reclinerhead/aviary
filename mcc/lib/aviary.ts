@@ -1041,6 +1041,9 @@ export type AviaryNotice = {
   species_common?: string;
   /** Portrait filename under species/ when known (roster image_file). */
   portrait_file?: string | null;
+  /** A RAW clip path the strip may offer to play in place (new best). The
+   * click target still owns the full page; this is the one-tap listen. */
+  clip?: string | null;
 };
 
 /** localStorage key prefix for dismissed notice ids. */
@@ -2015,54 +2018,114 @@ export function rareReturnNotice(e: RosterEntry): AviaryNotice {
 // --- New best recording (#447 Phase 2, the strip's second event consumer) --
 //
 // Earl rewrites a visit's clip in place when a window beats it, and the
-// roster's champion per species (`best_clip`, from bestClips) moves as the
-// store's best VISIT changes. Nothing ever said so: a new champion simply
-// replaced the old one in slot 1. This observes that move -- notices watch
-// the ranking, they never invent a second one -- as a diff of champion clip
-// PATHS between two roster snapshots. The path is the identity: an in-place
-// rewrite that keeps its path stays silent in v1.
+// roster's three best slots per species move as the store's rankings
+// change: slot 1 is the champion (`best_clip`, from bestClips), slots 2 and
+// 3 the showcase's second and third calls (#551, the listener pass). Nothing
+// ever said so: a new take simply replaced the old one in its slot. This
+// observes those moves -- notices watch the rankings, they never invent a
+// second one -- as a diff of slot clip PATHS between two roster snapshots.
+// The path is the identity: an in-place rewrite that keeps its path stays
+// silent in v1.
 
-/** Champion clip path per species, for the species that have one. */
-export function championPaths(entries: RosterEntry[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const e of entries) if (e.best_clip) out[e.species_sci] = e.best_clip;
+/** The three slot paths of one entry: champion, second call, third call;
+ * "" where a slot is unfilled. Slot 1 reads `best_clip`, never the table's
+ * own slot-1 row (the page renders it the same way, so the notice observes
+ * exactly what the reader sees). */
+export function slotPaths(e: RosterEntry): string[] {
+  const at = (n: number) => e.showcase?.find((s) => s.slot === n)?.clip ?? "";
+  return [e.best_clip ?? "", at(2), at(3)];
+}
+
+/** Slot clip paths per species, for the species that have any. */
+export function championPaths(
+  entries: RosterEntry[],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const e of entries) {
+    const paths = slotPaths(e);
+    if (paths.some(Boolean)) out[e.species_sci] = paths;
+  }
   return out;
 }
 
-/** Entries whose champion clip path CHANGED since `prev`: a previous
- * champion existed and the new one is a different path. A species earning
- * its first clip ever is first contact (New Arrivals' moment), not a new
- * best; a species losing its clip (pruned files) is a gap, not news. Name
- * order for determinism within one snapshot. */
+export type NewBestChange = {
+  entry: RosterEntry;
+  /** 1 = champion, 2 = second call, 3 = third call. */
+  slot: number;
+  clip: string;
+  confidence: number | null;
+};
+
+/** One change per species whose slot paths moved since `prev`: the LOWEST
+ * changed slot (a new champion usually bumps the old one down to slot 2,
+ * and that is one piece of news, not two). A slot counts as changed only
+ * when it held a clip before and holds a different one now: a species
+ * earning its first clip ever is first contact (New Arrivals' moment), a
+ * slot filling for the first time is the showcase growing, and a slot
+ * emptying (pruned files) is a gap -- none of them news here. Name order
+ * for determinism within one snapshot. */
 export function newBestChanges(
-  prev: Record<string, string>,
+  prev: Record<string, string[]>,
   entries: RosterEntry[],
-): RosterEntry[] {
-  return entries
-    .filter((e) => {
-      const was = prev[e.species_sci];
-      return Boolean(was) && Boolean(e.best_clip) && e.best_clip !== was;
-    })
-    .sort((a, b) => a.species_common.localeCompare(b.species_common));
+): NewBestChange[] {
+  const out: NewBestChange[] = [];
+  for (const e of entries) {
+    const was = prev[e.species_sci];
+    if (!was) continue;
+    const now = slotPaths(e);
+    for (let i = 0; i < 3; i++) {
+      if (was[i] && now[i] && now[i] !== was[i]) {
+        const slot = i + 1;
+        const confidence =
+          slot === 1
+            ? (e.best_confidence ?? null)
+            : (e.showcase?.find((s) => s.slot === slot)?.confidence ?? null);
+        out.push({ entry: e, slot, clip: now[i], confidence });
+        break;
+      }
+    }
+  }
+  return out.sort((a, b) =>
+    a.entry.species_common.localeCompare(b.entry.species_common),
+  );
 }
 
-/** The notice for a new champion: the stamp says "new best recording", the
- * display line is the bird, the body its opening confidence. Id = species +
- * clip path (newBestNoticeId), so the same champion never nags after a
- * dismiss and a later champion for the same bird announces again. */
-export function newBestNotice(e: RosterEntry): AviaryNotice {
+/** The strip's headline for a slot change -- the owner's ask: friendly and
+ * excited, the bird named, the moment plain. */
+export function newBestTitle(common: string, slot: number): string {
+  return slot === 1
+    ? `We've captured a new best recording of the ${common}!`
+    : `We've captured a new call from the ${common}!`;
+}
+
+/** The line under it: which slot moved, how confident Earl was, and the
+ * invitation to press play (the strip carries the clip). */
+export function newBestBody(slot: number, confidence: number | null): string {
+  const parts: string[] = [];
+  if (slot === 2) parts.push("a new second call for its showcase");
+  if (slot === 3) parts.push("a new third call for its showcase");
+  if (confidence != null) parts.push(`confidence ${confidence.toFixed(2)}`);
+  parts.push("press play to hear it");
+  return parts.join(" · ");
+}
+
+/** The notice for a slot change: the stamp says "new best recording", the
+ * headline is the moment, the body the slot and confidence, and `clip` is
+ * the take itself for the strip's play slot. Id = species + clip path
+ * (newBestNoticeId), so the same take never nags after a dismiss and a
+ * later one for the same bird announces again. */
+export function newBestNotice(c: NewBestChange): AviaryNotice {
+  const e = c.entry;
   return {
-    id: newBestNoticeId(e.species_sci, e.best_clip ?? ""),
+    id: newBestNoticeId(e.species_sci, c.clip),
     kind: "new_best",
-    title: e.species_common,
-    body:
-      e.best_confidence != null
-        ? `confidence ${e.best_confidence.toFixed(2)}`
-        : undefined,
+    title: newBestTitle(e.species_common, c.slot),
+    body: newBestBody(c.slot, c.confidence),
     href: `/aviary/${encodeURIComponent(e.species_sci)}`,
     species_sci: e.species_sci,
     species_common: e.species_common,
     portrait_file: e.image_file ?? null,
+    clip: c.clip,
   };
 }
 
@@ -2110,9 +2173,10 @@ export function sampleNotice(
   if (kind === "new_best")
     return {
       ...newBestNotice({
-        ...model,
-        best_clip: model.best_clip ?? "demo/sample.wav",
-        best_confidence: model.best_confidence ?? 0.97,
+        entry: model,
+        slot: 1,
+        clip: model.best_clip ?? "demo/sample.wav",
+        confidence: model.best_confidence ?? 0.97,
       }),
       id: "demo:new_best",
     };

@@ -2525,10 +2525,27 @@ describe("new best recording (#447 Phase 2)", () => {
     champ("Strix varia", "Barred Owl", null, null), // no clip yet
   ];
 
-  it("championPaths keeps only species with a clip", () => {
-    expect(championPaths(hydrated)).toEqual({
-      "Cardinalis cardinalis": "amcrest/100-NC.wav",
-      "Turdus migratorius": "amcrest/200-AR.wav",
+  // A showcase: slot 2 and 3 takes beside the champion (#551).
+  const show = (e: RosterEntry, s2: string | null, s3: string | null) =>
+    ({
+      ...e,
+      showcase: [
+        ...(s2 ? [{ slot: 2, clip: s2, confidence: 0.88, vocal_fill: 0.5, ts: 1 }] : []),
+        ...(s3 ? [{ slot: 3, clip: s3, confidence: 0.81, vocal_fill: 0.4, ts: 2 }] : []),
+      ],
+    }) as RosterEntry;
+  const change = (slot: number, sci: string) =>
+    ({ entry: expect.objectContaining({ species_sci: sci }), slot }) as unknown;
+
+  it("championPaths carries the three slot paths for species with any clip", () => {
+    const withShow = [
+      show(hydrated[0], "amcrest/150-NC.wav", null),
+      hydrated[1],
+      hydrated[2],
+    ];
+    expect(championPaths(withShow)).toEqual({
+      "Cardinalis cardinalis": ["amcrest/100-NC.wav", "amcrest/150-NC.wav", ""],
+      "Turdus migratorius": ["amcrest/200-AR.wav", "", ""],
     });
   });
 
@@ -2544,9 +2561,13 @@ describe("new best recording (#447 Phase 2)", () => {
       champ("Turdus migratorius", "American Robin", "amcrest/200-AR.wav", 0.99),
       champ("Strix varia", "Barred Owl", null, null),
     ];
-    expect(newBestChanges(seed, later).map((e) => e.species_sci)).toEqual([
-      "Cardinalis cardinalis",
+    expect(newBestChanges(seed, later)).toMatchObject([
+      change(1, "Cardinalis cardinalis"),
     ]);
+    expect(newBestChanges(seed, later)[0]).toMatchObject({
+      clip: "amcrest/900-NC.wav",
+      confidence: 0.97,
+    });
   });
 
   it("a species' first clip ever is first contact, not a new best; a lost clip is a gap", () => {
@@ -2560,42 +2581,92 @@ describe("new best recording (#447 Phase 2)", () => {
     expect(newBestChanges(seed, later)).toEqual([]);
   });
 
+  it("a second or third call changing fires too, with its own slot and confidence", () => {
+    const seeded = [
+      show(hydrated[0], "amcrest/150-NC.wav", "amcrest/160-NC.wav"),
+      show(hydrated[1], "amcrest/250-AR.wav", null),
+    ];
+    const seed = championPaths(seeded);
+    const later = [
+      show(hydrated[0], "amcrest/150-NC.wav", "amcrest/960-NC.wav"), // slot 3 moved
+      show(hydrated[1], "amcrest/950-AR.wav", null), // slot 2 moved
+    ];
+    const got = newBestChanges(seed, later);
+    expect(got).toMatchObject([
+      change(2, "Turdus migratorius"),
+      change(3, "Cardinalis cardinalis"),
+    ]);
+    expect(got[0]).toMatchObject({ clip: "amcrest/950-AR.wav", confidence: 0.88 });
+    expect(got[1]).toMatchObject({ clip: "amcrest/960-NC.wav", confidence: 0.81 });
+  });
+
+  it("a slot filling for the first time is the showcase growing, not news", () => {
+    const seed = championPaths([show(hydrated[0], null, null)]);
+    expect(
+      newBestChanges(seed, [show(hydrated[0], "amcrest/150-NC.wav", null)]),
+    ).toEqual([]);
+  });
+
+  it("a new champion that bumps the old one to slot 2 is ONE piece of news, the champion's", () => {
+    const seed = championPaths([show(hydrated[0], "amcrest/050-NC.wav", null)]);
+    const later = [
+      show(
+        champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/900-NC.wav", 0.97),
+        "amcrest/100-NC.wav", // yesterday's champion, demoted
+        null,
+      ),
+    ];
+    expect(newBestChanges(seed, later)).toMatchObject([
+      change(1, "Cardinalis cardinalis"),
+    ]);
+  });
+
   it("orders several changes by name within one snapshot", () => {
     const seed = championPaths(hydrated);
     const later = [
       champ("Turdus migratorius", "American Robin", "amcrest/901-AR.wav"),
       champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/900-NC.wav"),
     ];
-    expect(newBestChanges(seed, later).map((e) => e.species_common)).toEqual([
-      "American Robin",
-      "Northern Cardinal",
-    ]);
+    expect(
+      newBestChanges(seed, later).map((c) => c.entry.species_common),
+    ).toEqual(["American Robin", "Northern Cardinal"]);
   });
 
-  it("builds the strip notice keyed by species + clip path", () => {
+  it("builds the strip notice keyed by species + clip path, carrying the clip", () => {
     const e = {
       ...champ("Cardinalis cardinalis", "Northern Cardinal", "amcrest/900-NC.wav", 0.973),
       image_file: "Cardinalis_cardinalis.jpg",
     } as RosterEntry;
-    expect(newBestNotice(e)).toEqual({
+    expect(
+      newBestNotice({ entry: e, slot: 1, clip: "amcrest/900-NC.wav", confidence: 0.973 }),
+    ).toEqual({
       id: newBestNoticeId("Cardinalis cardinalis", "amcrest/900-NC.wav"),
       kind: "new_best",
-      title: "Northern Cardinal",
-      body: "confidence 0.97",
+      title: "We've captured a new best recording of the Northern Cardinal!",
+      body: "confidence 0.97 · press play to hear it",
       href: "/aviary/Cardinalis%20cardinalis",
       species_sci: "Cardinalis cardinalis",
       species_common: "Northern Cardinal",
       portrait_file: "Cardinalis_cardinalis.jpg",
+      clip: "amcrest/900-NC.wav",
     });
-    expect(
-      newBestNotice(champ("Strix varia", "Barred Owl", "b.wav", null)).body,
-    ).toBeUndefined();
+    const owl = champ("Strix varia", "Barred Owl", "b.wav", null);
+    expect(newBestNotice({ entry: owl, slot: 2, clip: "b2.wav", confidence: null })).toMatchObject({
+      title: "We've captured a new call from the Barred Owl!",
+      body: "a new second call for its showcase · press play to hear it",
+      clip: "b2.wav",
+    });
+    expect(newBestNotice({ entry: owl, slot: 3, clip: "b3.wav", confidence: 0.8 }).body).toBe(
+      "a new third call for its showcase · confidence 0.80 · press play to hear it",
+    );
   });
 
   it("merging keeps one notice per species, newest champion winning, arrival order kept", () => {
-    const a1 = newBestNotice(champ("A", "Alpha", "a1.wav"));
-    const b1 = newBestNotice(champ("B", "Beta", "b1.wav"));
-    const a2 = newBestNotice(champ("A", "Alpha", "a2.wav"));
+    const nb = (sci: string, common: string, clip: string) =>
+      newBestNotice({ entry: champ(sci, common, clip), slot: 1, clip, confidence: 0.9 });
+    const a1 = nb("A", "Alpha", "a1.wav");
+    const b1 = nb("B", "Beta", "b1.wav");
+    const a2 = nb("A", "Alpha", "a2.wav");
     const queue = mergeNewBestNotices(mergeNewBestNotices([], [a1, b1]), [a2]);
     expect(queue.map((n) => n.id)).toEqual([b1.id, a2.id]);
     // A later champion is a new id: the dismissed a1 never blocks a2.
@@ -2630,7 +2701,7 @@ describe("desk-check samples: ?notice=<kinds> (#447)", () => {
   });
   it("falls back to the first by name when no portrait exists, and to nothing on an empty roster", () => {
     const bare = yard.map((e) => ({ ...e, image_file: null }));
-    expect(demoNoticesFor("new_best", bare, now)[0]?.title).toBe(
+    expect(demoNoticesFor("new_best", bare, now)[0]?.species_common).toBe(
       "Acadian Flycatcher",
     );
     expect(demoNoticesFor("new_best", [], now)).toEqual([]);
@@ -2641,10 +2712,13 @@ describe("desk-check samples: ?notice=<kinds> (#447)", () => {
     expect(sampleNotice("new_best", yard[1], now)).toMatchObject({
       id: "demo:new_best",
       kind: "new_best",
-      title: "Carolina Wren",
-      body: "confidence 0.91",
+      title: "We've captured a new best recording of the Carolina Wren!",
+      body: "confidence 0.91 · press play to hear it",
+      clip: "c.wav",
     });
-    expect(sampleNotice("new_best", yard[0], now)?.body).toBe("confidence 0.97");
+    expect(sampleNotice("new_best", yard[0], now)?.body).toBe(
+      "confidence 0.97 · press play to hear it",
+    );
     expect(sampleNotice("bogus", yard[0], now)).toBeNull();
     expect(sampleNotice("rare_return", null, now)).toBeNull();
   });
@@ -2657,7 +2731,7 @@ describe("desk-check samples: ?notice=<kinds> (#447)", () => {
     ).toEqual(["demo:new_best", "demo:announcement-strip"]);
   });
   it("sample ids never collide with a real notice's dismiss key", () => {
-    const real = newBestNotice(yard[1]);
+    const real = newBestNotice({ entry: yard[1], slot: 1, clip: "c.wav", confidence: 0.91 });
     const sample = sampleNotice("new_best", yard[1], now);
     expect(sample?.id).not.toBe(real.id);
   });
