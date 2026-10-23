@@ -26,7 +26,15 @@ export function countVisits(ts: number[], gapS = VISIT_GAP_S): number {
   return visits;
 }
 
-export type Tally = { visits: number; today: number; week: number };
+/** `last_ts` is the OPENING moment of the most recent visit (#549): a
+ * continuation row inside the same visit never moves it, and it rides the
+ * one walk the tallies already make. Null only when there are no rows. */
+export type Tally = {
+  visits: number;
+  today: number;
+  week: number;
+  last_ts: number | null;
+};
 
 /** The standings' trailing week (issue #220): the 7 local days ending today,
  * derived from the client's own midnight rather than a second timezone
@@ -63,13 +71,15 @@ export function tallyVisits(
     let visits = 0;
     let today = 0;
     let week = 0;
+    let last_ts: number | null = null;
     for (let i = 0; i < ts.length; i++) {
       if (i > 0 && ts[i] - ts[i - 1] <= gapS) continue; // same visit
       visits++;
+      last_ts = ts[i]; // ascending walk: the last opening seen wins
       if (todayStart !== null && ts[i] >= todayStart) today++;
       if (weekStart !== null && ts[i] >= weekStart) week++;
     }
-    out[sci] = { visits, today, week };
+    out[sci] = { visits, today, week, last_ts };
   }
   return out;
 }
@@ -603,6 +613,10 @@ export type RosterEntry = {
   visits: number;
   today: number;
   week: number;
+  // The opening moment of the most recent visit (#549), from the same tally
+  // walk. Optional: a pre-#549 payload or a hand-built entry simply has no
+  // last visit to speak of, and the rare-return cut treats that as "never".
+  last_ts?: number | null;
   // The enrichment pass's columns (#184), optional twice over: a pre-pass
   // earl.db has no species_profile table (the roster route falls back to
   // the bare life list) and an un-enriched species LEFT JOINs to NULLs.
@@ -907,6 +921,7 @@ export function shapeRoster(
       visits: tallies[r.species_sci]?.visits ?? 0,
       today: tallies[r.species_sci]?.today ?? 0,
       week: tallies[r.species_sci]?.week ?? 0,
+      last_ts: tallies[r.species_sci]?.last_ts ?? null,
       best_clip: best[r.species_sci]?.clip ?? null,
       best_confidence: best[r.species_sci]?.confidence ?? null,
       best_ts: best[r.species_sci]?.ts ?? null,
@@ -1004,13 +1019,15 @@ export function writeLifeListQuery(
 
 // --- Announcement strip (epic #447 Phase 1) ---------------------------------
 //
-// Reusable notice under the Aviary tab bar. Event kinds (new_best) and
-// ambient kinds (fun_fact) share one shell; priority + dismiss keys are pure
-// so Phase 2/3 only enqueue. Zero footprint when nothing is visible -- not a
-// permanent empty panel (unlike New Arrivals' reserved frame).
+// Reusable notice under the Aviary tab bar. Event kinds (rare_return,
+// new_best) and ambient kinds (fun_fact) share one shell; priority + dismiss
+// keys are pure so consumers only enqueue. Zero footprint when nothing is
+// visible -- not a permanent empty panel (unlike New Arrivals' reserved
+// frame). The notice-kind registry on epic #447 is this table's contract:
+// every consumer adds its row to both.
 
 /** Notice kinds the strip understands. More kinds are additive. */
-export type AviaryNoticeKind = "new_best" | "fun_fact" | "demo";
+export type AviaryNoticeKind = "rare_return" | "new_best" | "fun_fact" | "demo";
 
 /** One message for the strip. `id` is stable for dismiss persistence. */
 export type AviaryNotice = {
@@ -1029,11 +1046,16 @@ export type AviaryNotice = {
 /** localStorage key prefix for dismissed notice ids. */
 export const NOTICE_DISMISS_PREFIX = "aviary.notice.dismissed.";
 
-/** Event notices outrank ambient so a live new-best is never buried. */
+/** Event notices outrank ambient so a live moment is never buried under
+ * trivia; among events the rarer moment outranks the routine one (a bird
+ * heard twice ever coming back beats a better recording of a regular). The
+ * numbers are the registry's total order (#447), so landing a kind never
+ * renumbers its neighbours; lower shows first. */
 const NOTICE_KIND_RANK: Record<AviaryNoticeKind, number> = {
-  new_best: 0,
-  demo: 1,
-  fun_fact: 2,
+  rare_return: 1,
+  new_best: 3,
+  demo: 8,
+  fun_fact: 9,
 };
 
 /** Stable dismiss key for a notice id. */
@@ -1879,6 +1901,102 @@ export function newArrivals(
         b.first_ts - a.first_ts ||
         a.species_common.localeCompare(b.species_common),
     );
+}
+
+// --- Rare visitor (#549, the strip's event consumer) -------------------------
+//
+// New Arrivals goes quiet on a mature yard: lifers are rare at 99 species.
+// But the life list carries a long tail of birds heard a handful of times,
+// and when one comes back nothing said so -- the ticker mentioned it once
+// and a count ticked. This is that moment, as pure roster math (the #224
+// precedent): no backend, no Python, no second count.
+
+/** At most this many lifetime visits, the one that fired included. */
+export const RARE_RETURN_MAX_VISITS = 5;
+/** The return must have opened inside this trailing window. */
+export const RARE_RETURN_WINDOW_S = ARRIVALS_24H_S;
+/** The archive's "listening since" must be at least this old: a fresh
+ * station has every bird at one to three visits and New Arrivals already
+ * firing daily, so rare-return says nothing until the yard has a record to
+ * be rare against. Derived from the roster, never a go-live constant. */
+export const RARE_RETURN_MATURITY_S = 14 * 86400;
+
+/** The rare-return cut: species with few lifetime visits whose latest visit
+ * opened inside the window, first heard long enough ago that New Arrivals
+ * has let go of them (the week is the only coupling -- a bird is never
+ * featured on both surfaces). `since` is `archiveStats().since`; a young or
+ * empty archive yields nothing. Rarest first (fewest visits), then the most
+ * recent return, then name for determinism. A one-visit bird can never
+ * qualify: its only visit IS its first, which the week rule excludes. */
+export function rareReturns(
+  entries: RosterEntry[],
+  now: number,
+  since: number | null,
+): RosterEntry[] {
+  if (since === null || now - since < RARE_RETURN_MATURITY_S) return [];
+  const windowStart = now - RARE_RETURN_WINDOW_S;
+  const settledBefore = now - ARRIVALS_WEEK_S;
+  return entries
+    .filter(
+      (e) =>
+        e.visits > 0 &&
+        e.visits <= RARE_RETURN_MAX_VISITS &&
+        e.last_ts != null &&
+        e.last_ts >= windowStart &&
+        e.first_ts < settledBefore,
+    )
+    .sort(
+      (a, b) =>
+        a.visits - b.visits ||
+        (b.last_ts ?? 0) - (a.last_ts ?? 0) ||
+        a.species_common.localeCompare(b.species_common),
+    );
+}
+
+/** Notice id = species + the LOCAL day the return opened, so an owl hooting
+ * on and off all night collapses to one notice, a dismiss stays quiet for
+ * the rest of that day, and the same bird back next week announces again.
+ * `dayStart` keys the viewer's own calendar; dismiss lives in that same
+ * browser's localStorage, so the two agree by construction. */
+export function rareReturnNoticeId(species_sci: string, lastTs: number): string {
+  return `rare_return:${species_sci}:${dayStart(lastTs)}`;
+}
+
+/** English ordinal suffix: 2nd, 3rd, 4th, 11th, 21st. */
+export function ordinal(n: number): string {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
+/** The strip's one line under the name: "only its 3rd visit ever". */
+export function rareReturnBody(visits: number): string {
+  return `only its ${ordinal(visits)} visit ever`;
+}
+
+/** The notice for one rare return: the strip's stamp says "rare visitor",
+ * the display line is the bird, the body its ordinal. Portrait thumb and
+ * the species page come from the sci name the shell already resolves. */
+export function rareReturnNotice(e: RosterEntry): AviaryNotice {
+  return {
+    id: rareReturnNoticeId(e.species_sci, e.last_ts ?? 0),
+    kind: "rare_return",
+    title: e.species_common,
+    body: rareReturnBody(e.visits),
+    href: `/aviary/${encodeURIComponent(e.species_sci)}`,
+    species_sci: e.species_sci,
+    species_common: e.species_common,
+    portrait_file: e.image_file ?? null,
+  };
 }
 
 /** The slice of stats_json the margin figures read. Everything optional:
