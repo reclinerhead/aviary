@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -78,6 +79,8 @@ import {
   isNoticeDismissed,
   mastheadSub,
   pickVisibleNotice,
+  rareReturnNotice,
+  rareReturns,
   readLifeListQuery,
   removalUrl,
   rivalLine,
@@ -1086,11 +1089,13 @@ function AviaryNoticeStrip({
 }) {
   if (!notice) return null;
   const kindLabel =
-    notice.kind === "new_best"
-      ? "new best recording"
-      : notice.kind === "fun_fact"
-        ? "did you know?"
-        : "notice";
+    notice.kind === "rare_return"
+      ? "rare visitor"
+      : notice.kind === "new_best"
+        ? "new best recording"
+        : notice.kind === "fun_fact"
+          ? "did you know?"
+          : "notice";
   const portraitSci = notice.species_sci;
   const body = (
     <>
@@ -1162,6 +1167,10 @@ function AviaryNoticeStrip({
 function useAviaryNoticeStrip(queued: AviaryNotice[] = []) {
   const [visible, setVisible] = useState<AviaryNotice | null>(null);
   const queuedKey = queued.map((n) => n.id).join("|");
+  // The current candidates, kept for dismiss to re-pick from (#549): closing
+  // the visible notice reveals the next one the queue holds, in rank order,
+  // rather than leaving the strip empty until the queue key changes.
+  const candidates = useRef<AviaryNotice[]>([]);
 
   useEffect(() => {
     const all = [...queued];
@@ -1175,14 +1184,30 @@ function useAviaryNoticeStrip(queued: AviaryNotice[] = []) {
     } catch {
       // ignore
     }
-    setVisible(
-      pickVisibleNotice(all, (id) => isNoticeDismissed(localStorage, id)),
+    candidates.current = all;
+    const next = pickVisibleNotice(all, (id) =>
+      isNoticeDismissed(localStorage, id),
+    );
+    // Same notice, same words: keep the state object so a caller handing
+    // in a fresh array each render can't spin this effect through setState.
+    setVisible((cur) =>
+      cur !== null &&
+      next !== null &&
+      cur.id === next.id &&
+      cur.title === next.title &&
+      cur.body === next.body
+        ? cur
+        : next,
     );
   }, [queued, queuedKey]);
 
   const onDismiss = useCallback((id: string) => {
     dismissNotice(localStorage, id);
-    setVisible((cur) => (cur?.id === id ? null : cur));
+    setVisible(
+      pickVisibleNotice(candidates.current, (nid) =>
+        isNoticeDismissed(localStorage, nid),
+      ),
+    );
   }, []);
 
   return { notice: visible, onDismiss };
@@ -1498,9 +1523,6 @@ export function Aviary({
   stationName?: string;
   title?: string;
 } = {}) {
-  // Announcement strip (#447 Phase 1): empty product queue until Phase 2
-  // enqueues new-best; desk-check with /aviary?notice=demo.
-  const { notice, onDismiss } = useAviaryNoticeStrip([]);
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
   // live count updates land in place and nothing reshuffles on its own.
@@ -1532,6 +1554,23 @@ export function Aviary({
   const hydratedKeys = useRef<Set<string>>(new Set());
   const midnightRef = useRef<number | null>(null);
   const player = useClipPlayer();
+
+  // Announcement strip (#447): the dashboard's product queue is the rare
+  // visitors (#549) -- pure roster math off the roster the grid already
+  // holds and the poll-advanced clock, so a live rare visit enqueues the
+  // moment the bus says so and a notice ages out when its window truly
+  // passes (the New Arrivals clock rule), never mid-read. First paint may
+  // show one: the day-keyed id plus localStorage dismiss is the whole
+  // nag policy, and "come back and see it" is the point. Memoized on the
+  // same inputs so the strip hook sees a stable queue between events.
+  // Desk-check the shell with /aviary?notice=demo.
+  const noticeQueue = useMemo(() => {
+    if (nowTs === null) return [];
+    const entries = Object.values(roster);
+    const since = archiveStats(entries, nowTs).since;
+    return rareReturns(entries, nowTs, since).map(rareReturnNotice);
+  }, [roster, nowTs]);
+  const { notice, onDismiss } = useAviaryNoticeStrip(noticeQueue);
 
   // Session-persist the life-list query (#410): same post-mount pattern as
   // clip gain -- sessionStorage is not available on the server render, so
@@ -1653,6 +1692,9 @@ export function Aviary({
               today: cur.today + (isToday ? 1 : 0),
               // A live arrival is inside the trailing week by definition.
               week: cur.week + 1,
+              // ...and is the latest opening by the tally's own rule (#549);
+              // max() so a replayed older event can't walk it backwards.
+              last_ts: Math.max(cur.last_ts ?? 0, event.ts),
             },
           };
         // A lifer with the page open: the store's INSERT OR IGNORE is
@@ -1668,6 +1710,7 @@ export function Aviary({
             visits: 1,
             today: isToday ? 1 : 0,
             week: 1,
+            last_ts: event.ts,
           },
         };
       });

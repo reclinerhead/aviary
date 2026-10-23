@@ -47,6 +47,15 @@ import {
   parseRulePayload,
   parseSpeciesFilter,
   pickVisibleNotice,
+  RARE_RETURN_MATURITY_S,
+  RARE_RETURN_MAX_VISITS,
+  RARE_RETURN_WINDOW_S,
+  type RosterEntry,
+  ordinal,
+  rareReturnBody,
+  rareReturnNotice,
+  rareReturnNoticeId,
+  rareReturns,
   portraitAspect,
   portraitUrl,
   portraitVersion,
@@ -131,8 +140,8 @@ describe("tallyVisits", () => {
       { species_sci: "A", ts: 400 }, // new A visit
     ];
     expect(tallyVisits(rows, null)).toEqual({
-      A: { visits: 2, today: 0, week: 0 },
-      B: { visits: 1, today: 0, week: 0 },
+      A: { visits: 2, today: 0, week: 0, last_ts: 400 },
+      B: { visits: 1, today: 0, week: 0, last_ts: 110 },
     });
   });
   it("buckets today by the visit's OPENING detection", () => {
@@ -143,13 +152,38 @@ describe("tallyVisits", () => {
       { species_sci: "A", ts: 2000 }, // today's visit
     ];
     expect(tallyVisits(rows, midnight)).toEqual({
-      A: { visits: 2, today: 1, week: 2 },
+      A: { visits: 2, today: 1, week: 2, last_ts: 2000 },
     });
   });
   it("counts no today buckets when todayStart is null", () => {
     expect(tallyVisits([{ species_sci: "A", ts: 5 }], null)).toEqual({
-      A: { visits: 1, today: 0, week: 0 },
+      A: { visits: 1, today: 0, week: 0, last_ts: 5 },
     });
+  });
+  it("last_ts is the OPENING of the latest visit, whatever the row order (#549)", () => {
+    // A continuation row inside the same visit never moves it...
+    expect(
+      tallyVisits(
+        [
+          { species_sci: "A", ts: 1000 },
+          { species_sci: "A", ts: 1030 },
+          { species_sci: "A", ts: 1055 },
+        ],
+        null,
+      ).A.last_ts,
+    ).toBe(1000);
+    // ...and an out-of-order row set still yields the latest opening.
+    expect(
+      tallyVisits(
+        [
+          { species_sci: "A", ts: 5000 },
+          { species_sci: "A", ts: 100 },
+          { species_sci: "A", ts: 5020 },
+          { species_sci: "A", ts: 2000 },
+        ],
+        null,
+      ).A.last_ts,
+    ).toBe(5000);
   });
   it("windows the week tally to 7 local days back from today (#220)", () => {
     const midnight = 100 * 86400;
@@ -160,7 +194,7 @@ describe("tallyVisits", () => {
       { species_sci: "A", ts: midnight + 100 }, // today counts twice over
     ];
     expect(tallyVisits(rows, midnight)).toEqual({
-      A: { visits: 3, today: 1, week: 2 },
+      A: { visits: 3, today: 1, week: 2, last_ts: midnight + 100 },
     });
   });
   it("attributes a boundary-straddling visit by its OPENING (#220)", () => {
@@ -173,7 +207,7 @@ describe("tallyVisits", () => {
       { species_sci: "A", ts: weekStart + 30 },
     ];
     expect(tallyVisits(rows, midnight)).toEqual({
-      A: { visits: 1, today: 0, week: 0 },
+      A: { visits: 1, today: 0, week: 0, last_ts: weekStart - 1 },
     });
   });
 });
@@ -942,12 +976,12 @@ describe("shapeRoster", () => {
       "American Robin",
       "Northern Cardinal",
     ]);
-    expect(roster[1]).toMatchObject({ visits: 2, today: 0 });
-    expect(roster[0]).toMatchObject({ visits: 1, today: 1 });
+    expect(roster[1]).toMatchObject({ visits: 2, today: 0, last_ts: 500 });
+    expect(roster[0]).toMatchObject({ visits: 1, today: 1, last_ts: 600 });
   });
   it("tallies a lifer with no sighting rows honestly at zero", () => {
     const roster = shapeRoster(life.slice(0, 1), [], null);
-    expect(roster[0]).toMatchObject({ visits: 0, today: 0 });
+    expect(roster[0]).toMatchObject({ visits: 0, today: 0, last_ts: null });
   });
   it("carries the best recording onto the entry (#333)", () => {
     const roster = shapeRoster(
@@ -2337,6 +2371,133 @@ describe("newArrivals", () => {
   });
 });
 
+describe("rareReturns (#549)", () => {
+  const DAY = 86400;
+  const now = 1_000 * DAY + 12 * 3600; // noon, some day
+  const since = now - 100 * DAY; // a mature archive
+  // A rare bird back this morning: 3 visits ever, first heard a month ago.
+  const rare = (sci: string, common: string, visits: number, lastTs: number) =>
+    ({
+      ...entry(sci, common, visits, 0, 1, now - 30 * DAY),
+      last_ts: lastTs,
+    }) as RosterEntry;
+
+  it("features a seldom-heard species that came back inside the window", () => {
+    const hit = rare("pw", "Pileated Woodpecker", 3, now - 3600);
+    expect(rareReturns([hit], now, since).map((e) => e.species_sci)).toEqual([
+      "pw",
+    ]);
+  });
+  it("the visit cap is inclusive at five", () => {
+    const five = rare("five", "Five Timer", 5, now - 3600);
+    const six = rare("six", "Six Timer", 6, now - 3600);
+    expect(rareReturns([five, six], now, since).map((e) => e.species_sci)).toEqual(
+      ["five"],
+    );
+  });
+  it("a return older than the window is no longer news", () => {
+    const stale = rare("stale", "Stale", 2, now - RARE_RETURN_WINDOW_S - 1);
+    const edge = rare("edge", "Edge", 2, now - RARE_RETURN_WINDOW_S);
+    expect(rareReturns([stale, edge], now, since).map((e) => e.species_sci)).toEqual(
+      ["edge"],
+    );
+  });
+  it("hands lifers and week-old newcomers to New Arrivals", () => {
+    const newcomer = {
+      ...entry("new", "Newcomer", 2, 1, 2, now - 3 * DAY),
+      last_ts: now - 3600,
+    } as RosterEntry;
+    // Exactly a week old is still New Arrivals' (its 7d cut is inclusive).
+    const boundary = {
+      ...entry("bdry", "Boundary", 2, 1, 2, now - ARRIVALS_WEEK_S),
+      last_ts: now - 3600,
+    } as RosterEntry;
+    const settled = {
+      ...entry("old", "Settled", 2, 1, 2, now - ARRIVALS_WEEK_S - 1),
+      last_ts: now - 3600,
+    } as RosterEntry;
+    expect(
+      rareReturns([newcomer, boundary, settled], now, since).map(
+        (e) => e.species_sci,
+      ),
+    ).toEqual(["old"]);
+  });
+  it("says nothing on a young archive, or with no since at all", () => {
+    const hit = rare("pw", "Pileated Woodpecker", 3, now - 3600);
+    expect(rareReturns([hit], now, now - 13 * DAY)).toEqual([]);
+    expect(rareReturns([hit], now, null)).toEqual([]);
+    // Fourteen days exactly: mature.
+    expect(rareReturns([hit], now, now - RARE_RETURN_MATURITY_S)).toHaveLength(1);
+  });
+  it("ignores an entry with no last visit on record", () => {
+    const bare = entry("bare", "Bare", 2, 0, 0, now - 30 * DAY) as RosterEntry;
+    expect(rareReturns([bare], now, since)).toEqual([]);
+  });
+  it("orders rarest first, then the most recent return, then name", () => {
+    const yard = [
+      rare("b4", "B Four", 4, now - 100),
+      rare("a2late", "Zed Two", 2, now - 5000),
+      rare("a2early", "Alpha Two", 2, now - 5000),
+      rare("c2", "Mid Two", 2, now - 100),
+    ];
+    expect(rareReturns(yard, now, since).map((e) => e.species_sci)).toEqual([
+      "c2", // two visits, back most recently
+      "a2early", // two visits, same moment: by name
+      "a2late",
+      "b4",
+    ]);
+  });
+  it("constants say what they claim", () => {
+    expect(RARE_RETURN_MAX_VISITS).toBe(5);
+    expect(RARE_RETURN_WINDOW_S).toBe(ARRIVALS_24H_S);
+    expect(RARE_RETURN_MATURITY_S).toBe(14 * DAY);
+  });
+});
+
+describe("rare-return notice helpers (#549)", () => {
+  it("the id is stable within a local day and differs across days", () => {
+    const morning = Date.UTC(2026, 8, 6, 14, 0, 0) / 1000; // local day A
+    const sameDay = morning + 2 * 3600;
+    const d = new Date(morning * 1000);
+    d.setDate(d.getDate() + 1);
+    const nextDay = Math.floor(d.getTime() / 1000);
+    const a = rareReturnNoticeId("Strix varia", morning);
+    expect(rareReturnNoticeId("Strix varia", sameDay)).toBe(a);
+    expect(rareReturnNoticeId("Strix varia", nextDay)).not.toBe(a);
+    expect(a.startsWith("rare_return:Strix varia:")).toBe(true);
+  });
+  it("ordinal copy reads naturally", () => {
+    expect(rareReturnBody(2)).toBe("only its 2nd visit ever");
+    expect(rareReturnBody(3)).toBe("only its 3rd visit ever");
+    expect(rareReturnBody(4)).toBe("only its 4th visit ever");
+    expect(rareReturnBody(5)).toBe("only its 5th visit ever");
+    expect(ordinal(1)).toBe("1st");
+    expect(ordinal(11)).toBe("11th");
+    expect(ordinal(12)).toBe("12th");
+    expect(ordinal(13)).toBe("13th");
+    expect(ordinal(21)).toBe("21st");
+    expect(ordinal(22)).toBe("22nd");
+    expect(ordinal(103)).toBe("103rd");
+  });
+  it("builds the strip notice: the bird is the title, the stamp is the kind", () => {
+    const e = {
+      ...entry("Dryocopus pileatus", "Pileated Woodpecker", 3, 1, 1, 0),
+      last_ts: 1_700_000_000,
+      image_file: "Dryocopus_pileatus.jpg",
+    } as RosterEntry;
+    expect(rareReturnNotice(e)).toEqual({
+      id: rareReturnNoticeId("Dryocopus pileatus", 1_700_000_000),
+      kind: "rare_return",
+      title: "Pileated Woodpecker",
+      body: "only its 3rd visit ever",
+      href: "/aviary/Dryocopus%20pileatus",
+      species_sci: "Dryocopus pileatus",
+      species_common: "Pileated Woodpecker",
+      portrait_file: "Dryocopus_pileatus.jpg",
+    });
+  });
+});
+
 describe("mastheadSub (#304, the station masthead)", () => {
   it("home wears the station-less line", () => {
     expect(mastheadSub()).toBe("earl with the ears");
@@ -2387,6 +2548,18 @@ describe("announcement strip helpers (#447 Phase 1)", () => {
     expect(pickVisibleNotice([fun, best, demo], () => false)?.id).toBe("b1");
     expect(pickVisibleNotice([fun, demo], () => false)?.kind).toBe("demo");
     expect(pickVisibleNotice([fun], () => false)?.kind).toBe("fun_fact");
+  });
+
+  it("rare_return outranks new_best, and both outrank fun_fact (#549)", () => {
+    const fun = { id: "f1", kind: "fun_fact" as const, title: "fun" };
+    const best = { id: "b1", kind: "new_best" as const, title: "best" };
+    const rare = { id: "r1", kind: "rare_return" as const, title: "rare" };
+    expect(pickVisibleNotice([fun, best, rare], () => false)?.id).toBe("r1");
+    expect(pickVisibleNotice([fun, best], () => false)?.id).toBe("b1");
+    // Dismissing the visible one reveals the next by rank.
+    expect(pickVisibleNotice([fun, best, rare], (id) => id === "r1")?.id).toBe(
+      "b1",
+    );
   });
 
   it("pickVisibleNotice skips dismissed and returns null when empty", () => {
