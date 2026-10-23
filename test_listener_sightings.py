@@ -127,7 +127,8 @@ def _fingerprint(conn):
     """Every table's columns (name, type, notnull, default, pk position) --
     the shape a fresh db and an upgraded old one must land on identically."""
     fp = {}
-    for t in ("locations", "sightings", "life_list", "species_rules"):
+    for t in ("locations", "sightings", "life_list", "species_rules",
+              "region_mask", "region_mask_meta"):
         fp[t] = [(r["name"], r["type"], r["notnull"], r["dflt_value"], r["pk"])
                  for r in conn.execute("PRAGMA table_info(%s)" % t)]
     return fp
@@ -345,6 +346,184 @@ def test_load_species_rules_quiet_on_missing_store_or_table(tmp_path):
     raw.commit()
     raw.close()
     assert earl.load_species_rules(bare) == {}
+
+
+# --- the region mask (issue #593) --------------------------------------------
+# earl.py shapes the mask for the bus (pure helpers, covered here beside its
+# other pure helpers); sightings persists it as current state only. The
+# gate's own set is deliberately NOT derived from these rows -- region_mask()
+# builds it from the label column exactly as before and shapes the rows
+# second, best-effort.
+
+def _mask_rows():
+    return [
+        {"species_sci": "Poecile atricapillus",
+         "species_common": "Black-capped Chickadee", "geo": 0.97},
+        {"species_sci": "Strix varia", "species_common": "Barred Owl",
+         "geo": 0.41},
+    ]
+
+
+def test_mask_rows_split_sort_round_and_dedupe():
+    rows = earl.mask_rows_from([
+        ("Strix varia_Barred Owl", 0.41234),
+        ("Poecile atricapillus_Black-capped Chickadee", 0.9712),
+        ("Strix varia_Barred Owl", 0.2),       # a repeat keeps its best
+        ("Noise", 0.5),                        # no underscore: both halves
+    ])
+    assert rows == [
+        {"species_sci": "Noise", "species_common": "Noise", "geo": 0.5},
+        {"species_sci": "Poecile atricapillus",
+         "species_common": "Black-capped Chickadee", "geo": 0.9712},
+        {"species_sci": "Strix varia", "species_common": "Barred Owl",
+         "geo": 0.4123},
+    ]
+
+
+def test_mask_rows_from_nothing_is_an_empty_list():
+    assert earl.mask_rows_from([]) == []
+
+
+def test_mask_payload_masked_shape():
+    body = earl.mask_payload((42.29, -85.59), 43, _mask_rows(), now=1700)
+    assert body == {
+        "ts": 1700, "week": 43, "lat": 42.29, "lon": -85.59,
+        "status": "masked", "species": _mask_rows(), "error": None,
+    }
+    json.dumps(body)   # must be wire-safe as-is
+
+
+def test_mask_payload_unmasked_carries_the_error_and_no_species():
+    body = earl.mask_payload((1.0, 2.0), 7, None,
+                             error=RuntimeError("no geo model"), now=5)
+    assert body["status"] == "unmasked"
+    assert body["species"] == []
+    assert body["error"] == "no geo model"
+    assert body["week"] == 7
+
+
+def test_report_mask_hands_the_payload_up_the_queue():
+    class Q:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+
+    q = Q()
+    lines = []
+    assert earl.report_mask(q, "house-front", {"week": 1}, lines.append)
+    assert q.items == [("mask", "house-front", {"week": 1})]
+    assert lines == []
+
+
+def test_report_mask_failure_is_one_line_never_a_raise():
+    class BrokenQ:
+        def put(self, item):
+            raise OSError("pipe closed")
+
+    lines = []
+    assert earl.report_mask(BrokenQ(), "house-front", {}, lines.append) is False
+    assert len(lines) == 1 and "mask report failed" in lines[0]
+
+
+def _mask_msg(**over):
+    body = {"ts": 1700, "week": 43, "lat": 42.29, "lon": -85.59,
+            "status": "masked", "species": _mask_rows(), "error": None}
+    body.update(over)
+    return json.dumps(body)
+
+
+def test_parse_mask_roundtrip():
+    assert sightings.parse_mask(_mask_msg()) == {
+        "ts": 1700, "week": 43, "status": "masked", "error": None,
+        "species": _mask_rows(),
+    }
+
+
+def test_parse_mask_ignores_extra_keys_on_a_row():
+    rows = [dict(_mask_rows()[0], extra="ignored")]
+    parsed = sightings.parse_mask(_mask_msg(species=rows))
+    assert parsed["species"] == [_mask_rows()[0]]
+
+
+def test_parse_mask_unmasked():
+    parsed = sightings.parse_mask(
+        _mask_msg(status="unmasked", species=[], error="no geo model"))
+    assert parsed["status"] == "unmasked"
+    assert parsed["species"] == []
+    assert parsed["error"] == "no geo model"
+
+
+@pytest.mark.parametrize("payload", [
+    b"not json",
+    b"[]",
+    _mask_msg(week=None),
+    _mask_msg(status="partial"),
+    _mask_msg(species={"a": 1}),
+    _mask_msg(species=[{"species_common": "Barred Owl", "geo": 0.4}]),
+    _mask_msg(species=[{"species_sci": "Strix varia",
+                        "species_common": "Barred Owl", "geo": "high"}]),
+    event(),   # a detection on the wrong topic is not a mask
+])
+def test_parse_mask_rejects_malformed(payload):
+    assert sightings.parse_mask(payload) is None
+
+
+def _stored_mask(conn):
+    rows = [(r["species_sci"], r["species_common"], r["geo"])
+            for r in conn.execute("SELECT * FROM region_mask"
+                                  " ORDER BY species_sci")]
+    meta = conn.execute("SELECT * FROM region_mask_meta").fetchone()
+    return rows, (dict(meta) if meta else None)
+
+
+def test_record_mask_lands_rows_and_meta(conn):
+    sightings.record_mask(conn, sightings.parse_mask(_mask_msg()))
+    rows, meta = _stored_mask(conn)
+    assert rows == [("Poecile atricapillus", "Black-capped Chickadee", 0.97),
+                    ("Strix varia", "Barred Owl", 0.41)]
+    assert meta == {"id": 1, "ts": 1700, "week": 43, "status": "masked",
+                    "error": None}
+
+
+def test_record_mask_replaces_the_whole_table(conn):
+    sightings.record_mask(conn, sightings.parse_mask(_mask_msg()))
+    nxt = [{"species_sci": "Cardinalis cardinalis",
+            "species_common": "Northern Cardinal", "geo": 0.99}]
+    sightings.record_mask(
+        conn, sightings.parse_mask(_mask_msg(ts=1800, week=44, species=nxt)))
+    rows, meta = _stored_mask(conn)
+    assert rows == [("Cardinalis cardinalis", "Northern Cardinal", 0.99)]
+    assert (meta["ts"], meta["week"]) == (1800, 44)
+
+
+def test_record_mask_unmasked_empties_the_table_and_says_why(conn):
+    sightings.record_mask(conn, sightings.parse_mask(_mask_msg()))
+    sightings.record_mask(conn, sightings.parse_mask(
+        _mask_msg(ts=1900, status="unmasked", species=[],
+                  error="no geo model")))
+    rows, meta = _stored_mask(conn)
+    assert rows == []
+    assert (meta["status"], meta["error"]) == ("unmasked", "no geo model")
+
+
+def test_record_mask_never_touches_the_record(conn):
+    sightings.record(conn, sightings.parse_event(event()))
+    sightings.record_mask(conn, sightings.parse_mask(_mask_msg()))
+    assert conn.execute("SELECT COUNT(*) c FROM sightings").fetchone()["c"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM life_list").fetchone()["c"] == 1
+
+
+def test_mask_tables_created_on_an_upgraded_old_store(tmp_path):
+    path = str(tmp_path / "old-earl.db")
+    _make_pre232_db(path)
+    conn = sightings.connect(path)
+    assert conn.execute("SELECT COUNT(*) c FROM region_mask"
+                        ).fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM region_mask_meta"
+                        ).fetchone()["c"] == 0
+    conn.close()
 
 
 # --- the wire ----------------------------------------------------------------

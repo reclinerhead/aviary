@@ -987,34 +987,208 @@ export function todayVisitors(
  * scoped on purpose: survives Back / masthead dashboard / refresh in the
  * same tab; dies with the tab. Not localStorage (clip-gain is permanent). */
 export const LIFE_LIST_QUERY_KEY = "aviary.life-list-query";
+/** The species mask page's own search box (#593) -- its own key, so a
+ * life-list drill-down and a mask browse keep separate fragments. */
+export const MASK_QUERY_KEY = "aviary.mask-query";
 
-/** Read the persisted life-list query. Missing key, null store, or a
- * storage throw (private mode) all return "" -- the unfiltered grid. */
-export function readLifeListQuery(
+/** Read a persisted search query under `key`. Missing key, null store, or
+ * a storage throw (private mode) all return "" -- the unfiltered grid. */
+export function readSessionQuery(
   store: Pick<Storage, "getItem"> | null | undefined,
+  key: string,
 ): string {
   if (!store) return "";
   try {
-    const v = store.getItem(LIFE_LIST_QUERY_KEY);
+    const v = store.getItem(key);
     return typeof v === "string" ? v : "";
   } catch {
     return "";
   }
 }
 
-/** Write the life-list query. Empty string removes the key so a clear
- * leaves no stale entry for the next mount in this session. */
-export function writeLifeListQuery(
+/** Write a search query under `key`. Empty string removes the key so a
+ * clear leaves no stale entry for the next mount in this session. */
+export function writeSessionQuery(
   store: Pick<Storage, "setItem" | "removeItem"> | null | undefined,
+  key: string,
   query: string,
 ): void {
   if (!store) return;
   try {
-    if (query === "") store.removeItem(LIFE_LIST_QUERY_KEY);
-    else store.setItem(LIFE_LIST_QUERY_KEY, query);
+    if (query === "") store.removeItem(key);
+    else store.setItem(key, query);
   } catch {
     // Quota / private mode: fail quiet; the in-memory box still works.
   }
+}
+
+/** The life-list query (#410), under its own key. */
+export function readLifeListQuery(
+  store: Pick<Storage, "getItem"> | null | undefined,
+): string {
+  return readSessionQuery(store, LIFE_LIST_QUERY_KEY);
+}
+
+export function writeLifeListQuery(
+  store: Pick<Storage, "setItem" | "removeItem"> | null | undefined,
+  query: string,
+): void {
+  writeSessionQuery(store, LIFE_LIST_QUERY_KEY, query);
+}
+
+// --- The species mask (issue #593) ------------------------------------------
+//
+// What Earl's geo model allows here THIS week, as the listener published it
+// on audio/mask and sightings.py stored it (region_mask + region_mask_meta,
+// current state only). The page merges it with the roster the dashboard
+// already fetches: a mask species on the life list is HEARD (lit, a link to
+// its profile), the rest are the yard's open questions (dimmed, no link).
+// Everything below is pure; the route and the component stay thin over it.
+
+export type MaskRow = {
+  species_sci: string;
+  species_common: string;
+  /** The geo model's score for this species here this week (0..1). */
+  geo: number;
+};
+
+export type MaskMeta = {
+  ts: number;
+  week: number;
+  status: "masked" | "unmasked";
+  error: string | null;
+};
+
+/** The /aviary/mask body. `mask` null = no mask recorded yet (unset env,
+ * no store, a store the listener has never reported into). */
+export type MaskPayload = {
+  mask: MaskMeta | null;
+  species: MaskRow[];
+};
+
+/** Shape the two store queries into the wire body. A missing meta row is
+ * "no mask recorded yet" regardless of any species rows (the meta row is
+ * what says which week they belong to); an unknown status is treated the
+ * same, never guessed at. */
+export function maskPayloadFrom(
+  meta:
+    | {
+        ts: number | null;
+        week: number | null;
+        status: string | null;
+        error: string | null;
+      }
+    | undefined
+    | null,
+  rows: MaskRow[],
+): MaskPayload {
+  if (
+    !meta ||
+    typeof meta.ts !== "number" ||
+    typeof meta.week !== "number" ||
+    (meta.status !== "masked" && meta.status !== "unmasked")
+  ) {
+    return { mask: null, species: [] };
+  }
+  return {
+    mask: {
+      ts: meta.ts,
+      week: meta.week,
+      status: meta.status,
+      error: meta.error ?? null,
+    },
+    species: meta.status === "masked" ? rows : [],
+  };
+}
+
+export type MaskEntry = {
+  species_sci: string;
+  species_common: string;
+  /** Null for a species the operator let in by rule (always_include): the
+   * geo model never scored it. */
+  geo: number | null;
+  /** On this location's life list -- heard ever, not this week. */
+  heard: boolean;
+  visits: number;
+  rule: "always_include" | null;
+};
+
+/** Alphabetical by common name, ties by scientific name -- the rosterOrder
+ * name rule. Fixed: nothing on the page ever re-sorts it. */
+function byMaskName(a: MaskEntry, b: MaskEntry): number {
+  return (
+    a.species_common.localeCompare(b.species_common, undefined, {
+      sensitivity: "base",
+    }) || a.species_sci.localeCompare(b.species_sci)
+  );
+}
+
+/** What Earl will actually accept, merged with what the yard has heard.
+ * The geo mask minus the operator's `exclude` vetoes (never listed: the gate
+ * drops them before the mask is consulted) plus `always_include` holes (the
+ * roster species the operator let in, stamped by rule, no geo score). A
+ * roster entry outside the mask is simply not on this page -- the list is
+ * the mask's, lit by the roster, not the other way round. */
+export function effectiveMask(
+  rows: MaskRow[],
+  roster: RosterEntry[],
+): MaskEntry[] {
+  const byRoster = new Map(roster.map((e) => [e.species_sci, e]));
+  const out: MaskEntry[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (seen.has(r.species_sci)) continue;
+    seen.add(r.species_sci);
+    const e = byRoster.get(r.species_sci);
+    if (e?.rule?.exclude) continue;
+    out.push({
+      species_sci: r.species_sci,
+      species_common: r.species_common,
+      geo: r.geo,
+      heard: e !== undefined,
+      visits: e?.visits ?? 0,
+      rule: null,
+    });
+  }
+  for (const e of roster) {
+    if (seen.has(e.species_sci)) continue;
+    if (!e.rule?.always_include || e.rule.exclude) continue;
+    seen.add(e.species_sci);
+    out.push({
+      species_sci: e.species_sci,
+      species_common: e.species_common,
+      geo: null,
+      heard: true,
+      visits: e.visits,
+      rule: "always_include",
+    });
+  }
+  return out.sort(byMaskName);
+}
+
+/** The readout's figures: how many of the mask's species the yard has
+ * heard, over how many it could. */
+export function maskStats(entries: MaskEntry[]): {
+  heard: number;
+  total: number;
+} {
+  let heard = 0;
+  for (const e of entries) if (e.heard) heard++;
+  return { heard, total: entries.length };
+}
+
+export type MaskFilter = "all" | "unheard";
+
+/** The grid the viewer sees: the fixed order filtered by the search box and
+ * the all/unheard pill, never re-sorted by either. */
+export function maskShown(
+  entries: MaskEntry[],
+  query: string,
+  filter: MaskFilter,
+): MaskEntry[] {
+  return entries.filter(
+    (e) => (filter === "all" || !e.heard) && speciesMatches(e, query),
+  );
 }
 
 // --- Announcement strip (epic #447 Phase 1) ---------------------------------

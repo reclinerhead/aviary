@@ -37,6 +37,12 @@
 #     archive's honor): a deleted first-heard date is a moment no one sells
 #     back. toddtech-infrastructure/servers/Pearl.md says so where it can be acted on.
 #
+# The region mask (issue #593) is the consumer's one piece of STATE: the
+# retained audio/mask message (what Earl's geo model allows here this week)
+# lands in region_mask + region_mask_meta, every message replacing the whole
+# table, so the Aviary can show what the yard could be hearing beside what
+# it has heard. Current mask only, this box only -- the gate never reads it.
+#
 # Clip retention (issue #175) also lives HERE, not in earl.py -- deliberate:
 # the store is the thing that knows which clips are irreplaceable, so the
 # store does the pruning. Hourly, the frame_archiver pattern (pure selection,
@@ -164,6 +170,32 @@ CREATE TABLE IF NOT EXISTS species_rules (
     threshold      REAL,
     always_include INTEGER NOT NULL DEFAULT 0,
     updated_ts     INTEGER NOT NULL
+);
+
+-- The region mask in use (issue #593): what Earl's geo model allows here
+-- THIS week, as the listener last published it on audio/mask. CURRENT
+-- STATE ONLY -- every message replaces the whole table (the week-by-week
+-- record is a different question, and would be an append elsewhere). The
+-- Aviary's species mask page reads it; nothing in the gate does -- the
+-- listener keeps its own copy in hand and this is the bus's shadow of it.
+-- A new table, so the CREATE IF NOT EXISTS is the whole upgrade: no ALTER,
+-- nothing an existing store owns is touched.
+CREATE TABLE IF NOT EXISTS region_mask (
+    species_sci    TEXT PRIMARY KEY,
+    species_common TEXT NOT NULL,
+    geo            REAL NOT NULL
+);
+
+-- One row (id 1) describing the mask above: when it was published, which
+-- BirdNET week it is for, and whether Earl is in fact masked -- "unmasked"
+-- (the geo model failed to load) empties region_mask and keeps the error
+-- text, so the page can say so instead of showing an empty grid.
+CREATE TABLE IF NOT EXISTS region_mask_meta (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    ts             INTEGER NOT NULL,
+    week           INTEGER NOT NULL,
+    status         TEXT NOT NULL,
+    error          TEXT
 );
 """
 
@@ -343,6 +375,70 @@ def parse_event(payload):
         }
     except (ValueError, TypeError, KeyError):
         return None
+
+
+MASK_STATUSES = ("masked", "unmasked")
+
+
+def parse_mask(payload):
+    """One audio/mask message -> {ts, week, status, error, species: [rows]},
+    or None for anything that isn't the documented shape (issue #593; never
+    trust the wire -- the parse_event rule). Rows keep exactly the three
+    columns the table holds; an extra key on the wire is ignored, a missing
+    or mistyped one rejects the whole message, because a half-landed mask
+    would be a mask the Aviary shows and Earl isn't using."""
+    try:
+        body = json.loads(payload)
+        if not isinstance(body, dict):
+            return None
+        status = body["status"]
+        if status not in MASK_STATUSES:
+            return None
+        raw = body["species"]
+        if not isinstance(raw, list):
+            return None
+        species = []
+        for r in raw:
+            species.append({
+                "species_sci": str(r["species_sci"]),
+                "species_common": str(r["species_common"]),
+                "geo": float(r["geo"]),
+            })
+        error = body.get("error")
+        return {
+            "ts": int(body["ts"]),
+            "week": int(body["week"]),
+            "status": status,
+            "error": str(error) if error is not None else None,
+            "species": species,
+        }
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def record_mask(conn, mask):
+    """Replace the stored mask with this message, atomically: the species
+    rows and the meta row land in one transaction, so a reader never sees
+    week 44's header over week 43's species. INSERT OR REPLACE on the sci
+    key absorbs a duplicate on the wire rather than aborting the message."""
+    try:
+        conn.execute("DELETE FROM region_mask")
+        conn.executemany(
+            "INSERT OR REPLACE INTO region_mask"
+            " (species_sci, species_common, geo) VALUES (?,?,?)",
+            [(r["species_sci"], r["species_common"], r["geo"])
+             for r in mask["species"]])
+        conn.execute(
+            "INSERT INTO region_mask_meta (id, ts, week, status, error)"
+            " VALUES (1,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET ts=excluded.ts,"
+            " week=excluded.week, status=excluded.status,"
+            " error=excluded.error",
+            (mask["ts"], mask["week"], mask["status"], mask["error"]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def record(conn, row):
@@ -632,10 +728,35 @@ def main():
 
     def on_connect(client, userdata, flags, reason_code, properties):
         client.subscribe(bus.AUDIO_EVENTS_TOPIC)
-        print(f"[sightings] subscribed to {bus.AUDIO_EVENTS_TOPIC}",
+        # The region mask (#593): retained, so a restart gets it back at
+        # once, and the store's copy can never be older than the broker's.
+        client.subscribe(bus.AUDIO_MASK_TOPIC)
+        print(f"[sightings] subscribed to {bus.AUDIO_EVENTS_TOPIC} and "
+              f"{bus.AUDIO_MASK_TOPIC}", flush=True)
+
+    def on_mask(payload):
+        # Its own path by TOPIC, never by sniffing the body: a mask must not
+        # reach parse_event, and a mask that fails to land costs the mask,
+        # never a sighting (its own try, the `write failed` posture).
+        mask = parse_mask(payload)
+        if mask is None:
+            print(f"[sightings] dropped malformed mask ({payload[:80]!r})",
+                  flush=True)
+            return
+        try:
+            record_mask(conn, mask)
+        except sqlite3.Error as e:
+            print(f"[sightings] mask write failed ({e}) -- mask dropped",
+                  flush=True)
+            return
+        print(f"[sightings] region mask: {mask['status']}, "
+              f"{len(mask['species'])} species, week {mask['week']}",
               flush=True)
 
     def on_message(client, userdata, message):
+        if message.topic == bus.AUDIO_MASK_TOPIC:
+            on_mask(message.payload)
+            return
         row = parse_event(message.payload)
         if row is None:
             # A kind we don't persist is the designed common case, not an

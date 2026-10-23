@@ -76,6 +76,15 @@ import {
   aviaryTitle,
   dismissNotice,
   isNoticeDismissed,
+  MASK_QUERY_KEY,
+  type MaskEntry,
+  type MaskFilter,
+  type MaskPayload,
+  effectiveMask,
+  maskShown,
+  maskStats,
+  readSessionQuery,
+  writeSessionQuery,
   mastheadSub,
   pickVisibleNotice,
   championPaths,
@@ -1078,6 +1087,7 @@ function EarlLamp({
 const MASTHEAD_TABS = [
   { key: "aviary", label: "dashboard", href: "/aviary" },
   { key: "record", label: "all detections", href: "/aviary/events" },
+  { key: "mask", label: "species mask", href: "/aviary/mask" },
 ] as const;
 
 /**
@@ -4079,6 +4089,267 @@ export function AviaryEvents({
                 </span>
               </div>
             </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// --- The /aviary/mask page (issue #593) --------------------------------------
+
+/** Readout stamp for the mask's refresh moment: the viewer's clock, the
+ * ticker's date + time vocabulary. */
+const maskRefreshOf = (ts: number) =>
+  `${dateOf(ts)}, ${timeOf(ts)}`;
+
+/** One species in the mask. Lit (heard) is the life-list tile's link; dimmed
+ * (not yet heard) is the same geometry with no link and the quieter inks --
+ * never opacity, so the names of the birds the page exists to surface stay
+ * readable at the text-xs floor. One geometry in both states (house rule
+ * #1), so the all/unheard pill reflows nothing but the count. */
+function MaskTile({ e }: { e: MaskEntry }) {
+  const geo =
+    e.geo === null ? "by rule" : `geo ${e.geo.toFixed(2)}`;
+  const body = (
+    <>
+      <span
+        className={`block truncate ${e.heard ? "text-ink" : "text-inkdim"}`}
+        style={{ fontFamily: "var(--font-display)" }}
+      >
+        {e.species_common}
+      </span>
+      <span
+        className={`block truncate text-[11px] italic ${
+          e.heard ? "text-inkdim" : "text-inkfaint"
+        }`}
+      >
+        {e.species_sci}
+      </span>
+      <span className="stamp mt-1 block text-[9px] text-inkfaint">
+        {e.heard
+          ? `${e.visits === 1 ? "1 visit" : `${e.visits.toLocaleString("en-US")} visits`} · ${geo}`
+          : `not yet heard · ${geo}`}
+      </span>
+    </>
+  );
+  if (!e.heard) {
+    return (
+      <div
+        className="flex h-full flex-col rounded-sm border border-line bg-panel p-3"
+        aria-label={`${e.species_common}, not yet heard`}
+      >
+        {body}
+      </div>
+    );
+  }
+  return (
+    <Link
+      href={`/aviary/${encodeURIComponent(e.species_sci)}`}
+      // The lit tile: the grid tile's ground and hover, plus a hairline of
+      // the rhythm strip's hue down the left edge -- the one accent the
+      // page spends, so a heard bird reads as a lit window from across the
+      // room without a second colour story.
+      className="flex h-full flex-col rounded-sm border border-linebright border-l-2 border-l-wing bg-panel2 p-3 transition-colors hover:border-squirrel hover:border-l-squirrel"
+    >
+      {body}
+    </Link>
+  );
+}
+
+export function AviaryMask({
+  stationName,
+  title,
+}: {
+  stationName?: string;
+  title?: string;
+} = {}) {
+  const [roster, setRoster] = useState<RosterEntry[]>([]);
+  // Null until the mask fetch lands (the reserved in-flight frame); the
+  // route's `mask: null` is then the honest "no mask recorded yet".
+  const [payload, setPayload] = useState<MaskPayload | null>(null);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<MaskFilter>("all");
+
+  // Session-persist the box under its own key (#410's pattern, the
+  // life-list lesson: post-mount, never an initializer read).
+  useEffect(() => {
+    setQuery(readSessionQuery(sessionStorage, MASK_QUERY_KEY));
+  }, []);
+  const setMaskQuery = useCallback((next: string) => {
+    setQuery(next);
+    writeSessionQuery(sessionStorage, MASK_QUERY_KEY, next);
+  }, []);
+
+  // Both fetches land in place: the roster so a lifer lights its tile
+  // within the minute, the mask so a week tick re-lists the page. The
+  // dashboard's reconciliation cadence (#352): every 60 s and on the tab
+  // becoming visible. A failed fetch changes nothing.
+  useEffect(() => {
+    const load = () => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      const mid = Math.floor(d.getTime() / 1000);
+      fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { species: [] }))
+        .then((body: { species?: RosterEntry[] }) => {
+          if (Array.isArray(body.species)) setRoster(body.species);
+        })
+        .catch(() => {});
+      fetch("/aviary/region-mask", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { mask: null, species: [] }))
+        .then((body: MaskPayload) => {
+          setPayload({
+            mask: body?.mask ?? null,
+            species: Array.isArray(body?.species) ? body.species : [],
+          });
+        })
+        .catch(() => setPayload((p) => p ?? { mask: null, species: [] }));
+    };
+    load();
+    const id = setInterval(load, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  const entries = useMemo(
+    () => effectiveMask(payload?.species ?? [], roster),
+    [payload, roster],
+  );
+  const shown = useMemo(
+    () => maskShown(entries, query, filter),
+    [entries, query, filter],
+  );
+  const stats = maskStats(entries);
+  const mask = payload?.mask ?? null;
+
+  // The readout: one line, the #418 strip's density. Three honest states
+  // share the line's footprint -- in flight, no mask recorded, unmasked --
+  // and the fourth is the figure the page exists to show.
+  const readout =
+    payload === null ? (
+      <span className="text-inkfaint">— of — species in this week’s mask heard</span>
+    ) : mask === null ? (
+      <span className="text-inkfaint">
+        no mask recorded yet — the listener publishes it on its next start
+      </span>
+    ) : mask.status === "unmasked" ? (
+      <span className="text-inkfaint">
+        running unmasked since {maskRefreshOf(mask.ts)}
+        {mask.error ? `: ${mask.error}` : ""}
+      </span>
+    ) : (
+      <>
+        <span className="text-ink">{stats.heard.toLocaleString("en-US")}</span>
+        <span className="text-inkdim"> of </span>
+        <span className="text-ink">{stats.total.toLocaleString("en-US")}</span>
+        <span className="text-inkdim"> species in this week’s mask heard</span>
+        <span className="text-inkfaint"> · week {mask.week}</span>
+        <span className="text-inkfaint"> · refreshed {maskRefreshOf(mask.ts)}</span>
+      </>
+    );
+
+  const pill = (key: MaskFilter, label: string) => (
+    <button
+      type="button"
+      onClick={() => setFilter(key)}
+      aria-pressed={filter === key}
+      className={`stamp rounded-sm border px-2 py-1 text-[10px] transition-colors ${
+        filter === key
+          ? "border-linebright text-ink"
+          : "border-line text-inkfaint hover:border-linebright hover:text-inkdim"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
+  // The empty frame's sentence, by state; null means the grid renders.
+  const empty =
+    payload === null
+      ? "reading the mask …"
+      : mask === null
+        ? "no mask recorded yet — the listener publishes it on its next start"
+        : mask.status === "unmasked"
+          ? "earl is running unmasked — every species is allowed until the geo model loads"
+          : entries.length === 0
+            ? "the mask is empty this week"
+            : shown.length === 0
+              ? query.trim() === ""
+                ? "every species in this week's mask has been heard"
+                : `no species match “${query.trim()}” — the list answers to common and scientific names`
+              : null;
+
+  return (
+    <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
+      <AviaryMasthead stationName={stationName} title={title} tab="mask" />
+      <section className="panel rounded-sm border border-line bg-panel">
+        <PanelLabel
+          title="The Species Mask"
+          right={
+            <span className="flex flex-wrap items-center justify-end gap-1.5">
+              <span className="relative flex items-center">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  className="pointer-events-none absolute left-2 h-3 w-3 text-inkfaint"
+                  aria-hidden="true"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-4.4-4.4" />
+                </svg>
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(ev) => setMaskQuery(ev.target.value)}
+                  placeholder="find a bird"
+                  aria-label="Search the species mask"
+                  className="stamp w-40 rounded-sm border border-line bg-panel2 py-1 pl-7 pr-6 text-[10px] text-ink transition-colors placeholder:text-inkfaint focus:border-linebright focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setMaskQuery("")}
+                  aria-label="Clear search"
+                  tabIndex={query === "" ? -1 : 0}
+                  className={`absolute right-1.5 text-[10px] transition-colors ${
+                    query === "" ? "invisible" : "text-inkfaint hover:text-ink"
+                  }`}
+                >
+                  ✕
+                </button>
+              </span>
+              {pill("all", "all")}
+              {pill("unheard", "unheard")}
+            </span>
+          }
+        />
+        <div className="px-4 pb-4">
+          {/* The readout line: what the yard has heard of what it could.
+              Fixed height so the figure landing shifts the grid by nothing. */}
+          <p className="stamp mb-3 min-h-[20px] text-xs leading-5">{readout}</p>
+          {empty !== null ? (
+            <div className="flex min-h-[280px] items-center justify-center rounded-sm border border-line bg-panel2">
+              <span className="stamp px-4 text-center text-xs text-inkfaint">
+                {empty}
+              </span>
+            </div>
+          ) : (
+            <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+              {shown.map((e) => (
+                <li key={e.species_sci}>
+                  <MaskTile e={e} />
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       </section>

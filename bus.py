@@ -85,6 +85,19 @@
 #                                                with several microphones
 #                                                needs finer liveness than
 #                                                one status string
+#   audio/mask               Earl -> world       the region mask in use (issue
+#                                                #593): RETAINED JSON -- week,
+#                                                status masked/unmasked, and
+#                                                every species the geo model
+#                                                allows here this week with
+#                                                its geo score. State, not a
+#                                                moment (the audio/sources
+#                                                reasoning): republished at
+#                                                startup and on the week tick.
+#                                                The sightings consumer
+#                                                persists it (region_mask) so
+#                                                the Aviary can show what the
+#                                                yard could be hearing
 #   services/<name>/status   service presence    "online"/"offline", RETAINED --
 #                            the house-wide namespace (epic #110 Phase 4,
 #                            issue #147) for anything that is neither a
@@ -141,6 +154,7 @@ WEATHER_STATUS_TOPIC = "weather/status"
 AUDIO_EVENTS_TOPIC = "audio/events"
 AUDIO_STATUS_TOPIC = "audio/status"
 AUDIO_SOURCES_TOPIC = "audio/sources"
+AUDIO_MASK_TOPIC = "audio/mask"
 SERVICE_STATUS_WILDCARD = "services/+/status"
 NETWORK_STATUS_WILDCARD = "network/+/status"
 

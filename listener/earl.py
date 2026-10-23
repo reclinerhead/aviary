@@ -34,6 +34,16 @@
 #                              weather/current reasoning: source health is
 #                              state, and a late-joining dashboard needs it
 #                              without a poll loop
+#   publishes  audio/mask      the region mask in use (issue #593), RETAINED
+#                              JSON: week, masked/unmasked, and every species
+#                              the geo model allows here this week with its
+#                              geo score -- state, the audio/sources
+#                              reasoning. A worker reports its mask up the
+#                              queue at startup and on the week tick; the
+#                              report is best-effort and can never fail the
+#                              gate (the mask itself is in hand first).
+#                              sightings persists it so the Aviary's species
+#                              mask page can show what the yard could hear
 #   subscribes weather/current wind_mph feeds the gate's wind rules; a stale
 #                              or absent report degrades to the calm-day
 #                              rules (never a dead daemon -- the narrator's
@@ -325,15 +335,79 @@ def load_species_rules(db_path):
         conn.close()
 
 
-def allowed_species_set(lat, lon, week):
-    """The D4 mask: geo-model species for here-and-now, as a set of
-    scientific names. Raises on any failure -- the caller decides how loud
-    to be and runs unmasked (never dead)."""
+def region_mask(lat, lon, week):
+    """The D4 mask: geo-model species for here-and-now, as (allowed, rows).
+    `allowed` is the set of scientific names the gate uses -- computed
+    exactly as it always was, from the label column alone -- and raises on
+    any failure, the caller deciding how loud to be and running unmasked
+    (never dead). `rows` is the same prediction shaped for the bus (issue
+    #593: sci, common, geo score, sorted by sci) and is best-effort: a
+    column the report wants that the gate doesn't is never a reason to
+    thin the gate, so a failure there answers None and the mask stands."""
     import birdnet
     geo = birdnet.load("geo", "2.4", "tf", **birdnet_load_kwargs())
     df = geo.predict(lat, lon, week=week,
                      min_confidence=GEO_MIN_CONFIDENCE).to_dataframe()
-    return {gate.split_label(label)[0] for label in df["species_name"]}
+    allowed = {gate.split_label(label)[0] for label in df["species_name"]}
+    try:
+        rows = mask_rows_from(zip(df["species_name"], df["confidence"]))
+    except Exception:
+        rows = None
+    return allowed, rows
+
+
+def allowed_species_set(lat, lon, week):
+    """The gate's set alone (fieldmode/preview.py's caller)."""
+    return region_mask(lat, lon, week)[0]
+
+
+def mask_rows_from(pairs):
+    """(label, geo score) pairs -> the audio/mask species rows: BirdNET's
+    "Scientific_Common" split into the two names, the score rounded to
+    four places (the geo model's own precision is three), sorted by
+    scientific name so identical masks serialize identically. A label
+    repeated by the model keeps its best score. Pure, so the shape on the
+    wire is tested rather than eyeballed."""
+    best = {}
+    for label, conf in pairs:
+        sci, common = gate.split_label(label)
+        geo = round(float(conf), 4)
+        prior = best.get(sci)
+        if prior is None or geo > prior["geo"]:
+            best[sci] = {"species_sci": sci, "species_common": common,
+                         "geo": geo}
+    return [best[sci] for sci in sorted(best)]
+
+
+def mask_payload(latlon, week, rows, error=None, now=None):
+    """The audio/mask body (issue #593). `rows` None means the geo model
+    could not be asked at all -- status "unmasked", an empty species list,
+    and the error text the journal already prints, so the Aviary can say
+    "running unmasked since ..." instead of showing an empty grid. Pure
+    (injected clock) for the same reason as mask_rows_from."""
+    lat, lon = latlon
+    return {
+        "ts": int(now if now is not None else time.time()),
+        "week": int(week),
+        "lat": float(lat),
+        "lon": float(lon),
+        "status": "masked" if rows is not None else "unmasked",
+        "species": list(rows) if rows is not None else [],
+        "error": str(error) if error else None,
+    }
+
+
+def report_mask(queue, name, payload, log):
+    """Hand the worker's mask to the parent (who owns MQTT) -- best-effort
+    by contract: the gate already holds its set, and a report that cannot
+    be queued logs one line and leaves the worker exactly where it was. A
+    report failure must never cost a detection, let alone a worker."""
+    try:
+        queue.put(("mask", name, payload))
+        return True
+    except Exception as e:
+        log(f"mask report failed ({e}) -- the mask itself is unaffected")
+        return False
 
 
 def yamnet_frame_starts(n_samples):
@@ -474,11 +548,23 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
 
     week = birdnet_week()
     try:
-        allowed = allowed_species_set(*latlon, week)
+        allowed, mask = region_mask(*latlon, week)
         log(f"region mask: {len(allowed)} species for week {week}")
     except Exception as e:
         allowed = None
+        mask = None
         log(f"REGION MASK UNAVAILABLE ({e}) -- running unmasked, D4 is off")
+        report_mask(queue, name, mask_payload(latlon, week, None, error=e),
+                    log)
+    # The report rides AFTER the gate has its set (#593): nothing here can
+    # change `allowed`. No rows for a working mask (the best-effort shaping
+    # failed) is logged, not reported -- a retained "masked, 0 species"
+    # would be a lie about a mask that is in fact thinning the yard.
+    if allowed is not None:
+        if mask is None:
+            log("mask report skipped: rows unavailable (mask itself is on)")
+        else:
+            report_mask(queue, name, mask_payload(latlon, week, mask), log)
 
     backoff = 0
     visits = gate.VisitTracker()         # bird visits (#175)
@@ -509,9 +595,14 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
             if birdnet_week() != week:
                 week = birdnet_week()
                 try:
-                    allowed = allowed_species_set(*latlon, week)
+                    allowed, mask = region_mask(*latlon, week)
                     log(f"region mask refreshed: {len(allowed)} species, "
                         f"week {week}")
+                    # A refresh that kept the old mask reports nothing: the
+                    # retained payload still describes the mask in use.
+                    if mask is not None:
+                        report_mask(queue, name,
+                                    mask_payload(latlon, week, mask), log)
                 except Exception as e:
                     log(f"region mask refresh failed ({e}) -- keeping the "
                         "old mask")
@@ -913,6 +1004,17 @@ class Earl:
             self._last_window[name] = value["ts"]
             self._client.publish(bus.AUDIO_EVENTS_TOPIC, json.dumps(value),
                                  qos=0, retain=False)
+        elif kind == "mask":
+            # Retained: the mask is state (#593). Every worker on a unit
+            # computes the same mask (one MERLE_LATLON per box), so the last
+            # report wins and the duplicates are byte-identical. Wrapped
+            # because the parent IS Earl -- a bad payload may cost one
+            # journal line, never the daemon.
+            try:
+                self._client.publish(bus.AUDIO_MASK_TOPIC, json.dumps(value),
+                                     qos=0, retain=True)
+            except Exception as e:
+                print(f"[earl] mask publish failed ({e})", flush=True)
 
     def _close(self):
         for worker in self._workers.values():
