@@ -184,6 +184,20 @@ def test_shipped_registry_is_valid_and_names_the_house():
         assert feed.url.endswith(f"/{name}")
 
 
+def test_shipped_garage_mic_is_found_by_mac():
+    """The garage Warbler32 (#589) rides kestrel's mechanism (#580): a
+    command feed that resolves the board's MAC on every capture restart. Its
+    DHCP lease moved on its first day, so an address here would rot -- the
+    registry must hold the MAC and nothing else about the LAN."""
+    garage = feeds.load_feeds(feeds.DEFAULT_PATH)["garage-rear"]
+    assert garage.kind == "command"
+    assert garage.earl and not garage.naturalist
+    argv = shlex.split(garage.cmd)
+    assert argv[0].startswith("/") and argv[0].endswith("/python")
+    assert argv[1:] == ["-m", "listener.mic_by_mac", "90:70:69:1a:1b:fc"]
+    assert not re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", garage.cmd), garage.cmd
+
+
 def test_shipped_station_registry_is_a_working_ear():
     """The station registry (feeds.station.yml, issue #302): one local mic,
     Earl's only source on a box with no cameras and no rover. The capture
