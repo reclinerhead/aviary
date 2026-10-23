@@ -21,7 +21,8 @@
 #   rtsp     -> url  the go2rtc restream; Earl pulls the audio track, the
 #                    naturalist decodes the video
 #   command  -> cmd  a shell capture producing s16le/48kHz/mono on stdout
-#                    (the rover's ssh+arecord pull)
+#                    (the garage mic's MAC lookup, the rover's ssh+arecord
+#                    pull)
 #
 # Flags (absent = false):
 #   earl: true        Earl runs BirdNET on this feed's audio. This flag is
@@ -51,6 +52,20 @@ feeds:
   house-front:
     kind: rtsp
     url: rtsp://nvr.lan:8554/house-front
+    earl: true
+
+  # The garage Warbler32 (#589), mounted at the rear of the garage: an
+  # ESP32-S3 + USB lav streaming rtsp://<ip>/audio. Found by its MAC on every
+  # capture (re)start, the kestrel mechanism (#580, listener/mic_by_mac.py):
+  # the board has no mDNS and its DHCP lease has already moved once, so this
+  # file holds no address and needs no Pi-hole reservation. The cmd is
+  # shlex-split with no shell, so the interpreter is absolute (earl-listener's
+  # own venv); the worker inherits the unit's WorkingDirectory, the checkout,
+  # so `-m` resolves. Its predecessor's garage trial (#512) published as
+  # `Warbler32`; those rows keep that label.
+  garage-rear:
+    kind: command
+    cmd: /home/todd/earl-venv/bin/python -m listener.mic_by_mac 90:70:69:1a:1b:fc
     earl: true
 
   # The rover's own USB-camera mic, arecord piped over ssh (Phase 0 D5: the
