@@ -6,6 +6,15 @@ import {
   ARRIVALS_24H_S,
   ARRIVALS_WEEK_S,
   AnalysisStats,
+  MASK_QUERY_KEY,
+  type MaskEntry,
+  type MaskRow,
+  effectiveMask,
+  maskPayloadFrom,
+  maskShown,
+  maskStats,
+  readSessionQuery,
+  writeSessionQuery,
   DETAIL_SPAN_S,
   VISITS_SPAN_S,
   VISIT_GAP_S,
@@ -2838,5 +2847,161 @@ describe("announcement strip helpers (#447 Phase 1)", () => {
     expect(isNoticeDismissed(store, "b1")).toBe(false);
     dismissNotice(store, "b1");
     expect(isNoticeDismissed(store, "b1")).toBe(true);
+  });
+});
+
+// --- The species mask (issue #593) ------------------------------------------
+
+describe("species mask", () => {
+  const row = (sci: string, common: string, geo: number): MaskRow => ({
+    species_sci: sci,
+    species_common: common,
+    geo,
+  });
+  const mask = [
+    row("Strix varia", "Barred Owl", 0.41),
+    row("Cardinalis cardinalis", "Northern Cardinal", 0.99),
+    row("Poecile atricapillus", "Black-capped Chickadee", 0.97),
+    row("Aix sponsa", "Wood Duck", 0.3),
+  ];
+
+  it("maskPayloadFrom: a missing or malformed meta row is no mask", () => {
+    expect(maskPayloadFrom(undefined, mask)).toEqual({ mask: null, species: [] });
+    expect(maskPayloadFrom(null, mask)).toEqual({ mask: null, species: [] });
+    expect(
+      maskPayloadFrom({ ts: 1, week: 43, status: "partial", error: null }, mask),
+    ).toEqual({ mask: null, species: [] });
+    expect(
+      maskPayloadFrom({ ts: null, week: 43, status: "masked", error: null }, mask),
+    ).toEqual({ mask: null, species: [] });
+  });
+
+  it("maskPayloadFrom: masked carries the rows, unmasked carries none", () => {
+    expect(
+      maskPayloadFrom({ ts: 1700, week: 43, status: "masked", error: null }, mask),
+    ).toEqual({
+      mask: { ts: 1700, week: 43, status: "masked", error: null },
+      species: mask,
+    });
+    expect(
+      maskPayloadFrom(
+        { ts: 1800, week: 44, status: "unmasked", error: "no geo model" },
+        mask,
+      ),
+    ).toEqual({
+      mask: { ts: 1800, week: 44, status: "unmasked", error: "no geo model" },
+      species: [],
+    });
+  });
+
+  it("effectiveMask: alphabetical by common name, lit by the roster", () => {
+    const roster = [
+      entry("Cardinalis cardinalis", "Northern Cardinal", 412),
+      entry("Strix varia", "Barred Owl", 3),
+      // On the life list but outside the mask: not on this page at all.
+      entry("Hirundo rustica", "Barn Swallow", 90),
+    ];
+    const out = effectiveMask(mask, roster);
+    expect(out.map((e) => e.species_common)).toEqual([
+      "Barred Owl",
+      "Black-capped Chickadee",
+      "Northern Cardinal",
+      "Wood Duck",
+    ]);
+    expect(out.map((e) => e.heard)).toEqual([true, false, true, false]);
+    expect(out.map((e) => e.visits)).toEqual([3, 0, 412, 0]);
+    expect(out.map((e) => e.geo)).toEqual([0.41, 0.97, 0.99, 0.3]);
+    expect(out.every((e) => e.rule === null)).toBe(true);
+  });
+
+  it("effectiveMask: an excluded species is not in the mask Earl uses", () => {
+    const roster = [
+      {
+        ...entry("Aix sponsa", "Wood Duck", 2),
+        rule: { exclude: true, threshold: null, always_include: false },
+      },
+    ];
+    const out = effectiveMask(mask, roster);
+    expect(out.map((e) => e.species_sci)).not.toContain("Aix sponsa");
+    expect(out).toHaveLength(3);
+  });
+
+  it("effectiveMask: an always_include species outside the geo mask is let in by rule", () => {
+    const roster = [
+      {
+        ...entry("Antigone canadensis", "Sandhill Crane", 7),
+        rule: { exclude: false, threshold: null, always_include: true },
+      },
+      // always_include on a species already in the mask changes nothing.
+      {
+        ...entry("Strix varia", "Barred Owl", 3),
+        rule: { exclude: false, threshold: null, always_include: true },
+      },
+      // exclude wins over always_include, the gate's rule.
+      {
+        ...entry("Sturnus vulgaris", "European Starling", 1),
+        rule: { exclude: true, threshold: null, always_include: true },
+      },
+    ];
+    const out = effectiveMask(mask, roster);
+    const crane = out.find((e) => e.species_sci === "Antigone canadensis");
+    expect(crane).toEqual({
+      species_sci: "Antigone canadensis",
+      species_common: "Sandhill Crane",
+      geo: null,
+      heard: true,
+      visits: 7,
+      rule: "always_include",
+    });
+    const owl = out.find((e) => e.species_sci === "Strix varia");
+    expect(owl?.rule).toBeNull();
+    expect(owl?.geo).toBe(0.41);
+    expect(out.map((e) => e.species_sci)).not.toContain("Sturnus vulgaris");
+    expect(out).toHaveLength(5);
+  });
+
+  it("effectiveMask: an empty roster lights nothing; a duplicate row counts once", () => {
+    const out = effectiveMask([...mask, mask[0]], []);
+    expect(out).toHaveLength(4);
+    expect(out.every((e) => !e.heard && e.visits === 0)).toBe(true);
+  });
+
+  it("maskStats counts heard over total, zero-safe", () => {
+    expect(maskStats([])).toEqual({ heard: 0, total: 0 });
+    const out = effectiveMask(mask, [entry("Strix varia", "Barred Owl", 3)]);
+    expect(maskStats(out)).toEqual({ heard: 1, total: 4 });
+  });
+
+  it("maskShown filters by the box and the pill without re-sorting", () => {
+    const out = effectiveMask(mask, [entry("Strix varia", "Barred Owl", 3)]);
+    const names = (xs: MaskEntry[]) => xs.map((e) => e.species_common);
+    expect(names(maskShown(out, "", "all"))).toEqual(names(out));
+    expect(names(maskShown(out, "", "unheard"))).toEqual([
+      "Black-capped Chickadee",
+      "Northern Cardinal",
+      "Wood Duck",
+    ]);
+    expect(names(maskShown(out, "card", "all"))).toEqual(["Northern Cardinal"]);
+    expect(names(maskShown(out, "strix", "unheard"))).toEqual([]);
+  });
+
+  it("session query helpers read and write under their own key", () => {
+    const mem = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        mem.set(k, v);
+      },
+      removeItem: (k: string) => {
+        mem.delete(k);
+      },
+    };
+    expect(readSessionQuery(store, MASK_QUERY_KEY)).toBe("");
+    writeSessionQuery(store, MASK_QUERY_KEY, "owl");
+    expect(readSessionQuery(store, MASK_QUERY_KEY)).toBe("owl");
+    expect(readSessionQuery(store, "aviary.life-list-query")).toBe("");
+    writeSessionQuery(store, MASK_QUERY_KEY, "");
+    expect(mem.has(MASK_QUERY_KEY)).toBe(false);
+    expect(readSessionQuery(null, MASK_QUERY_KEY)).toBe("");
   });
 });
