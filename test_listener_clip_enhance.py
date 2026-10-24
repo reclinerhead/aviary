@@ -49,6 +49,16 @@ def test_band_limit_handles_an_empty_clip():
     assert ce.band_limit(np.array([]), SR).size == 0
 
 
+def test_band_limit_has_a_top_edge_for_hiss():
+    """#599: yard song tops out below 10 kHz, microphone hiss does not. A
+    14 kHz tone is gone (> 40 dB down); an 8 kHz tone is untouched."""
+    hiss = tone(14000)
+    assert rms(ce.band_limit(hiss, SR)) < 0.01 * rms(hiss)
+    high_song = tone(8000)
+    assert rms(ce.band_limit(high_song, SR)) == pytest.approx(
+        rms(high_song), rel=0.02)
+
+
 # --- 2. the spectral subtraction ---------------------------------------------
 
 def test_spectral_subtraction_keeps_the_tone_and_drops_the_floor():
@@ -69,6 +79,42 @@ def test_spectral_subtraction_keeps_the_tone_and_drops_the_floor():
     assert peak_hz == pytest.approx(4000, abs=20)
 
 
+def test_the_floor_holds_and_the_subtraction_still_subtracts():
+    """#599: the floor is 0.30 of each bin. Noise-only input comes out
+    quieter -- the subtraction did its job -- but never below the floor,
+    which is the residual bed that masks musical noise."""
+    rng = np.random.default_rng(599)
+    noise = rng.normal(0, 0.1, SR)
+    profile = ce.noise_profile(rng.normal(0, 0.1, SR))
+    out = ce.spectral_subtract(noise, profile)
+    assert 0.25 * rms(noise) <= rms(out) < 0.6 * rms(noise)
+
+
+def test_the_smoothed_mask_has_fewer_spikes():
+    """#599: the gain mask is box-smoothed over frames and bins. Smoothing
+    keeps every gain inside [floor, 1] and lowers the mask's frame-to-frame
+    scatter -- and, the claim that matters, the OUTPUT's per-bin speckle
+    (std/mean across frames) drops too. Fixed seed, as always."""
+    rng = np.random.default_rng(190)
+    noise = rng.normal(0, 0.1, SR)
+    profile = ce.noise_profile(rng.normal(0, 0.1, SR))
+    mag = np.abs(ce.stft(noise))
+
+    rough = ce.subtraction_mask(mag, profile, smooth=None)
+    smooth = ce.subtraction_mask(mag, profile)
+    for mask in (rough, smooth):
+        assert mask.min() >= ce.SPECTRAL_FLOOR - 1e-9
+        assert mask.max() <= 1.0 + 1e-9
+    assert smooth.std(axis=0).mean() < 0.5 * rough.std(axis=0).mean()
+
+    def speckle(x):
+        s = np.abs(ce.stft(x))
+        return float(np.median(s.std(axis=0) / np.maximum(s.mean(axis=0),
+                                                           1e-9)))
+    assert speckle(ce.spectral_subtract(noise, profile)) < speckle(
+        ce.spectral_subtract(noise, profile, smooth=None))
+
+
 def test_the_stft_round_trips():
     """istft(stft(x)) is the identity, or the subtraction is measuring one
     signal and rebuilding a different one."""
@@ -86,6 +132,27 @@ def test_normalize_reaches_the_target_peak():
 
 def test_normalize_leaves_silence_silent():
     assert np.max(np.abs(ce.normalize(np.zeros(1000)))) == 0.0
+
+
+def test_normalize_is_capped_against_its_reference():
+    """#599: with a reference, the gain may exceed the reference's own plain
+    normalize by at most GAIN_CAP_DB. A residue 60 dB under its reference
+    is lifted by exactly the cap; a clip the cap does not reach still hits
+    PEAK; the output never exceeds PEAK either way."""
+    ref = tone(4000, amp=1.0)
+    residue = tone(4000, amp=0.001)
+    out = ce.normalize(residue, ref=ref)
+    expected = 0.001 * ce.PEAK * 10 ** (ce.GAIN_CAP_DB / 20)
+    assert np.max(np.abs(out)) == pytest.approx(expected, rel=1e-6)
+
+    not_bound = ce.normalize(tone(4000, amp=0.5), ref=tone(4000, amp=0.6))
+    assert np.max(np.abs(not_bound)) == pytest.approx(ce.PEAK)
+    assert np.max(np.abs(out)) <= ce.PEAK
+
+
+def test_normalize_without_a_reference_is_the_v1_function():
+    x = tone(4000, amp=0.01)
+    assert np.array_equal(ce.normalize(x), x * (ce.PEAK / np.max(np.abs(x))))
 
 
 def test_normalize_runs_last_so_the_bird_is_loud():
@@ -175,6 +242,20 @@ def test_the_worklist_ignores_siblings_portraits_and_non_wavs():
              "species/Cyanocitta_cristata.jpg": 500,  # the portrait shelf
              "amcrest/notes.txt": 500}
     assert ce.needs_enhance(files) == []
+
+
+def test_force_lists_every_original_and_nothing_else():
+    """#599: a parameter change re-enhances nothing by mtime, so --force
+    puts every original back on the list -- current sibling or not -- while
+    the skips (siblings, portraits, non-WAVs) still hold."""
+    files = {"amcrest/100-Blue_Jay.wav": 500,
+             "amcrest/100-Blue_Jay-enh.wav": 600,      # current sibling
+             "amcrest/200-Northern_Cardinal.wav": 500,  # no sibling
+             "species/Cyanocitta_cristata.wav": 500,
+             "amcrest/notes.txt": 500}
+    assert ce.needs_enhance(files, force=True) == [
+        "amcrest/100-Blue_Jay.wav", "amcrest/200-Northern_Cardinal.wav"]
+    assert ce.needs_enhance(files) == ["amcrest/200-Northern_Cardinal.wav"]
 
 
 def test_the_worklist_walks_a_real_dir(tmp_path):

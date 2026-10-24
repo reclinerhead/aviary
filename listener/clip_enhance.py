@@ -1,10 +1,10 @@
 # =============================================================================
 # project-squirrel -- listener/clip_enhance.py
 #
-# The clip enhancement pass (epic #182, issue #190): make a faint bird
-# AUDIBLE to a human. BirdNET finds birds buried under a plane, road noise,
-# wind, or HVAC -- that is the whole point of the model -- but the clip is
-# the only evidence a person can independently evaluate, and a clip you
+# The clip enhancement pass (epic #182, issue #190; v2 in #599): make a faint
+# bird AUDIBLE to a human. BirdNET finds birds buried under a plane, road
+# noise, wind, or HVAC -- that is the whole point of the model -- but the clip
+# is the only evidence a person can independently evaluate, and a clip you
 # cannot hear is a clip you cannot check. A high confidence on a barely
 # audible signal is exactly the profile of a plausible false positive, so
 # "can I hear it?" is not a comfort feature; it is how the model gets
@@ -14,6 +14,7 @@
 #   python -m listener.clip_enhance                     # fill what's missing
 #   python -m listener.clip_enhance --limit 20 --dry-run
 #   python -m listener.clip_enhance --refresh amcrest/1752900000-Blue_Jay.wav
+#   python -m listener.clip_enhance --force              # every original, v2
 #
 # The enrichment-pass ethos, same as species_profile.py: worklist-driven,
 # idempotent, a per-clip function with the bulk CLI as a thin loop over it
@@ -25,8 +26,10 @@
 #   1. BAND-LIMIT. Songbird vocalization lives roughly 2-8 kHz; aircraft,
 #      road, wind and HVAC energy is overwhelmingly sub-1 kHz. Rolling off
 #      below ~1.5 kHz removes a large fraction of the interfering energy
-#      while touching almost none of the bird. One global band in v1 --
-#      per-species banding is explicitly out of scope.
+#      while touching almost none of the bird. Since #599 the band has a top
+#      edge too (unity to 10 kHz, gone by 12): yard song tops out below
+#      10 kHz and microphone hiss does not. One global band -- per-species
+#      banding is explicitly out of scope.
 #
 #   2. SPECTRAL SUBTRACTION, using the clip's OWN pre-roll as the noise
 #      profile. This is the key move and it is nearly free here: write_clip()
@@ -36,12 +39,34 @@
 #      denoiser gets to have. Subtract with a spectral floor rather than to
 #      zero; subtracting to zero is what makes musical noise.
 #
+#      The floor is 0.30 and the gain mask is smoothed (#599). Three months
+#      of clips measured why: the 0.05 floor left a field of isolated
+#      spectral spikes that the normalize then lifted by 15-35 dB, and in
+#      half of all clips the pre-roll is NOT bird-free (the bird sang before
+#      crossing the threshold, or the clip is a mid-visit best-upgrade), so
+#      the "matched" profile is often only roughly matched. On the clips
+#      where the premise holds, the subtraction adds ~7.2 dB of event-bird
+#      over pre-roll SNR beyond the band-limit alone; floor 0.30 with a
+#      3x3 mask smoothing keeps 7.0 dB of that and cuts the pre-roll speckle
+#      index from 1.99 to 0.92 (a natural bed sits near 0.71). The residual
+#      bed is what masks both the speckle and the "transient standing in a
+#      vacuum" effect that made a knock or a voice the loudest thing in the
+#      clip.
+#
 #   3. NORMALIZE, LAST. Normalizing first normalizes *the plane*, and the
 #      bird stays exactly as faint in relative terms. Only once the
 #      interfering energy is gone is the bird the thing that reaches full
 #      scale. The test suite asserts this ordering directly, because it is
 #      the entire design rationale and a reordering would look fine in a
 #      build and sound wrong forever.
+#
+#      With a cap (#599): the pass may lift the band-limited clip at most
+#      GAIN_CAP_DB beyond where a plain normalize of it would land. The
+#      reference is the band-limited clip, not the raw one, on purpose: the
+#      band-limit's whole job is to remove a full-scale plane from under a
+#      -40 dB bird, and a cap measured against the plane would forbid the
+#      pass its motivating case. Measured against what survives the band,
+#      the cap bounds how loud a stray knock, voice or dog can become.
 #
 # NEVER IN PLACE. Clips are rewritten when a later window of the same visit
 # beats the visit's best confidence (earl.py's VisitTracker verdicts), so an
@@ -55,7 +80,9 @@
 # skipped, and a clip rewritten by a later `best` verdict is newer than its
 # sibling and so gets re-enhanced for free on the next run. File existence is
 # the source of truth -- no schema change, no new column (the do-not-change
-# list).
+# list). The corollary: a parameter change re-enhances NOTHING on its own.
+# `--force` puts every original on the worklist regardless of its sibling's
+# age; it is a hand step per box after a deploy like #599, never the loop's.
 #
 # numpy only, deliberately: numpy is already in the Earl venv, and
 # numpy.fft is entirely sufficient for an FFT-domain band-limit and an
@@ -84,16 +111,23 @@ SPECIES_DIR = "species"   # the portrait shelf shares the dir; not our business
 # and ringing at 1 kHz is a new noise to replace the one we just removed.
 BAND_STOP_HZ = 1000.0
 BAND_PASS_HZ = 1500.0
+# The top edge (#599): unity to BAND_TOP_PASS_HZ, gone by BAND_TOP_STOP_HZ,
+# the same raised cosine. Measured as cheap insurance: 3 of 180 current clips
+# were hiss-dominated, 9 of 25 from the rover's USB mic were.
+BAND_TOP_PASS_HZ = 10000.0
+BAND_TOP_STOP_HZ = 12000.0
 
 # --- The subtraction ---------------------------------------------------------
 N_FFT = 1024              # 21ms at 48k -- fine enough for song, coarse enough
 HOP = 256                 # 75% overlap; Hann + hop=N/4 reconstructs cleanly
 OVERSUBTRACT = 1.5        # subtract a bit more than the estimate; noise varies
-SPECTRAL_FLOOR = 0.05     # never below 5% of the original bin (musical noise)
+SPECTRAL_FLOOR = 0.30     # never below 30% of the original bin (#599; was 0.05)
+MASK_SMOOTH = (3, 3)      # box-smooth the gain mask over (frames, bins)
 EPS = 1e-12
 
 # --- The output level --------------------------------------------------------
 PEAK = 0.89               # ~-1 dBFS: loud, with headroom for the int16 round
+GAIN_CAP_DB = 12.0        # at most this far beyond a plain normalize (#599)
 
 
 def clips_dir():
@@ -102,19 +136,25 @@ def clips_dir():
 
 # --- Pure DSP (test_listener_clip_enhance.py) --------------------------------
 
-def band_limit(x, sr, stop_hz=BAND_STOP_HZ, pass_hz=BAND_PASS_HZ):
-    """Roll off everything below the band the birds live in. FFT-domain over
+def _raised_cosine_edge(freqs, lo_hz, hi_hz):
+    """0 at lo_hz, 1 at hi_hz, half-cosine between -- the one ramp shape both
+    band edges use."""
+    t = np.clip((freqs - lo_hz) / (hi_hz - lo_hz), 0.0, 1.0)
+    return 0.5 - 0.5 * np.cos(np.pi * t)
+
+
+def band_limit(x, sr, stop_hz=BAND_STOP_HZ, pass_hz=BAND_PASS_HZ,
+               top_pass_hz=BAND_TOP_PASS_HZ, top_stop_hz=BAND_TOP_STOP_HZ):
+    """Keep the band the birds live in: roll off below it (the plane, the
+    road, the furnace) and, since #599, above it (mic hiss). FFT-domain over
     the whole clip -- at 9 seconds that is one transform, and it buys an
     exactly specified response instead of a filter design."""
     x = np.asarray(x, dtype=np.float64)
     if x.size == 0:
         return x
     freqs = np.fft.rfftfreq(x.size, 1.0 / sr)
-    gain = np.ones(freqs.size)
-    gain[freqs <= stop_hz] = 0.0
-    ramp = (freqs > stop_hz) & (freqs < pass_hz)
-    t = (freqs[ramp] - stop_hz) / (pass_hz - stop_hz)
-    gain[ramp] = 0.5 - 0.5 * np.cos(np.pi * t)
+    gain = _raised_cosine_edge(freqs, stop_hz, pass_hz)
+    gain *= 1.0 - _raised_cosine_edge(freqs, top_pass_hz, top_stop_hz)
     return np.fft.irfft(np.fft.rfft(x) * gain, x.size)
 
 
@@ -167,27 +207,71 @@ def noise_profile(noise, n_fft=N_FFT, hop=HOP):
     return np.abs(stft(noise, n_fft, hop)).mean(axis=0)
 
 
+def _box_smooth(mask, shape):
+    """Mean over a (frames, bins) box, edge-padded so the clip's first and
+    last frames and the band's edge bins are averaged with themselves rather
+    than with zeros. A mean of values in [floor, 1] stays in [floor, 1]."""
+    t, f = shape
+    if t <= 1 and f <= 1:
+        return mask
+    padded = np.pad(mask, ((t // 2, t - 1 - t // 2), (f // 2, f - 1 - f // 2)),
+                    mode="edge")
+    out = np.zeros_like(mask)
+    for i in range(t):
+        for j in range(f):
+            out += padded[i:i + mask.shape[0], j:j + mask.shape[1]]
+    return out / (t * f)
+
+
+def subtraction_mask(mag, profile, oversub=OVERSUBTRACT, floor=SPECTRAL_FLOOR,
+                     smooth=MASK_SMOOTH):
+    """The per-bin gain the subtraction applies, in [0, 1]: what is left of
+    each bin after the profile comes off, never below `floor` of the bin
+    itself. The floor is proportional to the bin's own magnitude, so a bin
+    that is nearly all noise is attenuated hard while a bin carrying real
+    signal keeps its shape -- the standard defense against the warbling
+    'musical noise' that a subtract-to-zero produces. Smoothing the mask over
+    a few frames and bins (#599) is the second defense: an isolated bin that
+    happened to poke above the profile no longer becomes an isolated spike in
+    the output. Pure, so the tests can look at the mask itself."""
+    mag = np.asarray(mag, dtype=np.float64)
+    kept = np.maximum(mag - oversub * np.asarray(profile)[None, :], floor * mag)
+    mask = kept / np.maximum(mag, EPS)
+    if smooth is not None:
+        mask = _box_smooth(mask, smooth)
+    return np.clip(mask, 0.0, 1.0)
+
+
 def spectral_subtract(x, profile, oversub=OVERSUBTRACT, floor=SPECTRAL_FLOOR,
-                      n_fft=N_FFT, hop=HOP):
+                      n_fft=N_FFT, hop=HOP, smooth=MASK_SMOOTH):
     """Subtract the noise profile from every frame's magnitude, keeping the
-    original phase. The floor is proportional to the bin's own magnitude, so
-    a bin that is nearly all noise gets attenuated hard while a bin carrying
-    real signal keeps its shape -- the standard defense against the warbling
-    'musical noise' that a subtract-to-zero produces."""
+    original phase -- see subtraction_mask() for the floor and the smoothing."""
     x = np.asarray(x, dtype=np.float64)
     spec = stft(x, n_fft, hop)
-    mag = np.abs(spec)
-    cleaned = np.maximum(mag - oversub * profile[None, :], floor * mag)
-    # Phase carried by the unit-magnitude original; guarded at silent bins.
-    return istft(cleaned * (spec / np.maximum(mag, EPS)), x.size, n_fft, hop)
+    mask = subtraction_mask(np.abs(spec), profile, oversub, floor, smooth)
+    return istft(spec * mask, x.size, n_fft, hop)
 
 
-def normalize(x, peak=PEAK):
+def normalize(x, peak=PEAK, ref=None, cap_db=GAIN_CAP_DB):
     """Peak-normalize. Runs LAST, always -- see the header. Digital silence
-    stays silence rather than becoming amplified nothing."""
+    stays silence rather than becoming amplified nothing.
+
+    With `ref` (#599), the gain is capped at `cap_db` beyond what a plain
+    normalize of `ref` would apply: the pass may lift the clip at most that
+    far past where the reference would have landed. The gain is never larger
+    than the plain peak gain, so the output never exceeds `peak` either way.
+    Without `ref` this is exactly the v1 function."""
     x = np.asarray(x, dtype=np.float64)
     loudest = float(np.max(np.abs(x))) if x.size else 0.0
-    return x if loudest <= 0 else x * (peak / loudest)
+    if loudest <= 0:
+        return x
+    g = peak / loudest
+    if ref is not None:
+        ref = np.asarray(ref, dtype=np.float64)
+        ref_loudest = float(np.max(np.abs(ref))) if ref.size else 0.0
+        if ref_loudest > 0:
+            g = min(g, (peak / ref_loudest) * 10 ** (cap_db / 20.0))
+    return x * g
 
 
 def enhance(samples, sr=gate.SAMPLE_RATE, preroll_s=gate.WINDOW_S):
@@ -197,12 +281,14 @@ def enhance(samples, sr=gate.SAMPLE_RATE, preroll_s=gate.WINDOW_S):
     window, the scene without the bird. A clip too short to carry one (a
     window at the very start of a stream, where there was no prev to save)
     gets the band-limit and the normalize and honestly skips the subtraction
-    rather than estimating the noise from the bird itself."""
-    x = band_limit(samples, sr)
+    rather than estimating the noise from the bird itself. The normalize is
+    capped against the band-limited clip (the header says why not the raw)."""
+    banded = band_limit(samples, sr)
+    x = banded
     pre = x[:int(preroll_s * sr)]
     if pre.size >= N_FFT and x.size > pre.size:
         x = spectral_subtract(x, noise_profile(pre))
-    return normalize(x)
+    return normalize(x, ref=banded)
 
 
 # --- WAV I/O (skipped by the test contract -- the boundary, not the logic) ---
@@ -245,14 +331,19 @@ def is_enhanced(relpath):
     return relpath.endswith(ENH_SUFFIX)
 
 
-def needs_enhance(files):
+def needs_enhance(files, force=False):
     """Which clips this run should enhance. `files` is {relpath: mtime} --
     pure with the filesystem injected, the prune_selection precedent.
 
     On the list: any original .wav with no sibling, or whose sibling is older
     than it (rewritten by a later `best` verdict). Off the list: our own
     siblings, the species/ portrait shelf, and anything already current.
-    Re-running is therefore a no-op, which is the whole idempotence claim."""
+    Re-running is therefore a no-op, which is the whole idempotence claim.
+
+    `force` (#599) lists every original regardless of its sibling: the hand
+    step after a parameter change, since mtime alone would keep every
+    existing sibling at the old parameters forever. The skips still hold --
+    a forced run never enhances a sibling or a portrait."""
     out = []
     for relpath, mtime in sorted(files.items()):
         if not relpath.endswith(".wav") or is_enhanced(relpath):
@@ -260,7 +351,7 @@ def needs_enhance(files):
         if relpath.startswith(SPECIES_DIR + "/"):
             continue
         sibling = files.get(enhanced_relpath(relpath))
-        if sibling is None or sibling < mtime:
+        if force or sibling is None or sibling < mtime:
             out.append(relpath)
     return out
 
@@ -277,8 +368,8 @@ def list_clip_files(media_dir):
     return out
 
 
-def worklist(media_dir):
-    return needs_enhance(list_clip_files(media_dir))
+def worklist(media_dir, force=False):
+    return needs_enhance(list_clip_files(media_dir), force=force)
 
 
 # --- The per-clip function (what a future refresh button calls) --------------
@@ -308,6 +399,9 @@ def main():
                     help="clip dir (default: $MERLE_EARL_CLIPS or 'clips')")
     ap.add_argument("--refresh", metavar="RELPATH",
                     help="re-enhance one clip, whatever its sibling's age")
+    ap.add_argument("--force", action="store_true",
+                    help="re-enhance every original, whatever its sibling's "
+                         "age (the hand step after a parameter change)")
     ap.add_argument("--limit", type=int, default=None,
                     help="stop after N clips")
     ap.add_argument("--dry-run", action="store_true",
@@ -315,7 +409,7 @@ def main():
     args = ap.parse_args()
 
     media = args.clips or clips_dir()
-    todo = [args.refresh] if args.refresh else worklist(media)
+    todo = [args.refresh] if args.refresh else worklist(media, force=args.force)
     if args.limit is not None:
         todo = todo[:args.limit]
     if not todo:
