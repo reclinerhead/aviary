@@ -2374,21 +2374,28 @@ function FieldNotes({
           Field Notes
         </h2>
       </div>
-      {mode === "journal" && latest ? (
+      {mode === "journal" ? (
         // The journal (#614): Entry I is the newest dated entry -- its
         // title made in Python from its lede, its stamp the reason it was
         // written -- and Entry II the standing sketch. Same pages, same
-        // figures, same 52px figure boxes: only the words changed.
+        // figures, same 52px figure boxes: only the words changed. A bird
+        // whose sketch landed before its first entry shows Entry I as the
+        // page's own "not written yet" -- same skeleton, nothing shifts
+        // when the entry arrives.
         <div className="grid items-stretch gap-5 md:grid-cols-2">
           <JournalPage
             numeral="I"
-            title={latest.title}
-            text={latest.text}
-            stamp={journalStamp(latest.trigger)}
+            title={latest?.title ?? "the latest entry"}
+            text={latest?.text ?? null}
+            stamp={latest ? journalStamp(latest.trigger) : null}
             figure={<RhythmStrip stats={stats} />}
-            dateline={`${dayOf(latest.entry_ts)}${
-              entryAuthor(latest) ? ` · ${entryAuthor(latest)}` : ""
-            }`}
+            dateline={
+              latest
+                ? `${dayOf(latest.entry_ts)}${
+                    entryAuthor(latest) ? ` · ${entryAuthor(latest)}` : ""
+                  }`
+                : null
+            }
           />
           <JournalPage
             numeral="II"

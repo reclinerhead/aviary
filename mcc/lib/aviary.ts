@@ -2712,13 +2712,19 @@ export type JournalEntry = {
 };
 
 /** Which spread the field notes render: the journal once a bird has an
- * entry, the pre-#614 two-block notes until then, nothing without either. */
+ * entry OR its standing sketch (prompt version 4+), the pre-#614 two-block
+ * notes until then, nothing without either. The sketch alone counts: on
+ * the first deploy a sketch landed before its bird's first entry, and the
+ * old layout put it under "the rhythm" beside an empty "weather & timing";
+ * the journal layout shows it as Entry II with Entry I honestly unwritten. */
 export function notesMode(a: {
   entries?: JournalEntry[] | null;
   rhythm?: string | null;
   weather?: string | null;
+  prompt_version?: number | null;
 } | null): "journal" | "legacy" | "empty" {
   if (a?.entries && a.entries.length > 0) return "journal";
+  if (a?.rhythm && (a.prompt_version ?? 0) >= 4) return "journal";
   if (a?.rhythm || a?.weather) return "legacy";
   return "empty";
 }

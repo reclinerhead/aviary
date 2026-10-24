@@ -215,13 +215,16 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
 
     results = loop.tick(now=NOW)
 
-    assert store.execute("SELECT COUNT(*) c FROM species_analysis"
-                         ).fetchone()["c"] == 1       # one generation, not six
+    # Three first entries and three sketches (#614) share the one cap. The
+    # FIRST ENTRY goes first: a page becomes a journal only once its bird
+    # has an entry, and the deploy that ran sketches first left their pages
+    # in the old layout with an empty facing page. Five wait -- honestly
+    # counted, logged.
     assert store.execute("SELECT COUNT(*) c FROM species_journal"
-                         ).fetchone()["c"] == 0       # first entries wait
+                         ).fetchone()["c"] == 1       # one generation, not six
+    assert store.execute("SELECT COUNT(*) c FROM species_analysis"
+                         ).fetchone()["c"] == 0       # the sketches wait
     assert results["analysis"]["written"] == 1
-    # Three sketches and three first entries (#614) share the one cap:
-    # the sketch went first, five wait -- honestly counted, logged.
     assert results["analysis"]["deferred"] == 5
 
 

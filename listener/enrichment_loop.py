@@ -48,9 +48,11 @@
 #      probe the MERLE_OLLAMA candidates in preference order via /api/tags
 #      (liveness + which models the host holds, one cheap call); the first
 #      that answers gets this tick's slice: news entries first (anomaly,
-#      arrival, departure, record), then the standing sketches the #217
-#      worklist + fingerprint gate let through, then first and weekly
-#      entries -- one MERLE_ENRICH_CAP across all three.
+#      arrival, departure, record), then each bird's first entry, then the
+#      standing sketches the #217 worklist + fingerprint gate let through,
+#      then weekly and refresh entries -- one MERLE_ENRICH_CAP across all.
+#      (A page is a journal only once its bird has an entry, so a sketch
+#      written ahead of the first entry would sit in the old layout.)
 # The order is load-bearing, not cosmetic: the sketch and entry prompts
 # feed the model the profile's description, so profile-before-notes means
 # a brand-new bird has its background before its first note is written --
@@ -418,11 +420,11 @@ def drain_analysis(host, port, model, cap, now=None):
         ctx = species_analysis.journal_context(
             conn, species_analysis.weather_db_path(), now)
         entries = species_analysis.journal_worklist(conn, ctx)
-        news = species_analysis.NEWS_TRIGGERS
-        queue = ([("entry", e) for e in entries if e[2][0] in news]
+        ahead = species_analysis.AHEAD_OF_SKETCHES
+        queue = ([("entry", e) for e in entries if e[2][0] in ahead]
                  + [("sketch", s) for s in
                     species_analysis.worklist(conn, model=model)]
-                 + [("entry", e) for e in entries if e[2][0] not in news])
+                 + [("entry", e) for e in entries if e[2][0] not in ahead])
         written = 0
         for i, (what, item) in enumerate(queue):
             if written >= cap:
@@ -503,7 +505,9 @@ def run_prior():
         return {"failed": 1}
     for line in proc.stdout.splitlines():
         if line.startswith("[prior]"):
-            print(f"[enrich] {line[len('[prior] '):]}", flush=True)
+            # Keep the word: "[enrich] prior: 118 species x 48 weeks ..."
+            # is what a journal grep for the prior finds.
+            print(f"[enrich] prior: {line[len('[prior] '):]}", flush=True)
     if proc.returncode != 0:
         tail = proc.stderr.strip().splitlines()[-1:] or ["no stderr"]
         print(f"[enrich] prior: exited {proc.returncode} ({tail[0]})",
