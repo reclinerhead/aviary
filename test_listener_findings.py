@@ -7,13 +7,38 @@
 # silent error here is a confident wrong sentence on the page.
 # =============================================================================
 
+import os
 import time
+
+import pytest
 
 import feeds
 from listener import findings as fd
 from listener import region_prior, solar
 
 HOME = (42.26, -85.57)
+
+
+@pytest.fixture(autouse=True)
+def home_timezone():
+    """The findings read local days and hours from the BOX's clock, which on
+    orchid and every station is the location's own timezone. These tests
+    build Kalamazoo sunrises and sunsets, so they must run on Kalamazoo's
+    clock too -- on a UTC runner a 9:15pm EDT sunset is 1:15am and falls
+    outside the evening window. (Windows has no tzset; the desk is already
+    on Eastern time.)"""
+    if not hasattr(time, "tzset"):
+        yield
+        return
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Detroit"
+    time.tzset()
+    yield
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
 
 
 def at(y, m, d, h, mi=0):
