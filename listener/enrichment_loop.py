@@ -41,14 +41,20 @@
 #      MERLE_SHOWCASE_PYTHON on the unit: said once per loop life, slot 1
 #      is still written (bestClips needs no vector) so the champion is
 #      protected from retention, slots 2/3 wait for an encoder.
-#   4. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
-#      order via /api/tags (liveness + which models the host holds, one
-#      cheap call); the first that answers wins; drain a bounded slice of
-#      species_analysis.worklist() through its fingerprint gate. First,
-#      with or without a host, purge the notes no gate can reach (#612).
-# The order is load-bearing, not cosmetic: rhythm_prompt() feeds the model
-# the profile's description, so profile-before-notes means a brand-new bird
-# has its background before its first note is written -- same tick; and
+#   4. Field-journal pass (#614) -- first, with or without a host, purge the
+#      notes no gate can reach (#612) and, when the BirdNET venv is set,
+#      refresh the regional prior if a lifer or a move made it stale
+#      (region_prior.py, a subprocess like the showcase encoder). Then
+#      probe the MERLE_OLLAMA candidates in preference order via /api/tags
+#      (liveness + which models the host holds, one cheap call); the first
+#      that answers gets this tick's slice: news entries first (anomaly,
+#      arrival, departure, record), then the standing sketches the #217
+#      worklist + fingerprint gate let through, then first and weekly
+#      entries -- one MERLE_ENRICH_CAP across all three.
+# The order is load-bearing, not cosmetic: the sketch and entry prompts
+# feed the model the profile's description, so profile-before-notes means
+# a brand-new bird has its background before its first note is written --
+# same tick; and
 # clips-before-notes keeps audible evidence from waiting behind an LLM that
 # can take minutes per species. Fill rides after enhance (both need numpy)
 # and before notes so the metric is local-only and never blocked on Ollama.
@@ -404,36 +410,106 @@ def drain_analysis(host, port, model, cap, now=None):
     try:
         if not has_table(conn, "life_list"):
             return counts
+        now = now if now is not None else time.time()
         ollama = Ollama(host, port, model)
-        todo = species_analysis.worklist(conn, model=model)
+        where = f"{host}:{port}"
+        # One context for the whole slice: the weather archive, places,
+        # Home and the fair microphones are read once, not per bird.
+        ctx = species_analysis.journal_context(
+            conn, species_analysis.weather_db_path(), now)
+        entries = species_analysis.journal_worklist(conn, ctx)
+        news = species_analysis.NEWS_TRIGGERS
+        queue = ([("entry", e) for e in entries if e[2][0] in news]
+                 + [("sketch", s) for s in
+                    species_analysis.worklist(conn, model=model)]
+                 + [("entry", e) for e in entries if e[2][0] not in news])
         written = 0
-        for i, (sci, common, _visits) in enumerate(todo):
+        for i, (what, item) in enumerate(queue):
             if written >= cap:
-                counts["deferred"] = len(todo) - i
+                counts["deferred"] = len(queue) - i
                 print(f"[enrich] notes: cap ({cap}) reached, "
-                      f"{len(todo) - i} deferred to a later tick", flush=True)
+                      f"{len(queue) - i} deferred to a later tick", flush=True)
                 break
+            sci, common = item[0], item[1]
             try:
-                status, _ = species_analysis.analyze_species(
-                    conn, sci, common, ollama=ollama,
-                    weather_path=species_analysis.weather_db_path(),
-                    now=now, host=f"{host}:{port}")
+                if what == "sketch":
+                    status, _ = species_analysis.analyze_species(
+                        conn, sci, common, ollama=ollama, weather_path=None,
+                        now=now, host=where, ctx=ctx)
+                    label = "sketch"
+                else:
+                    status, trigger = species_analysis.write_entry(
+                        conn, sci, common, ollama=ollama, ctx=ctx,
+                        host=where, due=item[2])
+                    label = f"entry ({trigger})"
             except Exception as e:
-                print(f"[enrich] notes {common}: FAILED ({e})", flush=True)
+                print(f"[enrich] notes {common} {what}: FAILED ({e})",
+                      flush=True)
                 counts["failed"] = counts.get("failed", 0) + 1
                 continue
             counts[status] = counts.get(status, 0) + 1
             if status == "written":
                 written += 1
-                print(f"[enrich] notes {common}: written "
-                      f"({model} via {host}:{port})", flush=True)
+                print(f"[enrich] notes {common} {label}: written "
+                      f"({model} via {where})", flush=True)
             elif status == "llm-down":
-                print(f"[enrich] notes: {host}:{port} stopped answering "
+                print(f"[enrich] notes: {where} stopped answering "
                       "mid-drain -- deferring the rest", flush=True)
                 break
     finally:
         conn.close()
     return counts
+
+
+PRIOR_TIMEOUT_S = 300     # model load + 48 predictions: ~3 s on orchid
+_prior_warned = False     # "no BirdNET venv for the prior", once per life
+
+
+def run_prior():
+    """Refresh the regional prior (#614, listener/region_prior.py) when a
+    lifer or a move made it stale -- before the notes, so a departure
+    written this tick can cite it. The geo model lives in the BirdNET venv
+    (MERLE_SHOWCASE_PYTHON, the showcase encoder's), so this spawns the
+    module there; without that venv the journal simply makes own-record
+    claims, said once per loop life. Quiet when nothing is due."""
+    global _prior_warned
+    from listener import region_prior
+    path = species_analysis.db_path()
+    if not os.path.exists(path):
+        return {}
+    conn = species_analysis.connect(path)
+    try:
+        if not has_table(conn, "life_list"):
+            return {}
+        conn.executescript(region_prior.SCHEMA)
+        due = region_prior.prior_due(conn)
+    finally:
+        conn.close()
+    if not due:
+        return {}
+    python = os.environ.get("MERLE_SHOWCASE_PYTHON", "").strip()
+    if not python:
+        if not _prior_warned:
+            print("[enrich] prior: MERLE_SHOWCASE_PYTHON not set on this unit "
+                  "-- the journal makes own-record claims only", flush=True)
+            _prior_warned = True
+        return {}
+    try:
+        proc = subprocess.run([python, "-m", "listener.region_prior"],
+                              cwd=repo_root(), capture_output=True, text=True,
+                              timeout=PRIOR_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"[enrich] prior: FAILED to run ({e})", flush=True)
+        return {"failed": 1}
+    for line in proc.stdout.splitlines():
+        if line.startswith("[prior]"):
+            print(f"[enrich] {line[len('[prior] '):]}", flush=True)
+    if proc.returncode != 0:
+        tail = proc.stderr.strip().splitlines()[-1:] or ["no stderr"]
+        print(f"[enrich] prior: exited {proc.returncode} ({tail[0]})",
+              flush=True)
+        return {"failed": 1}
+    return {"computed": 1}
 
 
 def run_purge():
@@ -463,9 +539,12 @@ def run_analysis_pass(now=None):
     this tick's slice. No host answering is a no-op that logs nothing --
     bluejay being off IS the designed steady state, not an incident."""
     purged = run_purge()
+    prior = run_prior()
     counts = drain_first_host(now)
     if purged:
         counts["purged"] = len(purged)
+    if prior:
+        counts["prior"] = next(iter(prior))
     return counts
 
 

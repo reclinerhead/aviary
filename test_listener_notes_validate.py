@@ -32,6 +32,9 @@ def test_figures_compare_without_commas():
         {"3420", "1234", "0.82"}
     # A trailing comma after a number is punctuation, not a figure.
     assert nv.figures("July 18, 2026") == {"18", "2026"}
+    # A whole hour on a clock face is the hour, not a figure "00".
+    assert nv.figures("at 10:00pm") == {"10"}
+    assert nv.figures("at 10:30pm") == {"10", "30"}
     assert nv.validate("Heard 3420 times since 2026.", FACTS) == []
 
 
@@ -106,15 +109,34 @@ def test_the_stock_opener_is_caught_but_only_as_an_opener():
     assert nv.validate("They make a good number of calls.", FACTS)
 
 
-def test_numbers_written_as_words_are_caught():
-    # Verbatim from the Barred Owl's first #612 desk run.
+def test_numbers_written_as_words_are_held_to_the_figure_rule():
+    # Verbatim from the Barred Owl's first #612 desk run: invented, caught.
     text = ("You've recorded seventy-three visits, sixty-three percent of "
             "them late at night.")
     problems = nv.validate(text, FACTS)
-    assert any("seventy" in p and "sixty" in p for p in problems)
-    # One to ten are ordinary English, not hidden figures.
+    assert len(problems) == 1 and "63, 73" in problems[0]
+    # #614's desk run: a GIVEN figure copied as words is faithful, not
+    # invented -- rejecting it threw away 8 of 12 accurate sketches.
+    given = "Busiest from 7am to 10am, holding 1,234 visits (35% of them)."
+    assert nv.validate("Thirty-five percent of its visits come early.",
+                       given) == []
+    assert nv.validate("It sang one thousand two hundred and thirty-four "
+                       "times.", given) == []
+    # One to ten alone are ordinary English, not hidden figures.
     assert nv.validate("Heard from two microphones over seven days.",
                        FACTS) == []
+
+
+def test_words_value():
+    assert nv.words_value("seventy-three") == 73
+    assert nv.words_value("one hundred and twelve") == 112
+    assert nv.words_value("eighteen") == 18
+    assert nv.words_value("twenty one") == 21
+    assert nv.words_value("two") is None             # English, not a figure
+    assert nv.words_value("ten") is None
+    assert nv.figures("a thousand visits") == {"1000"}
+    assert nv.figures("eighteen minutes before sunrise") == {"18"}
+    assert nv.figures("two paragraphs") == set()
 
 
 def test_the_first_sentence_must_carry_the_lede():
@@ -129,6 +151,35 @@ def test_the_first_sentence_must_carry_the_lede():
     assert nv.validate(on, FACTS, lede=lede) == []
     # A lede with no figures can't be checked this way, so it isn't.
     assert nv.validate(off, FACTS, lede="A quiet bird.") == []
+
+
+def test_a_month_needs_to_have_been_given():
+    # Verbatim from the #614 desk run, for a swift first heard July 18.
+    swift = "It's been visiting your yard since January."
+    given = "First heard July 18, 2026; last heard in early September."
+    problems = nv.validate(swift, given)
+    assert problems == ["it names months that were not given: January -- "
+                        "use only the dates given"]
+    assert nv.validate("Here since July, gone by September.", given) == []
+    # "may" the verb is not the month (May is left out of the month list).
+    assert nv.validate("It may return.", given) == []
+
+
+def test_a_place_needs_a_fact_that_names_it():
+    terms = ["back of the house", "driveway", "back of the garage", "garage",
+             "front door"]
+    # Verbatim from the #614 desk run, for an owl heard only behind the
+    # garage: the place is an invention.
+    owl = ("The back of the house, over the driveway, seems to pick up the "
+           "most calls.")
+    facts = "Heard almost only at the old microphone at the back of the garage."
+    problems = nv.validate(owl, owl, True, place_terms=terms, facts=facts)
+    assert any("back of the house, driveway" in p for p in problems)
+    # Named by a fact: fine.
+    ok = "It lives behind the garage, at the back of the garage."
+    assert nv.validate(ok, facts, True, place_terms=terms, facts=facts) == []
+    # Word-bounded: "doorstep" is not the front door.
+    assert nv.unfounded_places("a doorstep song", terms, "") == []
 
 
 def test_an_empty_draft_has_nothing_to_object_to():

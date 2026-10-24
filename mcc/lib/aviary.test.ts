@@ -117,6 +117,10 @@ import {
   REFRESH_DEADLINE_S,
   REFRESH_HOLD_S,
   type RefreshUi,
+  notesMode,
+  sketchTitle,
+  journalStamp,
+  earlierLabel,
 } from "./aviary";
 
 const bird = (over: Partial<BirdEvent> = {}): BirdEvent => ({
@@ -3160,5 +3164,58 @@ describe("refreshLabel", () => {
     expect(refreshLabel({ kind: "failed", reason: "model", at: 0 })).toBe(
       "couldn't reach a model",
     );
+  });
+});
+
+
+// --- the field journal (#614) -------------------------------------------------
+
+describe("notesMode", () => {
+  const entry = {
+    id: 1,
+    entry_ts: 1,
+    trigger: "first",
+    title: "up before the sun",
+    text: "x",
+    model: "m",
+    fallback: false,
+  };
+  it("prefers the journal, falls back to the old notes, else empty", () => {
+    expect(notesMode({ entries: [entry], rhythm: "r" })).toBe("journal");
+    expect(notesMode({ entries: [], rhythm: "r", weather: null })).toBe(
+      "legacy",
+    );
+    expect(notesMode({ entries: [], rhythm: null, weather: "w" })).toBe(
+      "legacy",
+    );
+    expect(notesMode({ entries: [] })).toBe("empty");
+    expect(notesMode(null)).toBe("empty");
+  });
+});
+
+describe("sketchTitle", () => {
+  it("names the standing sketch from version 4, the old note below it", () => {
+    expect(sketchTitle(4)).toBe("the sketch");
+    expect(sketchTitle(5)).toBe("the sketch");
+    expect(sketchTitle(3)).toBe("the rhythm");
+    expect(sketchTitle(null)).toBe("the rhythm");
+  });
+});
+
+describe("journalStamp", () => {
+  it("says why an entry was written", () => {
+    expect(journalStamp("anomaly")).toBe("a caution");
+    expect(journalStamp("refresh")).toBe("on request");
+    expect(journalStamp("weekly")).toBe("this week");
+    expect(journalStamp("mystery")).toBe("mystery");
+  });
+});
+
+describe("earlierLabel", () => {
+  it("counts the earlier entries and offers to hide them", () => {
+    expect(earlierLabel(0, false)).toBeNull();
+    expect(earlierLabel(3, false)).toBe("earlier entries (3)");
+    expect(earlierLabel(3, true)).toBe("hide earlier entries");
+    expect(earlierLabel(1200, false)).toBe("earlier entries (1,200)");
   });
 });
