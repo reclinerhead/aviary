@@ -3189,6 +3189,18 @@ describe("notesMode", () => {
       "legacy",
     );
     expect(notesMode({ entries: [] })).toBe("empty");
+    // A sketch (v4) with no entry yet is already the journal: Entry I
+    // waits, rather than the sketch sitting under "the rhythm" beside an
+    // empty "weather & timing" (the first deploy's state).
+    expect(
+      notesMode({ entries: [], rhythm: "s", weather: null, prompt_version: 4 }),
+    ).toBe("journal");
+    expect(
+      notesMode({ entries: [], rhythm: "r", weather: "w", prompt_version: 3 }),
+    ).toBe("legacy");
+    expect(notesMode({ entries: [], rhythm: null, prompt_version: 4 })).toBe(
+      "empty",
+    );
     expect(notesMode(null)).toBe("empty");
   });
 });

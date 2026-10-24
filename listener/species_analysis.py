@@ -1183,14 +1183,20 @@ def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
     return "written", trigger
 
 
-# News leads the queue; then the sketches; then first and weekly entries.
+# The queue (enrichment_loop.drain_analysis): news entries, then every
+# bird's FIRST entry, then the sketches, then weekly and refresh entries.
+# First entries go ahead of the sketches because a page renders as a
+# journal only once the bird has an entry: deployed the other way round,
+# the first tick wrote sketches for birds with no entry, and their pages
+# showed the sketch under "the rhythm" beside an empty "weather & timing".
 NEWS_TRIGGERS = ("anomaly", "arrival", "departure", "record")
+AHEAD_OF_SKETCHES = NEWS_TRIGGERS + ("first",)
 
 
 def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
     """[(sci, common, due)] for every species above the #407 floor whose
-    entry is due, news triggers first. The floor holds here too: a one-off
-    false positive gets no journal."""
+    entry is due: news triggers first, then first entries, then the rest.
+    The floor holds here too: a one-off false positive gets no journal."""
     out = []
     for r in conn.execute("SELECT DISTINCT species_sci, species_common"
                           " FROM life_list ORDER BY species_common"):
@@ -1200,7 +1206,8 @@ def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
         due = entry_due(conn, r["species_sci"], ctx)
         if due[0] is not None:
             out.append((r["species_sci"], r["species_common"], due))
-    return sorted(out, key=lambda x: x[2][0] not in NEWS_TRIGGERS)
+    return sorted(out, key=lambda x: (x[2][0] not in NEWS_TRIGGERS,
+                                      x[2][0] != "first"))
 
 
 # --- Audit --------------------------------------------------------------------
