@@ -259,6 +259,15 @@ def test_score_row_missing_file(tmp_path, conn):
     assert vf.worklist(conn) == []
 
 
+def test_an_empty_file_scores_none_not_a_crash(tmp_path):
+    """#601: wave.open raises EOFError on a zero-byte file, which the
+    reader's guard did not catch. Unreadable means None, never an exception
+    out of the pass."""
+    empty = tmp_path / "empty.wav"
+    empty.write_bytes(b"")
+    assert vf.score_wav(str(empty)) is None
+
+
 def test_second_run_is_noop(tmp_path, conn):
     media = tmp_path / "clips"
     (media / "x").mkdir(parents=True)

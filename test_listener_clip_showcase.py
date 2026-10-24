@@ -342,6 +342,40 @@ def test_embed_rows_stores_unit_vectors_and_reads_the_center_window(store):
     assert sc.plan_species(conn, media, "Poecile atricapillus")["todo"] == []
 
 
+def test_an_empty_file_costs_one_line_not_the_pass(store):
+    """#601: wave.open raises EOFError -- not wave.Error -- on an empty or
+    truncated file, and one such file exited the encoder every tick for
+    twenty days on kestrel. The row is logged and skipped; the rest embed."""
+    conn, media, _ = store
+    seed(conn, media, n=3)
+    p = sc.plan_species(conn, media, "Poecile atricapillus")
+    empty = p["todo"][1]
+    open(empty["src_full"], "wb").close()          # zero bytes, like kestrel's
+    lines = []
+
+    class Model:
+        def encode_arrays(self, inp, batch_size=16):
+            emb = np.stack([np.full((1, 8), 3.0, np.float32) for _ in inp])
+            return types.SimpleNamespace(embeddings=emb)
+
+    assert sc.embed_rows(conn, p["todo"], Model(), now=7, log=lines.append) == 2
+    assert [l for l in lines if "unreadable" in l and empty["clip"] in l]
+    assert empty["clip"] not in sc.load_signatures(conn, "Poecile atricapillus")
+
+
+def test_an_empty_sibling_is_no_sibling_for_the_encoder(store):
+    """#601: source_for() falls through to the original when the -enh
+    sibling is zero bytes, instead of handing the encoder the empty file."""
+    conn, media, _ = store
+    seed(conn, media, n=1)
+    clip = sc.plan_species(conn, media, "Poecile atricapillus")["rows"][0]["clip"]
+    open(os.path.join(media, ce.enhanced_relpath(clip)), "wb").close()
+    full, kind, _ = sc.source_for(media, clip)
+    assert kind == "raw" and full == os.path.join(media, clip)
+    write_clip(os.path.join(media, ce.enhanced_relpath(clip)))
+    assert sc.source_for(media, clip)[1] == "enh"
+
+
 def test_read_center_takes_the_middle_segment_and_pads_a_short_clip(tmp_path):
     path = str(tmp_path / "c.wav")
     # 9 s: silence, tone, silence -- the center is the tone.

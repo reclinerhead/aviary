@@ -263,6 +263,35 @@ def test_the_worklist_walks_a_real_dir(tmp_path):
     assert ce.worklist(str(tmp_path)) == ["amcrest/100-Blue_Jay.wav"]
 
 
+def test_an_empty_newer_sibling_is_no_sibling(tmp_path):
+    """#601: a power cut leaves a sibling's name with zero bytes and a fresh
+    mtime. By mtime alone it is 'current' and the original never heals; the
+    listing leaves an empty sibling out, so the original is back on the
+    worklist and the next tick rewrites it."""
+    clip(tmp_path, "amcrest/100-Blue_Jay.wav", tone(4000, 3, 0.3), mtime=500)
+    empty = tmp_path / "amcrest/100-Blue_Jay-enh.wav"
+    empty.write_bytes(b"")
+    import os
+    os.utime(empty, (900, 900))
+    assert ce.worklist(str(tmp_path)) == ["amcrest/100-Blue_Jay.wav"]
+    ce.enhance_clip(str(tmp_path), "amcrest/100-Blue_Jay.wav")
+    assert empty.stat().st_size > 44
+    assert ce.worklist(str(tmp_path)) == []
+
+
+def test_write_wav_lands_whole_with_no_part_left_behind(tmp_path):
+    """#601: the bytes go to a .part and are renamed in; after the call the
+    target is a readable WAV and the in-flight name is gone. (The crash
+    atomicity itself is the OS's promise, exempt beyond this.)"""
+    path = tmp_path / "amcrest/100-Blue_Jay-enh.wav"
+    path.parent.mkdir(parents=True)
+    ce.write_wav(path, tone(4000, 1, 0.3), SR)
+    samples, sr = ce.read_wav(path)
+    assert sr == SR and samples.size == SR
+    assert not (tmp_path / "amcrest/100-Blue_Jay-enh.wav.part").exists()
+    assert sorted(p.name for p in path.parent.iterdir()) == ["100-Blue_Jay-enh.wav"]
+
+
 def test_enhanced_relpath_is_a_sibling():
     assert ce.enhanced_relpath("amcrest/100-Blue_Jay.wav") == (
         "amcrest/100-Blue_Jay-enh.wav")

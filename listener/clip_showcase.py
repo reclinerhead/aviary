@@ -361,10 +361,16 @@ def source_for(media_dir, relpath):
     for kind, rel in (("enh", ce.enhanced_relpath(relpath)), ("raw", relpath)):
         full = os.path.join(media_dir, rel)
         try:
-            mtime = os.path.getmtime(full)
+            st = os.stat(full)
         except OSError:
             continue
-        return full, kind, mtime
+        if kind == "enh" and st.st_size == 0:
+            # An empty sibling is no sibling (#601): a power cut right after
+            # the pass wrote it leaves the name with no bytes. Encode the
+            # original meanwhile; the enhance worklist rewrites the sibling
+            # on its next tick, and the mtime rule re-embeds it then.
+            continue
+        return full, kind, st.st_mtime
     return None
 
 
@@ -498,8 +504,11 @@ def embed_rows(conn, rows, model, now=None, log=print):
     for r in rows:
         try:
             segs.append(read_center(r["src_full"]))
-        except (OSError, ValueError, wave.Error) as e:
-            log(f"[showcase] {r['clip']}: unreadable ({e})")
+        except (OSError, ValueError, EOFError, wave.Error) as e:
+            # EOFError is what wave.open raises for an EMPTY or truncated
+            # file -- not a wave.Error (#601: one such sibling exited the
+            # encoder every tick for twenty days on kestrel).
+            log(f"[showcase] {r['clip']}: unreadable ({e!r})")
             continue
         keep.append(r)
     if not keep:
