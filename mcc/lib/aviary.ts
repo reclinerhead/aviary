@@ -2172,20 +2172,32 @@ export function ordinal(n: number): string {
   }
 }
 
-/** The strip's one line under the name: "only its 3rd visit ever". */
-export function rareReturnBody(visits: number): string {
-  return `only its ${ordinal(visits)} visit ever`;
+/** A moment as the viewer's day: the component owns every locale call on
+ * the page (its `dayOf` family), so builders that need a date in COPY take
+ * the formatter rather than importing one -- the lib stays locale-free and
+ * a test hands in a plain string. */
+export type DayFormatter = (ts: number) => string;
+
+/** The strip's one line under the name: "only its 3rd visit ever, first
+ * heard on Sep 2" (#603) -- the ordinal says how rare, the first-heard day
+ * says over what span. `firstHeard` arrives already formatted (above). */
+export function rareReturnBody(visits: number, firstHeard: string): string {
+  return `only its ${ordinal(visits)} visit ever, first heard on ${firstHeard}`;
 }
 
 /** The notice for one rare return: the strip's stamp says "rare visitor",
- * the display line is the bird, the body its ordinal. Portrait thumb and
- * the species page come from the sci name the shell already resolves. */
-export function rareReturnNotice(e: RosterEntry): AviaryNotice {
+ * the display line is the bird, the body its ordinal and first-heard day.
+ * Portrait thumb, the parenthetical scientific name and the species page
+ * all come from the sci name the shell already resolves. */
+export function rareReturnNotice(
+  e: RosterEntry,
+  firstHeardOf: DayFormatter,
+): AviaryNotice {
   return {
     id: rareReturnNoticeId(e.species_sci, e.last_ts ?? 0),
     kind: "rare_return",
     title: e.species_common,
-    body: rareReturnBody(e.visits),
+    body: rareReturnBody(e.visits, firstHeardOf(e.first_ts)),
     href: `/aviary/${encodeURIComponent(e.species_sci)}`,
     species_sci: e.species_sci,
     species_common: e.species_common,
@@ -2350,15 +2362,18 @@ export function sampleNotice(
   kind: string,
   model: RosterEntry | null,
   now: number,
+  firstHeardOf: DayFormatter,
 ): AviaryNotice | null {
   // Every sample is stamped `now` (#602) so the flag desk-checks the
   // moment line too; the rare return gets it through last_ts, the others
-  // directly.
+  // directly. The rare sample keeps the model's REAL first_ts, so the
+  // body's first-heard day (#603) desk-checks the year rule on a species
+  // the yard actually met last year.
   if (kind === "demo") return { ...demoNotice(), ts: now };
   if (!model) return null;
   if (kind === "rare_return")
     return {
-      ...rareReturnNotice({ ...model, visits: 3, last_ts: now }),
+      ...rareReturnNotice({ ...model, visits: 3, last_ts: now }, firstHeardOf),
       id: "demo:rare_return",
     };
   if (kind === "new_best")
@@ -2382,6 +2397,7 @@ export function demoNoticesFor(
   flag: string | null | undefined,
   entries: RosterEntry[],
   now: number,
+  firstHeardOf: DayFormatter,
 ): AviaryNotice[] {
   if (!flag) return [];
   const kinds =
@@ -2392,7 +2408,7 @@ export function demoNoticesFor(
   const model = byName.find((e) => e.image_file) ?? byName[0] ?? null;
   const out: AviaryNotice[] = [];
   for (const k of kinds) {
-    const n = sampleNotice(k, model, now);
+    const n = sampleNotice(k, model, now, firstHeardOf);
     if (n && !out.some((o) => o.id === n.id)) out.push(n);
   }
   return out;
