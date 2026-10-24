@@ -2696,3 +2696,57 @@ export function refreshLabel(s: RefreshUi): string {
       : "couldn't reach a model";
   return "write a fresh entry";
 }
+
+
+// --- The field journal (#614) -------------------------------------------------
+
+/** One dated entry, as /aviary/analysis/[species] ships it (newest first). */
+export type JournalEntry = {
+  id: number;
+  entry_ts: number;
+  trigger: string;
+  title: string;
+  text: string;
+  model: string | null;
+  fallback: boolean;
+};
+
+/** Which spread the field notes render: the journal once a bird has an
+ * entry, the pre-#614 two-block notes until then, nothing without either. */
+export function notesMode(a: {
+  entries?: JournalEntry[] | null;
+  rhythm?: string | null;
+  weather?: string | null;
+} | null): "journal" | "legacy" | "empty" {
+  if (a?.entries && a.entries.length > 0) return "journal";
+  if (a?.rhythm || a?.weather) return "legacy";
+  return "empty";
+}
+
+/** The standing sketch began at PROMPT_VERSION 4; below that `rhythm` is
+ * still the old rhythm note, and the page names it so. */
+export function sketchTitle(promptVersion: number | null | undefined): string {
+  return (promptVersion ?? 0) >= 4 ? "the sketch" : "the rhythm";
+}
+
+const TRIGGER_STAMPS: Record<string, string> = {
+  first: "first entry",
+  weekly: "this week",
+  arrival: "arrival",
+  departure: "departure",
+  record: "a record",
+  anomaly: "a caution",
+  refresh: "on request",
+};
+
+/** The small stamp on an entry's heading: why it was written. */
+export function journalStamp(trigger: string): string {
+  return TRIGGER_STAMPS[trigger] ?? trigger;
+}
+
+/** The earlier-entries disclosure's words (zero earlier: no control). */
+export function earlierLabel(count: number, open: boolean): string | null {
+  if (count <= 0) return null;
+  if (open) return "hide earlier entries";
+  return `earlier entries (${count.toLocaleString("en-US")})`;
+}

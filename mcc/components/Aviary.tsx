@@ -118,6 +118,11 @@ import {
   REFRESH_HOLD_S,
   type RefreshEvent,
   type RefreshUi,
+  notesMode,
+  sketchTitle,
+  journalStamp,
+  earlierLabel,
+  type JournalEntry,
 } from "@/lib/aviary";
 import { VisitsChart } from "@/components/VisitsChart";
 
@@ -2292,6 +2297,11 @@ export function Aviary({
  * time, ever. The no-notes empty state keeps the pre-#220 panel footprint
  * exactly, so day one still can't shift the page.
  *
+ * Since #614 the spread is a JOURNAL once the bird has an entry: Entry I
+ * the newest dated entry, Entry II the standing sketch, earlier entries in
+ * a closed disclosure below. A bird with no entry yet keeps the pre-#614
+ * two pages (rhythm, weather) until the pass reaches it.
+ *
  * Under the spread, on a box that can run it (`refreshable`, #613), one
  * line offers "write a fresh entry": it asks the server to run the pass's
  * own --refresh for this bird -- still the pass writing, never this page --
@@ -2307,11 +2317,11 @@ function FieldNotes({
   sci: string;
   onNotes: (a: Analysis) => void;
 }) {
-  const has = analysis?.rhythm || analysis?.weather;
+  const mode = notesMode(analysis);
   const refresh = analysis?.refreshable ? (
     <RefreshLine sci={sci} onNotes={onNotes} />
   ) : null;
-  if (!has)
+  if (mode === "empty")
     return (
       <>
         <section className="panel mt-4 rounded-sm border border-line bg-panel">
@@ -2342,6 +2352,12 @@ function FieldNotes({
   const dateline = analysis?.generated_ts
     ? `${dayOf(analysis.generated_ts)}${author ? ` · ${author}` : ""}`
     : null;
+  const entries = analysis?.entries ?? [];
+  const latest = entries[0];
+  const visitsStamp =
+    stats?.total_visits != null
+      ? `${stats.total_visits.toLocaleString("en-US")} visits`
+      : null;
   return (
     // overflow-x-clip is the page-never-scrolls-sideways guard for the weather
     // pills' hover tooltips (WeatherChipsRow): an absolutely-positioned bubble
@@ -2358,34 +2374,103 @@ function FieldNotes({
           Field Notes
         </h2>
       </div>
-      <div className="grid items-stretch gap-5 md:grid-cols-2">
-        <JournalPage
-          numeral="I"
-          title="the rhythm"
-          text={analysis?.rhythm ?? null}
-          stamp={
-            stats?.total_visits != null
-              ? `${stats.total_visits.toLocaleString("en-US")} visits`
-              : null
-          }
-          figure={<RhythmStrip stats={stats} />}
-          dateline={dateline}
-        />
-        <JournalPage
-          numeral="II"
-          title="weather & timing"
-          text={analysis?.weather ?? null}
-          stamp={
-            stats?.weather?.visits_matched != null
-              ? `${stats.weather.visits_matched.toLocaleString("en-US")} matched`
-              : null
-          }
-          figure={<WeatherChipsRow stats={stats} />}
-          dateline={dateline}
-        />
-      </div>
+      {mode === "journal" && latest ? (
+        // The journal (#614): Entry I is the newest dated entry -- its
+        // title made in Python from its lede, its stamp the reason it was
+        // written -- and Entry II the standing sketch. Same pages, same
+        // figures, same 52px figure boxes: only the words changed.
+        <div className="grid items-stretch gap-5 md:grid-cols-2">
+          <JournalPage
+            numeral="I"
+            title={latest.title}
+            text={latest.text}
+            stamp={journalStamp(latest.trigger)}
+            figure={<RhythmStrip stats={stats} />}
+            dateline={`${dayOf(latest.entry_ts)}${
+              entryAuthor(latest) ? ` · ${entryAuthor(latest)}` : ""
+            }`}
+          />
+          <JournalPage
+            numeral="II"
+            title={sketchTitle(analysis?.prompt_version)}
+            text={analysis?.rhythm ?? null}
+            stamp={visitsStamp}
+            figure={<WeatherChipsRow stats={stats} />}
+            dateline={dateline}
+          />
+        </div>
+      ) : (
+        <div className="grid items-stretch gap-5 md:grid-cols-2">
+          <JournalPage
+            numeral="I"
+            title="the rhythm"
+            text={analysis?.rhythm ?? null}
+            stamp={visitsStamp}
+            figure={<RhythmStrip stats={stats} />}
+            dateline={dateline}
+          />
+          <JournalPage
+            numeral="II"
+            title="weather & timing"
+            text={analysis?.weather ?? null}
+            stamp={
+              stats?.weather?.visits_matched != null
+                ? `${stats.weather.visits_matched.toLocaleString("en-US")} matched`
+                : null
+            }
+            figure={<WeatherChipsRow stats={stats} />}
+            dateline={dateline}
+          />
+        </div>
+      )}
+      {mode === "journal" && <EarlierEntries entries={entries.slice(1)} />}
       {refresh}
     </section>
+  );
+}
+
+/** Who set an entry down: the model, or "plain record" when the validator
+ * stored the facts without a model's prose (#612). */
+function entryAuthor(e: JournalEntry): string | null {
+  return e.fallback ? "plain record" : e.model;
+}
+
+/** The journal's back pages (#614): every entry before the newest, behind
+ * one quiet control. Closed, it is a single line; open, the entries follow
+ * as dated pages in the spread's own vocabulary, two to a row where there
+ * is room. Nothing above it ever moves -- it is below the spread. */
+function EarlierEntries({ entries }: { entries: JournalEntry[] }) {
+  const [open, setOpen] = useState(false);
+  const label = earlierLabel(entries.length, open);
+  if (!label) return null;
+  return (
+    <div className="mt-3">
+      <div className="flex h-8 items-center">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+          className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink"
+        >
+          {label}
+        </button>
+      </div>
+      {open && (
+        <div className="mt-2 grid items-stretch gap-5 md:grid-cols-2">
+          {entries.map((e) => (
+            <JournalPage
+              key={e.id}
+              numeral={dayOf(e.entry_ts)}
+              title={e.title}
+              text={e.text}
+              stamp={journalStamp(e.trigger)}
+              figure={null}
+              dateline={entryAuthor(e)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2801,6 +2886,10 @@ type Analysis = {
   fallback: boolean;
   /** #613: this box can run the on-demand refresh (the route says why). */
   refreshable: boolean;
+  /** #614: 4+ means `rhythm` is the standing sketch (`weather` null). */
+  prompt_version: number | null;
+  /** #614: the field journal's dated entries, newest first. */
+  entries: JournalEntry[];
 };
 
 export function SpeciesProfile({

@@ -74,6 +74,10 @@ def store(tmp_path, monkeypatch):
     monkeypatch.delenv("MERLE_OLLAMA", raising=False)
     monkeypatch.delenv("MERLE_ENRICH_CAP", raising=False)
     monkeypatch.delenv("MERLE_MODEL_RANK", raising=False)
+    # No Home and no BirdNET venv: the regional prior (#614) stays quiet
+    # unless a test asks for it.
+    monkeypatch.delenv("MERLE_LATLON", raising=False)
+    monkeypatch.delenv("MERLE_SHOWCASE_PYTHON", raising=False)
     conn = species_profile.connect(path)
     conn.executescript(sightings.SCHEMA)
     conn.executescript(species_analysis.SCHEMA)
@@ -212,9 +216,13 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
     results = loop.tick(now=NOW)
 
     assert store.execute("SELECT COUNT(*) c FROM species_analysis"
-                         ).fetchone()["c"] == 1       # one generation, not three
+                         ).fetchone()["c"] == 1       # one generation, not six
+    assert store.execute("SELECT COUNT(*) c FROM species_journal"
+                         ).fetchone()["c"] == 0       # first entries wait
     assert results["analysis"]["written"] == 1
-    assert results["analysis"]["deferred"] == 2       # honestly counted, logged
+    # Three sketches and three first entries (#614) share the one cap:
+    # the sketch went first, five wait -- honestly counted, logged.
+    assert results["analysis"]["deferred"] == 5
 
 
 def test_a_cap_of_zero_skips_the_host_entirely(store, monkeypatch, fake_llm):

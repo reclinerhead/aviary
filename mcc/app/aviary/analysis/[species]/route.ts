@@ -37,9 +37,18 @@
 // most wants the button.
 
 import { DatabaseSync } from "node:sqlite";
+import type { JournalEntry } from "@/lib/aviary";
 import { refreshConfig } from "@/lib/notesRefresh";
 
 const SQL = "SELECT * FROM species_analysis WHERE species_sci = ?";
+
+// The field journal's dated entries (#614), newest first. A dozen is more
+// than the page's disclosure will ever want open at once; older entries
+// stay in the store (a journal is never pruned) but not on the wire.
+const ENTRIES_SQL =
+  "SELECT id, entry_ts, trigger, title, text, model, fallback" +
+  " FROM species_journal WHERE species_sci = ?" +
+  " ORDER BY entry_ts DESC, id DESC LIMIT 12";
 
 type Body = {
   rhythm: string | null;
@@ -50,6 +59,10 @@ type Body = {
   generated_ts: number | null;
   fallback: boolean;
   refreshable: boolean;
+  /** #614: which prompt wrote `rhythm` -- 4 and up is the standing sketch
+   * (and `weather` is null); below that, the old two-block notes. */
+  prompt_version: number | null;
+  entries: JournalEntry[];
 };
 
 const EMPTY: Body = {
@@ -61,7 +74,28 @@ const EMPTY: Body = {
   generated_ts: null,
   fallback: false,
   refreshable: false,
+  prompt_version: null,
+  entries: [],
 };
+
+/** The journal rows, or [] on a store whose pass predates #614 (no table
+ * is a normal state, not an error). */
+function readEntries(db: DatabaseSync, sci: string): JournalEntry[] {
+  try {
+    const rows = db.prepare(ENTRIES_SQL).all(sci) as {
+      id: number;
+      entry_ts: number;
+      trigger: string;
+      title: string;
+      text: string;
+      model: string | null;
+      fallback: number | null;
+    }[];
+    return rows.map((r) => ({ ...r, fallback: r.fallback === 1 }));
+  } catch {
+    return [];
+  }
+}
 
 /** The stored blob, or null -- a row predating stats, or a corrupt one,
  * just has no figures. */
@@ -96,8 +130,10 @@ export async function GET(
     return body(EMPTY);
   }
   const refreshable = refreshConfig() !== null;
+  const sci = decodeURIComponent(species);
   try {
-    const row = db.prepare(SQL).get(decodeURIComponent(species)) as
+    const entries = readEntries(db, sci);
+    let row:
       | {
           rhythm_text: string | null;
           weather_text: string | null;
@@ -106,9 +142,17 @@ export async function GET(
           visits_watermark: number;
           generated_ts: number;
           fallback?: number | null; // absent on a pre-#612 table
+          prompt_version?: number | null;
         }
       | undefined;
-    if (!row) return body({ ...EMPTY, refreshable });
+    try {
+      row = db.prepare(SQL).get(sci) as typeof row;
+    } catch {
+      // A store predating the analysis pass has no such table -- the same
+      // quiet empty, not an error at a viewer.
+      row = undefined;
+    }
+    if (!row) return body({ ...EMPTY, refreshable, entries });
     return body({
       rhythm: row.rhythm_text,
       weather: row.weather_text,
@@ -118,11 +162,9 @@ export async function GET(
       generated_ts: row.generated_ts,
       fallback: row.fallback === 1,
       refreshable,
+      prompt_version: row.prompt_version ?? null,
+      entries,
     });
-  } catch {
-    // A store predating the analysis pass has no such table -- the same
-    // quiet empty, not an error at a viewer.
-    return body({ ...EMPTY, refreshable });
   } finally {
     db.close();
   }

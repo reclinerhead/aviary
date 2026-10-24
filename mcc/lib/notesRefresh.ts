@@ -93,13 +93,22 @@ export function onLifeList(db: string, sci: string): boolean {
   );
 }
 
+/** The newest write the pass has made for this bird: its sketch's
+ * generated_ts or its latest journal entry (#614), whichever is later. A
+ * refresh writes both; either moving is "a note landed". */
 function generatedTs(db: string, sci: string): number | null {
-  const row = readOne<{ generated_ts: number }>(
+  const sketch = readOne<{ generated_ts: number }>(
     db,
     "SELECT generated_ts FROM species_analysis WHERE species_sci = ?",
     sci,
-  );
-  return row?.generated_ts ?? null;
+  )?.generated_ts;
+  const entry = readOne<{ ts: number | null }>(
+    db,
+    "SELECT MAX(entry_ts) AS ts FROM species_journal WHERE species_sci = ?",
+    sci,
+  )?.ts;
+  const both = [sketch, entry].filter((t): t is number => typeof t === "number");
+  return both.length ? Math.max(...both) : null;
 }
 
 /** This species' job as the page polls it. A species never refreshed in

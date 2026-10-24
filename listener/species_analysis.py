@@ -1,13 +1,22 @@
 # =============================================================================
 # project-squirrel -- listener/species_analysis.py
 #
-# The field-naturalist blocks (epic #182 Phase 4, issue #186): what our own
-# visit record and our own weather archive say about a species, computed here
-# and written up by the LLM.
+# The field journal (epic #182 Phase 4 / #186, rebuilt as epic #611 Phase A,
+# issue #614): what the yard's own record says about a species, computed in
+# Python and written up by the LLM, as two things --
 #
-#   python -m listener.species_analysis
+#   THE STANDING SKETCH (species_analysis.rhythm_text): the bird's slow-
+#     changing character -- when in the day against the sun, where, in what
+#     weather -- two to four sentences, regenerated through the #217 gates.
+#   DATED ENTRIES (species_journal): written when something HAPPENED -- an
+#     arrival, a departure, a record, a suspect pattern, a week's news --
+#     each led by the finding listener/editor.py ranks first, from the
+#     facts listener/findings.py computes. A journal: never re-narrated.
+#
+#   python -m listener.species_analysis              (sketches + due entries)
 #   python -m listener.species_analysis --refresh "Cardinalis cardinalis"
-#   python -m listener.species_analysis --dry-run      (stats, no LLM, no write)
+#   python -m listener.species_analysis --dry-run    (findings + picks, no LLM)
+#   python -m listener.species_analysis --audit      (validator over the store)
 #
 # THE SPLIT, which is the whole design: **statistics are computed in this
 # file; the model only narrates them.** Hand any LLM raw event rows and ask
@@ -49,29 +58,19 @@
 #     rather than dropped -- a bird heard twice is still worth reading about
 #     as long as the page says that's all we have.
 #
-# HYGIENE (issue #612), the 2026-10-24 review's fixes:
-#   - NOTHING IS STORED UNCHECKED. Every block goes through
-#     listener/notes_validate.py (figures in the prose must appear in the
-#     prompt; no annotation labels, no `unknown`, no "our microphone", no
-#     "driveway" unless a place phrase says so, no stock opener). One retry
-#     with the violations quoted; a second failure stores the PLAIN RECORD
-#     (plain_rhythm/plain_weather -- the facts as sentences, no model) and
-#     marks the row `fallback = 1` so the page can say so.
+# HYGIENE (issue #612), the 2026-10-24 review's fixes, which every block
+# -- sketch and entry -- still passes through:
+#   - NOTHING IS STORED UNCHECKED. listener/notes_validate.py checks the
+#     prose (figures must appear in the prompt; no annotation labels, no
+#     `unknown`, no "our microphone", no "driveway" unless a place phrase
+#     says so, no stock opener, an entry's first sentence carries its lede).
+#     One retry with the violations quoted; a second failure stores the
+#     PLAIN RECORD (the fact lines as sentences, no model) with
+#     `fallback = 1`, so the page can say so.
 #   - THE YARD'S OWN VOCABULARY. Microphones are named by their `place:`
-#     phrase from the feeds registry (feeds.places()), retired labels are
-#     summarised as "formerly", and nothing calls the yard a driveway --
-#     on a station the phrases come from that station's own registry.
-#   - NOISE LINES OUT. No weekday line (birds own no calendar, and fourteen
-#     weeks of it read as a preference in nearly every note); no `unknown`
-#     weather bucket (a sensor dropout is not a fact about a bird).
-#   - LEDE FIRST. The fact lines are ordered so the model opens on the most
-#     newsworthy one -- a clearly moved trend, else the peak -- instead of
-#     the same total-visits sentence for every bird.
-#   - FROZEN ROWS PURGED. A sub-floor species' note at an old prompt version
-#     can never regenerate (the #407 floor runs first), so purge_stale()
-#     deletes it and the page shows the honest no-notes state.
-#   - PACING. The regeneration step grows with the record (due_step): a
-#     3,400-visit regular no longer re-narrates the same facts daily.
+#     phrase from the feeds registry (feeds.places()); on a station the
+#     phrases come from that station's own registry.
+#   - FROZEN ROWS PURGED (purge_stale) and PACING (due_step), as before.
 #
 # Config (env):
 #   MERLE_EARL_DB       the bird record (default "earl.db")
@@ -97,7 +96,7 @@ import sqlite3
 import time
 
 import feeds
-from listener import gate, notes_validate
+from listener import editor, findings, gate, notes_validate, region_prior
 # The narrator owns the Ollama plumbing (endpoint config, the blocking
 # non-streaming client, the model default); this borrows it rather than
 # growing a second copy that could drift -- the weather post's precedent.
@@ -153,7 +152,11 @@ ANALYSIS_TIMEOUT_S = 300
 # A stored row whose prompt_version differs is due for regeneration on the
 # next tick a model is up -- which is how a prompt edit re-narrates the whole
 # archive with no migration and no manual pass.
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4
+# The dated entries' prompt (#614). Entries are a journal -- history is
+# never re-narrated -- so this version only tells --audit which prompt an
+# entry was written from; a bump re-writes nothing.
+JOURNAL_VERSION = 1
 
 # Model preference, best first (issue #217). Two hosts running different
 # models would otherwise thrash -- the basement box narrates everything on a
@@ -188,6 +191,26 @@ CREATE TABLE IF NOT EXISTS species_analysis (
     checked_ts        INTEGER,
     fallback          INTEGER
 );
+-- The field journal (#614): append-only dated entries, one row each,
+-- written when the editor says something happened. findings_json is the
+-- lede first, then the supporting facts -- exactly what the prompt held,
+-- so every sentence stays auditable after the fact.
+CREATE TABLE IF NOT EXISTS species_journal (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    species_sci    TEXT NOT NULL,
+    entry_ts       INTEGER NOT NULL,
+    trigger        TEXT NOT NULL,
+    lede_kind      TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    text           TEXT NOT NULL,
+    findings_json  TEXT NOT NULL,
+    model          TEXT,
+    host           TEXT,
+    prompt_version INTEGER,
+    fallback       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS species_journal_by_species
+    ON species_journal (species_sci, entry_ts);
 """
 
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday",
@@ -264,7 +287,7 @@ def outranks(candidate, stored, rank=None):
 
 def stats_fingerprint(stats, description, context=""):
     """The identity of one species' PROMPT INPUTS (issue #217): the full
-    stats package plus the exact description snippet rhythm_prompt() feeds
+    stats package plus the exact description snippet sketch_prompt() feeds
     the model. Identical fingerprint + matching prompt version + a model
     that doesn't outrank means a regeneration would only rephrase the same
     facts at temperature 0.7 -- so it doesn't happen. The description rides
@@ -307,25 +330,36 @@ def allow_driveway(places):
                for p in (places or {}).values())
 
 
-def join_and(items):
-    items = list(items)
-    if len(items) <= 1:
-        return "".join(items)
-    return ", ".join(items[:-1]) + " and " + items[-1]
+# Leading words a place phrase's parts carry that are not the place itself.
+_PLACE_LEADS = ("over the ", "by the ", "under the ", "at the ", "facing the ",
+                "in the ", "parked in the ", "the ")
+# Last words too generic to stand for one microphone's place on their own.
+_GENERIC_NOUNS = frozenset(("house", "yard", "home"))
 
 
-def listening_posts(places):
-    """One sentence naming where the reader listens from (the live feeds
-    only), or "" without a registry. Semicolons, because the phrases carry
-    their own commas ("the back of the house, over the driveway")."""
-    live = [p.phrase or f'"{k}"' for k, p in (places or {}).items()
-            if p.current]
-    if not live:
-        return ""
-    if len(live) == 1:
-        return f"Your reader listens from one place: {live[0]}."
-    return (f"Your reader listens from {len(live)} places: "
-            + "; ".join(live[:-1]) + "; and " + live[-1] + ".")
+def place_terms(places):
+    """The words a note could use to put a bird somewhere in THIS yard,
+    from the registry's phrases (#614): each comma-part with its leading
+    preposition dropped ("back of the house", "driveway", "front door"),
+    plus its last noun where that names a spot ("garage", "eave",
+    "window"). The validator lets the prose name one only when a fact
+    does -- the desk run's place inventions had nowhere else to come from
+    than these phrases."""
+    out = set()
+    for p in (places or {}).values():
+        for part in (p.phrase or "").split(","):
+            part = part.strip().lower()
+            for lead in _PLACE_LEADS:
+                if part.startswith(lead):
+                    part = part[len(lead):]
+                    break
+            if len(part) < 4:
+                continue
+            out.add(part)
+            last = part.split()[-1]
+            if last not in _GENERIC_NOUNS and len(last) >= 4:
+                out.add(last)
+    return sorted(out)
 
 
 def mic_name(label, places):
@@ -637,282 +671,6 @@ def build_stats(visit_ts, observations, now, first_ts=None, sources=None):
     }
 
 
-def plural(n, singular, suffix="s"):
-    """"1 visit" / "2 visits". The model reads these lines as its source of
-    truth, and ungrammatical input invites ungrammatical prose."""
-    return f"{n:,} {singular}{'' if n == 1 else suffix}"
-
-
-def hour_label(h):
-    """0 -> "12am", 13 -> "1pm" -- the voice the prose speaks in."""
-    suffix = "am" if h < 12 else "pm"
-    hour = h % 12 or 12
-    return f"{hour}{suffix}"
-
-
-def trend_moved(t):
-    """True when the 7-vs-7 trend is news: the busier window holds at least
-    TREND_MIN visits and the two differ by TREND_MOVED of it. Pure, so the
-    lede rule is tested rather than eyeballed."""
-    if not t:
-        return False
-    hi = max(t["recent"], t["prior"])
-    return hi >= TREND_MIN and abs(t["recent"] - t["prior"]) >= TREND_MOVED * hi
-
-
-def gone_quiet(t):
-    """True when both trend windows are empty: the bird has not been heard
-    for two full windows. Said in Python as its own fact ("not heard at all
-    in the last 14 days; last heard ...") and made the lede -- a migrant
-    that left is the most interesting thing its note can say, and handed
-    "0 visits, against 0" the model wrote "mirroring the 7 days before"."""
-    return bool(t) and t["recent"] == 0 and t["prior"] == 0
-
-
-def first_heard_text(ts):
-    # "%-d" is glibc-only and this pass has to run on the desk too.
-    first = time.localtime(ts)
-    return f"{time.strftime('%B', first)} {first.tm_mday}, {first.tm_year}"
-
-
-def describe_sources(sources, places=None):
-    """The microphone line, or None. The MAGNITUDE is characterised here
-    rather than left to the model: handed "amcrest: 744, rover: 1", gemma3
-    wrote "slightly more from the amcrest microphone". Anything it can get
-    wrong by describing, describe for it.
-
-    Since #612 each source is named by its registry place phrase, and a
-    source that no longer listens (retired, Earl-off, unknown to the
-    registry) is summarised as "formerly", never as a current microphone.
-    The shape is judged over the LIVE microphones when any heard the bird --
-    "which part of the yard hears it" is a claim about today's yard."""
-    if not sources:
-        return None
-    live = {k: v for k, v in sources.items() if is_live(k, places)}
-    gone = {k: v for k, v in sources.items() if k not in live}
-    judged = live or sources
-    total = sum(judged.values())
-    top, top_n = max(sorted(judged.items()), key=lambda kv: kv[1])
-    share = top_n / total if total else 0
-    if len(judged) == 1:
-        shape = f"Only one microphone has ever heard this bird: {mic_name(top, places)}."
-    elif share >= 0.9:
-        shape = (f"Almost all of them came from {mic_name(top, places)} "
-                 f"({top_n:,} of {total:,}) -- the others barely hear this "
-                 "bird at all.")
-    elif share >= 0.65:
-        name = mic_name(top, places)
-        shape = f"{name[0].upper()}{name[1:]} hears this bird clearly the most."
-    else:
-        shape = "The microphones hear this bird at broadly similar rates."
-    by_count = lambda d: sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
-    parts = "; ".join(f"{mic_name(k, places)}: {v:,}"
-                      for k, v in by_count(judged))
-    line = f"Detections per microphone -- {parts}. {shape}"
-    if live and gone:
-        line += (" Formerly also heard by "
-                 + join_and(f"{mic_name(k, places)} ({v:,})"
-                            for k, v in by_count(gone))
-                 + ", which no longer listen"
-                 + ("s" if len(gone) == 1 else "") + ".")
-    elif not live and places:
-        line += " None of these microphones is listening any more."
-    # A bird two mics hear is one visit overall but one apiece here, so
-    # these deliberately need not sum to the total. Said out loud, or a
-    # model noticing the mismatch would try to reconcile it.
-    return line + (" (A bird heard by two microphones counts once for each, "
-                   "so these need not add up to the total above.)")
-
-
-def describe_stats(stats, places=None):
-    """The findings as flat English lines. Prose in, prose out: the model
-    reads sentences better than it reads JSON, and every number it could
-    possibly use is already here, pre-computed, so it never has to derive
-    one.
-
-    ORDER IS THE LEDE (#612): the rules say "open with the first fact
-    given", so the first line is the most newsworthy -- a clearly moved
-    trend, else the busiest stretch of the day -- and the identical
-    total-visits opener every note used to share goes second. The weekday
-    line is gone: fourteen weeks split seven ways is noise, and it read as a
-    preference ("Saturdays are their preferred day") in nearly every note."""
-    thin_overall = stats["total_visits"] < MIN_VISITS_FOR_WEATHER
-    total = (f"Total visits on record: {stats['total_visits']:,}."
-             + (" Evidence: THIN throughout -- this bird has barely been "
-                "heard, and the whole note should say so." if thin_overall
-                else ""))
-    first = (f"First heard: {first_heard_text(stats['first_ts'])}."
-             if stats["first_ts"] else None)
-    peak = stats["peak_window"]
-    peak_line = (
-        f"Busiest stretch of the day: {hour_label(peak['start_hour'])} to "
-        f"{hour_label(peak['end_hour'])}, holding "
-        f"{plural(peak['visits'], 'visit')} "
-        f"({round(peak['share'] * 100)}% of all of them)." if peak else None)
-    day = stats["busiest_day"]
-    day_line = (
-        f"Heard on {plural(day['days_observed'], 'separate day')}; the "
-        f"busiest single day had {plural(day['visits'], 'visit')}."
-        if day else None)
-    t = stats["trend"]
-    trend_line = None
-    if gone_quiet(t):
-        last = (f"; last heard {first_heard_text(stats['last_ts'])}"
-                if stats["last_ts"] else "")
-        trend_line = (f"Not heard at all in the last "
-                      f"{2 * t['window_days']} days{last}.")
-    elif t:
-        trend_line = (
-            f"Last {t['window_days']} days: {plural(t['recent'], 'visit')}, "
-            f"against {t['prior']:,} in the {t['window_days']} days before "
-            "that.")
-        if trend_moved(t):
-            trend_line += (" That is a clear rise." if t["recent"] > t["prior"]
-                           else " That is a clear fall.")
-    news = trend_moved(t) or gone_quiet(t)
-    lede = trend_line if news else (peak_line or total)
-    rest = [total, first, peak_line, day_line, trend_line,
-            describe_sources(stats["sources"], places)]
-    return "\n".join([lede] + [x for x in rest if x and x is not lede])
-
-
-def describe_weather(stats):
-    """The weather findings as English, effects already computed as
-    percentages so the model never multiplies anything."""
-    w = stats["weather"]
-    if not w["enough"]:
-        return (f"Only {w['visits_matched']:,} visits line up with the weather "
-                "archive so far -- too few to claim a pattern.")
-    lines = [f"These weather figures rest on {w['visits_matched']:,} visits "
-             "that line up with the weather archive.",
-             "Hours are only counted during this bird's own active hours ("
-             + ", ".join(hour_label(h) for h in stats["active_hours"])
-             + "), so time of day cannot masquerade as weather."]
-    # Temperature bands track the calendar as much as the thermometer -- a
-    # "warm" figure over a year-long record is partly just summer. Said here
-    # so the prose can describe the association without implying the bird is
-    # responding to the temperature itself.
-    if any(f["effect"] is not None for f in w["temperature"]):
-        lines.append("Note: temperature bands follow the seasons, so a "
-                     "temperature figure may be describing the time of year "
-                     "as much as the warmth itself.")
-    for label, f in weather_findings(stats):
-        # Direction is a LABEL, not a phrase to parse. Desk-tested: given
-        # "heard 82% more often", gemma3 still wrote "notably quiet" -- it
-        # reasoned from what it assumes about birds instead of from the
-        # figure. An uppercase keyword in front of the number is much
-        # harder to invert.
-        #
-        # And THE BIRD IS THE SUBJECT (#612). The old "SKY rain: MORE OFTEN
-        # (44% above ...)" let the model hang the figure on the weather --
-        # "your yard has been experiencing rain more frequently than usual,
-        # almost 44% above the cardinal's own typical rate", "83% of visits
-        # occurring when the temperature is below its average". Each
-        # finding is now a finished sentence about the bird's own rate, so
-        # there is nothing left for the figure to attach to but the bird.
-        pct = round(f["effect"] * 100)
-        when = (WHEN_SKY.get(f["bucket"], f"In {f['bucket']} weather")
-                if label == "sky" else f"In {f['bucket']} weather")
-        if abs(pct) < 10:
-            rate = "at its usual rate (ABOUT AVERAGE)"
-        else:
-            rate = (f"{abs(pct)}% {'MORE OFTEN' if pct > 0 else 'LESS OFTEN'}"
-                    " than its own average rate")
-        lines.append(
-            f"- {when}, this bird turns up {rate}. (This rests on "
-            f"{plural(f['visits'], 'visit')} over {f['hours']} hours of that "
-            f"weather. Evidence: {evidence(f['thin'])}.)")
-    return "\n".join(lines)
-
-
-WHEN_SKY = {"clear": "Under clear skies", "cloudy": "Under cloudy skies",
-            "rain": "When it rains", "snow": "When it snows"}
-
-
-def weather_findings(stats):
-    """The weather buckets worth a line, strongest first: solid findings
-    before thin ones, then by size of effect (#612 -- the model opens on
-    the first line, so the first line should be the real story). Two kinds
-    never appear: an `unknown` bucket (a sensor dropout narrated as "a
-    curious result" in three notes on 2026-10-24) and a bucket with no
-    computable effect."""
-    out = []
-    for group, label in (("conditions", "sky"), ("temperature", "temperature")):
-        for f in stats["weather"][group]:
-            if f["effect"] is None or f["bucket"] == "unknown":
-                continue
-            out.append((label, f))
-    return sorted(out, key=lambda lf: (lf[1]["thin"], -abs(lf[1]["effect"]),
-                                       lf[0], lf[1]["bucket"]))
-
-
-# --- The plain record (#612): the facts as sentences, no model ---------------
-#
-# What gets stored when the model breaks the rules twice. Built from the same
-# stats the prompt carried, so every figure in it is one the page's margin
-# figures already show; deliberately unadorned -- a dull true sentence beats
-# a lively wrong one, and the dateline says "plain record" so nobody mistakes
-# it for the naturalist's voice.
-
-SKY_WORDS = {"clear": "clear skies", "cloudy": "cloudy skies",
-             "rain": "rain", "snow": "snow"}
-
-
-def plain_rhythm(stats, places=None):
-    parts = []
-    since = (f" since {first_heard_text(stats['first_ts'])}"
-             if stats["first_ts"] else "")
-    parts.append(f"{plural(stats['total_visits'], 'visit')} on record{since}.")
-    peak = stats["peak_window"]
-    if peak:
-        parts.append(
-            f"The busiest stretch of the day is {hour_label(peak['start_hour'])}"
-            f" to {hour_label(peak['end_hour'])}, with "
-            f"{round(peak['share'] * 100)}% of all visits.")
-    day = stats["busiest_day"]
-    if day:
-        parts.append(
-            f"Heard on {plural(day['days_observed'], 'separate day')}; the "
-            f"busiest single day had {plural(day['visits'], 'visit')}.")
-    t = stats["trend"]
-    if gone_quiet(t):
-        parts.append(f"Not heard at all in the last {2 * t['window_days']} "
-                     "days.")
-    elif t:
-        parts.append(
-            f"In the last {t['window_days']} days: "
-            f"{plural(t['recent'], 'visit')}, against {t['prior']:,} in the "
-            f"{t['window_days']} days before.")
-    live = {k: v for k, v in (stats["sources"] or {}).items()
-            if is_live(k, places)}
-    if live and places:
-        top = max(sorted(live.items()), key=lambda kv: kv[1])[0]
-        parts.append(f"Heard most often by {mic_name(top, places)}.")
-    return " ".join(parts)
-
-
-def plain_weather(stats):
-    w = stats["weather"]
-    if not w["enough"]:
-        return (f"Only {plural(w['visits_matched'], 'visit')} line up with the "
-                "weather record so far, too few to call a pattern.")
-    said = []
-    for label, f in weather_findings(stats):
-        pct = round(f["effect"] * 100)
-        if f["thin"] or abs(pct) < 10:
-            continue
-        where = (SKY_WORDS.get(f["bucket"], f["bucket"]) if label == "sky"
-                 else f"{f['bucket']} weather")
-        said.append(f"Heard {abs(pct)}% {'more' if pct > 0 else 'less'} "
-                    f"often than usual in {where}.")
-        if len(said) == 3:
-            break
-    if not said:
-        return (f"No weather pattern stands out yet across "
-                f"{plural(w['visits_matched'], 'matched visit')}.")
-    return " ".join(said)
-
-
 # --- The prompts --------------------------------------------------------------
 
 VOICE = (
@@ -943,8 +701,8 @@ RULES = (
     "(\"perhaps\"), and you may repeat habits stated in the background.\n"
     "- Address the reader as \"you\". The yard, the microphones and the "
     "weather station are the reader's -- write \"your yard\", never \"our\" "
-    "or \"my\". Call a microphone by the place it listens from, exactly as "
-    "given, and never invent a place.\n"
+    "or \"my\". Say where in the yard the bird was heard ONLY when a fact "
+    "given says where, in that fact's own words; never invent a place.\n"
     "- Open with the first fact given, in your own words. Do not open by "
     "saying a microphone heard or picked up the bird, and never write \"a "
     "good number of\".\n"
@@ -953,78 +711,100 @@ RULES = (
 )
 
 
-def evidence(thin):
-    """The one phrase the model keys its hedging off. A literal example hedge
-    in the rules turned out to be worse than none: gemma3 lifted the sample
-    wording verbatim and stapled it onto findings resting on hundreds of
-    visits, so the rules now name the LABEL and leave the words to the
-    model."""
-    return "THIN -- hedge this one" if thin else "solid"
+def prompt_line(f):
+    """A finding as the model reads it: its finished sentence, plus the
+    hedge marker on a thin one (RULES says what the marker means)."""
+    return f["fact_line"] + (" Evidence: THIN -- hedge this one."
+                             if f["thin"] else "")
 
 
-def where_line(places):
-    posts = listening_posts(places)
-    return f"\nWhere your reader listens: {posts}\n" if posts else ""
+def plain_line(f):
+    """A finding as the plain record states it: the sentence with the
+    uppercase direction keywords put back into ordinary English."""
+    return (f["fact_line"].replace("MORE OFTEN", "more often")
+            .replace("LESS OFTEN", "less often"))
 
 
-def rhythm_lede(stats, places=None):
-    """The fact the rhythm note must open with: describe_stats' first line."""
-    return describe_stats(stats, places).split("\n", 1)[0]
+# The standing sketch's subjects (#614): the slow-changing character of the
+# bird -- when in the day, where, in what weather, how steadily. News
+# (arrivals, departures, a suspect pattern, a week's trend) belongs to the
+# dated entries, never to the sketch.
+SKETCH_KINDS = frozenset(("dawn", "dusk", "night", "place", "weather_sky",
+                          "weather_temp", "record", "lingering"))
+SKETCH_MAX = 4
 
 
-def weather_lede(stats):
-    """The finding the weather note must open with, or None when there is no
-    story to lead with: too few matched visits, or a strongest finding that
-    is thin or within 10% of average (opening on "about average" would be
-    a lede in name only)."""
-    if not stats["weather"]["enough"]:
-        return None
-    found = weather_findings(stats)
-    if not found:
-        return None
-    _, f = found[0]
-    if f["thin"] or abs(round(f["effect"] * 100)) < 10:
-        return None
-    return next(line for line in describe_weather(stats).split("\n")
-                if line.startswith("- "))
+def sketch_findings(found):
+    """The sketch's facts, strongest first (the editor's own ranking). A
+    bird whose record is suspect gets the suspicion and nothing else: its
+    "habits" are the false detections' (the #614 desk run sketched the
+    night-heavy "swallow" as singing 265 minutes before sunrise)."""
+    anomaly = [f for f in found if f["kind"] == "anomaly"]
+    if anomaly:
+        return anomaly
+    pool = [f for f in found if f["kind"] in SKETCH_KINDS]
+    return sorted(pool, key=lambda f: -editor.interest(f))[:SKETCH_MAX]
 
 
-def rhythm_prompt(common, description, stats, places=None):
-    lede, _, rest = describe_stats(stats, places).partition("\n")
+def fact_lines(found):
+    """The facts exactly as a prompt lists them -- also what the validator
+    checks a named place against."""
+    return "\n".join(f"- {prompt_line(f)}" for f in found)
+
+
+# The prompts carry NO list of the yard's listening posts (#614): handed
+# one, the model put birds at microphones that never heard them. Where a
+# bird is heard is a fact (findings.place) like any other, and the
+# validator rejects a place no fact names.
+
+def sketch_prompt(common, description, sketch):
+    caution = (" Its record here is suspect: say so plainly, and describe no "
+               "habits." if sketch and sketch[0]["kind"] == "anomaly" else "")
     return (
         f"The bird: {common}.\n"
         + (f"Background: {description.strip()[:900]}\n" if description else "")
-        + where_line(places)
-        + "\nOpen the note with this fact:\n" + lede
-        + "\n\nOther facts you may use, from what your reader's microphones "
-          "have recorded:\n" + rest
-        + "\n\nWrite the note about WHEN this bird shows up -- its rhythm "
-          "through the day, and whether it is coming around more or less "
-          "lately.\n\n" + RULES
+        + "\nWhat your reader's microphones have found about this bird, "
+          "strongest first:\n"
+        + (fact_lines(sketch) or
+           "- Too little yet to say anything about its habits here.")
+        + "\n\nWrite a standing sketch of this bird's character in your "
+          "reader's yard: when in the day it is heard, and in what weather "
+          "-- the things that will still be true next month. Two to four "
+          "sentences. Open with the first fact given. No news, no dates."
+        + caution + "\n\n" + RULES
     )
 
 
-def weather_prompt(common, stats, places=None):
-    # No listening posts here (#612's first desk run): handed them, the
-    # model invented per-microphone weather claims ("the microphones at the
-    # back of the garage recorded no instances during rainfall"). Weather is
-    # matched per VISIT across the whole yard; no figure here is per-mic.
-    # `places` is accepted so both prompt builders share one signature.
-    lede = weather_lede(stats)
+def plain_sketch(sketch):
+    return " ".join(plain_line(f) for f in sketch) or \
+        "Too little has been heard yet to say anything about its habits here."
+
+
+def entry_prompt(common, description, lede, rest, now, first=False):
+    caution = (
+        "\nThis entry is a caution, not a portrait: say plainly that these "
+        "detections may not be this bird at all, and invite your reader to "
+        "listen to a recording before believing them.\n"
+        if lede["kind"] == "anomaly" else "")
     return (
         f"The bird: {common}.\n"
-        + (f"\nOpen the note with this finding:\n{lede}\n" if lede else "")
-        + "\nWhat your reader's weather station and microphones say together, "
-          "for the whole yard (strongest finding first):\n"
-        + describe_weather(stats)
-        + "\n\nWrite the note about how WEATHER and conditions move this "
-          "bird's odds of turning up. Each percentage compares this bird's "
-          "own rate in that weather with its own overall rate; it is never "
-          "a share of visits or of hours. These figures describe the whole "
-          "yard: do not mention any microphone or place. If the evidence is "
-          "too thin to say much, say that in one honest, good-humoured "
-          "sentence and stop -- do not pad it.\n\n" + RULES
+        + (f"Background: {description.strip()[:900]}\n" if description else "")
+        + f"\nToday is {findings.date_text(now)}. You are writing the next "
+          "entry in a running field journal about this bird in your "
+          "reader's yard"
+        + ("; it is the first entry." if first else
+           "; your reader has read the earlier entries, so do not introduce "
+           "the bird again.")
+        + "\n\nOpen the entry with this fact:\n" + prompt_line(lede)
+        + ("\n\nOther facts you may use, if they help the story:\n"
+           + fact_lines(rest) if rest else "")
+        + "\n" + caution
+        + "\nWrite one entry of 80 to 160 words.\n\n" + RULES
     )
+
+
+def plain_entry(lede, rest):
+    return " ".join(plain_line(f) for f in [lede, *rest])
 
 
 # --- Store --------------------------------------------------------------------
@@ -1152,7 +932,8 @@ def load_observations(path, since, until):
         conn.close()
 
 
-def write_block(ollama, prompt, plain, *, allow_drive, label, lede=None):
+def write_block(ollama, prompt, plain, *, allow_drive, label, lede=None,
+                terms=None, facts=None):
     """One block through the validator (#612): the draft, then at most one
     retry that quotes the violations back, then the plain record. Returns
     (text, fell_back), or (None, False) when the model stopped answering --
@@ -1170,7 +951,8 @@ def write_block(ollama, prompt, plain, *, allow_drive, label, lede=None):
     draft = ask(prompt)
     if not draft:
         return None, False
-    problems = notes_validate.validate(draft, prompt, allow_drive, lede)
+    problems = notes_validate.validate(draft, prompt, allow_drive, lede,
+                                       terms, facts)
     if not problems:
         return draft.strip(), False
     print(f"[analysis] {label}: draft broke {len(problems)} rule(s) -- "
@@ -1180,7 +962,8 @@ def write_block(ollama, prompt, plain, *, allow_drive, label, lede=None):
                  + "\nWrite the note again from the start, fixing every one.")
     if not second:
         return None, False
-    again = notes_validate.validate(second, prompt, allow_drive, lede)
+    again = notes_validate.validate(second, prompt, allow_drive, lede,
+                                    terms, facts)
     if not again:
         return second.strip(), False
     print(f"[analysis] {label}: the retry broke the rules too ("
@@ -1188,64 +971,116 @@ def write_block(ollama, prompt, plain, *, allow_drive, label, lede=None):
     return plain(), True
 
 
+# --- The journal's inputs (#614) ---------------------------------------------
+
+def journal_context(conn, weather_path, now, places=None):
+    """What every species' findings share, gathered ONCE per run: the
+    registry's places, Home (for the sun), the microphones fair to compare
+    week on week, the yard's detections per microphone (for place), and the
+    weather archive. A tick that looks at a hundred birds reads the archive
+    once, not a hundred times."""
+    spans, yard = {}, {}
+    for r in conn.execute("SELECT source, MIN(ts) a, MAX(ts) b, COUNT(*) n"
+                          " FROM sightings GROUP BY source"):
+        spans[r["source"]] = (r["a"], r["b"])
+        yard[r["source"]] = r["n"]
+    observations = load_observations(weather_path, 0, now)
+    return {"now": now,
+            "places": load_places() if places is None else places,
+            "latlon": region_prior.home(conn),
+            "fair": findings.fair_sources(spans, now),
+            "yard": yard,
+            "observations": observations,
+            "obs_ts": [o["ts"] for o in observations]}
+
+
+def species_inputs(conn, sci):
+    """(visit openings, [(opening, source)], detections per source,
+    first_ts) for one species -- the visit grouping the whole Aviary uses
+    (gate.VISIT_GAP_S), each visit credited to the microphone that opened it."""
+    visits, rows, sources, last = [], [], {}, None
+    for r in conn.execute("SELECT ts, source FROM sightings"
+                          " WHERE species_sci = ? ORDER BY ts", (sci,)):
+        if last is None or r["ts"] - last > gate.VISIT_GAP_S:
+            visits.append(r["ts"])
+            rows.append((r["ts"], r["source"]))
+        last = r["ts"]
+        sources[r["source"]] = sources.get(r["source"], 0) + 1
+    first = conn.execute("SELECT MIN(first_ts) f FROM life_list"
+                         " WHERE species_sci = ?", (sci,)).fetchone()
+    return visits, rows, sources, (first["f"] if first else None)
+
+
+def species_findings(conn, sci, ctx):
+    """(stats, findings, visits) for one species; stats is the margin
+    figures' package (build_stats, unchanged), findings the journal's."""
+    visits, rows, sources, first_ts = species_inputs(conn, sci)
+    if not visits:
+        return None, [], []
+    lo = bisect.bisect_left(ctx["obs_ts"], visits[0] - WEATHER_MATCH_S)
+    hi = bisect.bisect_right(ctx["obs_ts"], visits[-1] + WEATHER_MATCH_S)
+    obs = ctx["observations"][lo:hi]
+    stats = build_stats(visits, obs, ctx["now"], first_ts=first_ts,
+                        sources=sources)
+    found = findings.compute(
+        sci=sci, visits=visits, visit_rows=rows, sources=sources,
+        stats=stats, observations=obs, now=ctx["now"],
+        latlon=ctx["latlon"], curve=region_prior.prior_curve(conn, sci),
+        places=ctx["places"], fair=ctx["fair"], yard=ctx["yard"])
+    return stats, found, visits
+
+
+def description_of(conn, sci):
+    """The profile's Wikipedia lead, or None on a store that has no
+    profiles (the background paragraph is optional context)."""
+    try:
+        row = conn.execute("SELECT description FROM species_profile"
+                           " WHERE species_sci = ?", (sci,)).fetchone()
+        return row["description"] if row else None
+    except sqlite3.Error:
+        return None
+
+
+# --- The standing sketch (Entry II) ------------------------------------------
+
 def analyze_species(conn, sci, common, *, ollama, weather_path,
                     now=None, dry_run=False, force=False, host=None,
-                    places=None):
-    """One species, end to end. Returns a status word:
+                    places=None, ctx=None):
+    """One species' STANDING SKETCH, end to end (#614: the slow-changing
+    character -- dawn, place, weather, steadiness -- in two to four
+    sentences, stored as `rhythm_text` with `weather_text` NULL; rows from
+    before PROMPT_VERSION 4 still hold the old two blocks and re-narrate
+    once through the version arm). Returns a status word:
       'no-visits'  -- nothing on record yet; nothing written
       'stats-only' -- --dry-run, or no LLM configured
-      'current'    -- the fingerprint gate: stats, description, prompt
-                      version and model rank all unchanged, so a generation
-                      would only rephrase the same facts; no LLM call made
+      'current'    -- the fingerprint gate: inputs, prompt version and model
+                      rank unchanged, so no LLM call is made
       'llm-down'   -- generation failed; any existing row LEFT UNTOUCHED
-      'written'    -- both blocks generated (or, after two rule-breaking
-                      drafts, the plain record -- `fallback` 1) and stored
+      'written'    -- the sketch (or, after two rule-breaking drafts, the
+                      plain record -- `fallback` 1) and the stats stored
 
-    `force` (--refresh's flag) pushes past the fingerprint gate the same way
-    --refresh already ignores the watermark. `host` is provenance -- which
-    endpoint served the row, useful once two hosts are in play (#217).
-    `places` is feeds.places() (#612), read from the registry when omitted.
-    """
+    The #217 gates are unchanged: `force` (--refresh) pushes past the
+    fingerprint, `host` is provenance, `ctx` (journal_context) is shared
+    across a run and built here when omitted."""
     now = now or time.time()
-    rows = [r["ts"] for r in conn.execute(
-        "SELECT ts FROM sightings WHERE species_sci = ? ORDER BY ts", (sci,))]
-    visits = group_visits(rows)
+    ctx = ctx or journal_context(conn, weather_path, now, places)
+    places = ctx["places"]
+    stats, found, visits = species_findings(conn, sci, ctx)
     if not visits:
         return "no-visits", None
-
-    sources = {r["source"]: r["n"] for r in conn.execute(
-        "SELECT source, COUNT(*) n FROM sightings WHERE species_sci = ?"
-        " GROUP BY source", (sci,))}
-    first = conn.execute(
-        "SELECT first_ts FROM life_list WHERE species_sci = ?", (sci,)).fetchone()
-    observations = load_observations(weather_path, min(visits), max(visits))
-    stats = build_stats(visits, observations, now,
-                        first_ts=first["first_ts"] if first else None,
-                        sources=sources)
-
     if dry_run or ollama is None:
         return "stats-only", stats
 
-    # Phase 2's description is optional context, so a store where that pass
-    # has never run (no species_profile table at all) still gets its
-    # analysis -- just without the background paragraph.
-    try:
-        profile = conn.execute(
-            "SELECT description FROM species_profile WHERE species_sci = ?",
-            (sci,)).fetchone()
-        description = profile["description"] if profile else None
-    except sqlite3.Error:
-        description = None
-
-    # The fingerprint gate (issue #217), stage two of the worklist's
-    # two-stage filter and the last thing standing before an LLM call:
-    # identical prompt inputs, same prompt version, and a model that doesn't
-    # outrank the stored one means regeneration would only rephrase. The
-    # skip is recorded (checked_ts) so a species the worklist over-included
-    # settles instead of being re-examined every tick; generated_ts is NOT
-    # touched -- the page's "as of" stamp must never claim freshness that
-    # wasn't earned.
-    places = load_places() if places is None else places
+    description = description_of(conn, sci)
+    sketch = sketch_findings(found)
+    # The sketch's facts ride the stored stats (`sketch`), so --audit can
+    # rebuild the exact prompt a stored sketch was written from; the
+    # margin figures read only the keys they know.
+    stats = dict(stats, sketch=sketch)
+    # The fingerprint gate (issue #217): identical inputs, same prompt
+    # version, a model that doesn't outrank the stored one -- regeneration
+    # would only rephrase. The skip is bookkeeping (checked_ts), never a
+    # freshness claim (generated_ts untouched).
     fingerprint = stats_fingerprint(stats, description, places_key(places))
     if not force:
         row = conn.execute(
@@ -1261,21 +1096,13 @@ def analyze_species(conn, sci, common, *, ollama, weather_path,
             conn.commit()
             return "current", stats
 
-    allow = allow_driveway(places)
-    rhythm, r_plain = write_block(
-        ollama, rhythm_prompt(common, description, stats, places),
-        lambda: plain_rhythm(stats, places), allow_drive=allow,
-        label=f"{common} rhythm", lede=rhythm_lede(stats, places))
-    # A dead or slow model leaves the existing row exactly as it was -- the
-    # narrator's degrade-never-crash ethos, and the species stays on the
-    # worklist for the next run.
-    if rhythm is None:
-        return "llm-down", stats
-    weather, w_plain = write_block(
-        ollama, weather_prompt(common, stats, places),
-        lambda: plain_weather(stats), allow_drive=allow,
-        label=f"{common} weather", lede=weather_lede(stats))
-    if weather is None:
+    text, fell_back = write_block(
+        ollama, sketch_prompt(common, description, sketch),
+        lambda: plain_sketch(sketch), allow_drive=allow_driveway(places),
+        label=f"{common} sketch", terms=place_terms(places),
+        facts=fact_lines(sketch))
+    # A dead or slow model leaves the existing row exactly as it was.
+    if text is None:
         return "llm-down", stats
 
     conn.execute(
@@ -1283,60 +1110,172 @@ def analyze_species(conn, sci, common, *, ollama, weather_path,
         " weather_text, stats_json, visits_watermark, model, generated_ts,"
         " stats_fingerprint, prompt_version, host, fallback)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (sci, rhythm, weather, json.dumps(stats),
-         len(visits), ollama.model, int(now),
-         fingerprint, PROMPT_VERSION, host, int(r_plain or w_plain)))
+        (sci, text, None, json.dumps(stats), len(visits), ollama.model,
+         int(now), fingerprint, PROMPT_VERSION, host, int(fell_back)))
     conn.commit()
     return "written", stats
 
 
-def audit(conn, places=None):
-    """Every stored note checked by the validator against the prompt it
-    WOULD be written from today (stored stats + today's description and
-    places) -- the acceptance check for #612, and the tool for spotting a
-    rule the model keeps breaking. -> [(species_sci, block, [violations])]."""
-    places = load_places() if places is None else places
-    allow = allow_driveway(places)
-    try:
-        descriptions = {r["species_sci"]: r["description"] for r in
-                        conn.execute("SELECT species_sci, description"
-                                     " FROM species_profile")}
-    except sqlite3.Error:
-        descriptions = {}
+# --- The dated entries (Entry I) ---------------------------------------------
+
+def load_entries(conn, sci):
+    """This bird's entries, newest first, findings parsed -- the editor's
+    memory of what has been said."""
     out = []
     for r in conn.execute(
-            "SELECT a.species_sci, a.rhythm_text, a.weather_text, a.stats_json,"
-            " COALESCE(l.species_common, a.species_sci) common"
-            " FROM species_analysis a LEFT JOIN life_list l"
-            " ON l.species_sci = a.species_sci ORDER BY common"):
+            "SELECT entry_ts, trigger, findings_json FROM species_journal"
+            " WHERE species_sci = ? ORDER BY entry_ts DESC, id DESC", (sci,)):
         try:
-            stats = json.loads(r["stats_json"] or "")
-            prompts = (("rhythm", r["rhythm_text"], rhythm_prompt(
-                            r["common"], descriptions.get(r["species_sci"]),
-                            stats, places), rhythm_lede(stats, places)),
-                       ("weather", r["weather_text"],
-                        weather_prompt(r["common"], stats, places),
-                        weather_lede(stats)))
-        except (ValueError, KeyError, TypeError):
-            out.append((r["species_sci"], "stats", ["stats_json unreadable"]))
-            continue
-        for block, text, prompt, lede in prompts:
-            problems = notes_validate.validate(text, prompt, allow, lede)
-            if problems:
-                out.append((r["species_sci"], block, problems))
+            found = json.loads(r["findings_json"])
+        except (TypeError, ValueError):
+            found = []
+        out.append({"entry_ts": r["entry_ts"], "trigger": r["trigger"],
+                    "findings": found})
     return out
 
 
+def entry_due(conn, sci, ctx, force=False):
+    """(trigger, findings, entries, said) for one species -- the editor's
+    decision with everything write_entry needs to act on it. trigger None
+    means no entry is due."""
+    now = ctx["now"]
+    stats, found, visits = species_findings(conn, sci, ctx)
+    if not visits:
+        return None, [], [], frozenset()
+    entries = load_entries(conn, sci)
+    said = editor.said_recently(entries)
+    if force:
+        return ("refresh" if found else None), found, entries, said
+    week = sum(1 for ts in visits if ts > now - editor.WEEK_S)
+    return editor.due(found, entries, now, week, said), found, entries, said
+
+
+def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
+                due=None):
+    """Write this bird's next dated entry if one is due (or `force`, the
+    species page's refresh). Returns (status, trigger): status 'not-due',
+    'stats-only' (no LLM), 'llm-down' (nothing written) or 'written'.
+    `due` is entry_due()'s answer when the caller already has it."""
+    trigger, found, entries, said = due or entry_due(conn, sci, ctx, force)
+    if trigger is None:
+        return "not-due", None
+    if ollama is None:
+        return "stats-only", trigger
+    lede, rest = editor.pick(found, said)
+    places, now = ctx["places"], ctx["now"]
+    text, fell_back = write_block(
+        ollama,
+        entry_prompt(common, description_of(conn, sci), lede, rest, now,
+                     first=not entries),
+        lambda: plain_entry(lede, rest), allow_drive=allow_driveway(places),
+        label=f"{common} entry ({trigger})", lede=lede["fact_line"],
+        terms=place_terms(places), facts=fact_lines([lede, *rest]))
+    if text is None:
+        return "llm-down", trigger
+    conn.execute(
+        "INSERT INTO species_journal (species_sci, entry_ts, trigger,"
+        " lede_kind, title, text, findings_json, model, host,"
+        " prompt_version, fallback) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (sci, int(now), trigger, lede["kind"], editor.title(lede, places),
+         text, json.dumps([lede, *rest]), ollama.model, host,
+         JOURNAL_VERSION, int(fell_back)))
+    conn.commit()
+    return "written", trigger
+
+
+# News leads the queue; then the sketches; then first and weekly entries.
+NEWS_TRIGGERS = ("anomaly", "arrival", "departure", "record")
+
+
+def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
+    """[(sci, common, due)] for every species above the #407 floor whose
+    entry is due, news triggers first. The floor holds here too: a one-off
+    false positive gets no journal."""
+    out = []
+    for r in conn.execute("SELECT DISTINCT species_sci, species_common"
+                          " FROM life_list ORDER BY species_common"):
+        visits, _, _, _ = species_inputs(conn, r["species_sci"])
+        if len(visits) < min_visits:
+            continue
+        due = entry_due(conn, r["species_sci"], ctx)
+        if due[0] is not None:
+            out.append((r["species_sci"], r["species_common"], due))
+    return sorted(out, key=lambda x: x[2][0] not in NEWS_TRIGGERS)
+
+
+# --- Audit --------------------------------------------------------------------
+
+def audit(conn, places=None):
+    """Every stored sketch and entry checked by the validator against the
+    prompt it was written from -- rebuilt from what was STORED (the sketch's
+    facts in stats_json, an entry's in findings_json) plus today's
+    background and places. Rows from an older prompt version are skipped:
+    they are due to be rewritten anyway. -> [(species_sci, block, [...])]."""
+    places = load_places() if places is None else places
+    allow = allow_driveway(places)
+    terms = place_terms(places)
+    out = []
+    for r in conn.execute(
+            "SELECT a.species_sci, a.rhythm_text, a.stats_json,"
+            " COALESCE(l.species_common, a.species_sci) common"
+            " FROM species_analysis a LEFT JOIN life_list l"
+            " ON l.species_sci = a.species_sci"
+            " WHERE a.prompt_version = ? GROUP BY a.species_sci",
+            (PROMPT_VERSION,)):
+        try:
+            sketch = json.loads(r["stats_json"] or "")["sketch"]
+        except (ValueError, KeyError, TypeError):
+            out.append((r["species_sci"], "sketch", ["stats_json unreadable"]))
+            continue
+        prompt = sketch_prompt(r["common"],
+                               description_of(conn, r["species_sci"]), sketch)
+        problems = notes_validate.validate(r["rhythm_text"], prompt, allow,
+                                           None, terms, fact_lines(sketch))
+        if problems:
+            out.append((r["species_sci"], "sketch", problems))
+    try:
+        rows = conn.execute(
+            "SELECT j.id, j.species_sci, j.entry_ts, j.text, j.findings_json,"
+            " COALESCE(l.species_common, j.species_sci) common"
+            " FROM species_journal j LEFT JOIN life_list l"
+            " ON l.species_sci = j.species_sci"
+            " WHERE j.prompt_version = ? GROUP BY j.id ORDER BY j.id",
+            (JOURNAL_VERSION,)).fetchall()
+    except sqlite3.Error:
+        rows = []
+    for r in rows:
+        try:
+            lede, *rest = json.loads(r["findings_json"])
+        except (ValueError, TypeError):
+            out.append((r["species_sci"], f"entry {r['id']}",
+                        ["findings_json unreadable"]))
+            continue
+        prompt = entry_prompt(r["common"],
+                              description_of(conn, r["species_sci"]),
+                              lede, rest, r["entry_ts"])
+        problems = notes_validate.validate(r["text"], prompt, allow,
+                                           lede["fact_line"], terms,
+                                           fact_lines([lede, *rest]))
+        if problems:
+            out.append((r["species_sci"], f"entry {r['id']}", problems))
+    return out
+
+
+# --- The CLI ------------------------------------------------------------------
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Write the Aviary's field-naturalist blocks (issue #186)")
+        description="Write the Aviary's field journal: standing sketches and "
+                    "dated entries (issues #186, #614)")
     ap.add_argument("--refresh", metavar="SPECIES_SCI",
-                    help="re-analyze one species regardless of its watermark")
+                    help="write one species' sketch and a new entry now, past "
+                         "every gate (the species page's link, #613)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="compute and print the findings; no LLM, no writes")
+                    help="print each species' findings and the editor's "
+                         "pick; no LLM, no writes")
     ap.add_argument("--audit", action="store_true",
-                    help="check every stored note against the validator; "
-                         "no LLM, no writes (#612)")
+                    help="check every stored sketch and entry against the "
+                         "validator; no LLM, no writes (#612)")
     args = ap.parse_args()
 
     path = db_path()
@@ -1350,8 +1289,8 @@ def main():
             print(f"[audit] {sci} {block}: " + "; ".join(problems), flush=True)
         print(f"[audit] {len(found)} block(s) with violations", flush=True)
         raise SystemExit(1 if found else 0)
-    ollama = None
-    host = None
+
+    ollama, host = None, None
     if not args.dry_run:
         addr = ollama_address()
         if addr:
@@ -1363,49 +1302,62 @@ def main():
         else:
             print("[analysis] MERLE_OLLAMA not set -- stats only", flush=True)
 
+    now = time.time()
     try:
-        if not args.dry_run:
-            for sci in purge_stale(conn):
-                print(f"[analysis] {sci}: purged a note no gate can reach "
-                      "(old prompt version, under the visit floor)",
+        ctx = journal_context(conn, weather_db_path(), now)
+        if args.dry_run:
+            for sci, common, (trigger, found, entries, said) in [
+                    (r["species_sci"], r["species_common"],
+                     entry_due(conn, r["species_sci"], ctx))
+                    for r in conn.execute(
+                        "SELECT DISTINCT species_sci, species_common"
+                        " FROM life_list ORDER BY species_common")]:
+                lede, rest = editor.pick(found, said)
+                if lede is None:
+                    continue
+                print(f"[analysis] {common}: due={trigger} "
+                      f"title={editor.title(lede, ctx['places'])!r}",
                       flush=True)
+                for f in [lede, *rest]:
+                    print(f"    {f['kind']}: {f['fact_line']}", flush=True)
+            return
+        for sci in purge_stale(conn):
+            print(f"[analysis] {sci}: purged a note no gate can reach "
+                  "(old prompt version, under the visit floor)", flush=True)
         if args.refresh:
             row = conn.execute(
                 "SELECT species_common FROM life_list WHERE species_sci = ?",
                 (args.refresh,)).fetchone()
-            todo = [(args.refresh,
-                     row["species_common"] if row else args.refresh, 0)]
-        else:
-            # The model rides into the worklist so the outranked-model arm
-            # can fire; None (dry-run / no LLM) simply disables that arm.
-            todo = worklist(conn, model=ollama.model if ollama else None)
-        if not todo:
-            print("[analysis] nothing to do -- every species is current",
-                  flush=True)
+            common = row["species_common"] if row else args.refresh
+            status, _ = analyze_species(conn, args.refresh, common,
+                                        ollama=ollama, weather_path=None,
+                                        now=now, force=True, host=host,
+                                        ctx=ctx)
+            print(f"[analysis] {common} sketch: {status}", flush=True)
+            if status == "llm-down":
+                return
+            status, trigger = write_entry(conn, args.refresh, common,
+                                          ollama=ollama, ctx=ctx, force=True,
+                                          host=host)
+            print(f"[analysis] {common} entry: {status}", flush=True)
             return
-        print(f"[analysis] {len(todo)} species to write up -> {path}",
-              flush=True)
         counts = {}
-        for sci, common, _visits in todo:
-            try:
-                status, stats = analyze_species(
-                    conn, sci, common, ollama=ollama,
-                    weather_path=weather_db_path(), dry_run=args.dry_run,
-                    force=bool(args.refresh), host=host)
-            except Exception as e:
-                if args.refresh:
-                    raise
-                print(f"[analysis] {common}: FAILED ({e})", flush=True)
-                counts["failed"] = counts.get("failed", 0) + 1
-                continue
-            counts[status] = counts.get(status, 0) + 1
-            print(f"[analysis] {common}: {status}", flush=True)
-            if args.dry_run and stats:
-                print(describe_stats(stats), flush=True)
-                print(describe_weather(stats), flush=True)
-                print("", flush=True)
-        print("[analysis] done: " + ", ".join(
-            f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
+        for sci, common, _ in worklist(
+                conn, model=ollama.model if ollama else None):
+            status, _ = analyze_species(conn, sci, common, ollama=ollama,
+                                        weather_path=None, now=now,
+                                        host=host, ctx=ctx)
+            counts[f"sketch {status}"] = counts.get(f"sketch {status}", 0) + 1
+            print(f"[analysis] {common} sketch: {status}", flush=True)
+        for sci, common, due in journal_worklist(conn, ctx):
+            status, trigger = write_entry(conn, sci, common, ollama=ollama,
+                                          ctx=ctx, host=host, due=due)
+            counts[f"entry {status}"] = counts.get(f"entry {status}", 0) + 1
+            print(f"[analysis] {common} entry ({trigger}): {status}",
+                  flush=True)
+        print("[analysis] done: " + (", ".join(
+            f"{v} {k}" for k, v in sorted(counts.items())) or "nothing due"),
+            flush=True)
     finally:
         conn.close()
 
