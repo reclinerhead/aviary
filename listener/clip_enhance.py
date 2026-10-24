@@ -84,6 +84,15 @@
 # `--force` puts every original on the worklist regardless of its sibling's
 # age; it is a hand step per box after a deploy like #599, never the loop's.
 #
+# A sibling is written whole or not at all (#601). Kestrel lost power 81 s
+# after a tick wrote two siblings; the names survived with zero bytes (ext4
+# delayed allocation), their mtimes were newer than the originals so the
+# worklist called them current, and wave.open's EOFError on them exited the
+# showcase encoder every tick for twenty days. So write_wav() writes a
+# `.part` beside the target, fsyncs it, and os.replace()s it into the name;
+# and the listing treats an empty sibling as no sibling, so whatever slips
+# through is rewritten on the next tick.
+#
 # numpy only, deliberately: numpy is already in the Earl venv, and
 # numpy.fft is entirely sufficient for an FFT-domain band-limit and an
 # STFT-based subtraction. scipy would fight test_import_boundary.py and the
@@ -305,15 +314,30 @@ def read_wav(path):
     return np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0, sr
 
 
+PART_SUFFIX = ".part"    # the in-flight name; never a .wav, so never a sibling
+
+
 def write_wav(path, samples, sr):
     """Same format out as in: WAV, PCM s16le, mono. Clamped before the cast --
-    a float that rounds past full scale must not wrap to the opposite rail."""
+    a float that rounds past full scale must not wrap to the opposite rail.
+
+    Atomic (#601): the bytes go to `<path>.part`, are fsynced, and the name
+    is swapped in with os.replace(), so a reader -- or a power cut -- never
+    sees a half-written or empty file under the real name. A stray `.part`
+    from a crash mid-write is not a `.wav`: the worklist and the route never
+    see it, and retention ages it out like any file."""
     pcm = np.clip(np.asarray(samples) * 32768.0, -32768, 32767)
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(gate.BYTES_PER_SAMPLE)
-        w.setframerate(sr)
-        w.writeframes(pcm.astype("<i2").tobytes())
+    path = str(path)
+    part = path + PART_SUFFIX
+    with open(part, "wb") as f:
+        with wave.open(f, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(gate.BYTES_PER_SAMPLE)
+            w.setframerate(sr)
+            w.writeframes(pcm.astype("<i2").tobytes())
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(part, path)
 
 
 # --- The worklist ------------------------------------------------------------
@@ -358,13 +382,22 @@ def needs_enhance(files, force=False):
 
 def list_clip_files(media_dir):
     """{posix relpath: mtime} under the clips dir. A missing dir is empty --
-    a box that never wrote a clip has nothing to enhance, not an error."""
+    a box that never wrote a clip has nothing to enhance, not an error.
+
+    An EMPTY sibling is left out of the listing (#601): a power cut can
+    leave the name with no bytes and a fresh mtime, and listing it would
+    tell needs_enhance() the original is current. Absent from the listing,
+    the original is back on the worklist and the next tick rewrites it --
+    needs_enhance() stays pure and unchanged."""
     out = {}
     for root, _, names in os.walk(media_dir):
         for name in names:
             full = os.path.join(root, name)
             rel = os.path.relpath(full, media_dir).replace(os.sep, "/")
-            out[rel] = os.path.getmtime(full)
+            st = os.stat(full)
+            if is_enhanced(rel) and st.st_size == 0:
+                continue
+            out[rel] = st.st_mtime
     return out
 
 

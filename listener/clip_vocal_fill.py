@@ -139,7 +139,8 @@ def score_wav(path):
     format. Fail closed — a bad file must not invent a showcase take."""
     try:
         samples, sr = ce.read_wav(path)
-    except (OSError, ValueError, wave.Error):
+    except (OSError, ValueError, EOFError, wave.Error):
+        # EOFError: an empty or truncated file (#601) -- not a wave.Error.
         return None
     if samples.size == 0:
         return 0.0
