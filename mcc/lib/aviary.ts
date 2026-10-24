@@ -1218,6 +1218,10 @@ export type AviaryNotice = {
   /** A RAW clip path the strip may offer to play in place (new best). The
    * click target still owns the full page; this is the one-tap listen. */
   clip?: string | null;
+  /** The moment the notice is ABOUT, epoch seconds (#602): a rare return's
+   * visit opening, a new best's recording moment. The strip stamps it in
+   * local date and time; null/absent renders a reserved empty line. */
+  ts?: number | null;
 };
 
 /** localStorage key prefix for dismissed notice ids. */
@@ -2186,6 +2190,8 @@ export function rareReturnNotice(e: RosterEntry): AviaryNotice {
     species_sci: e.species_sci,
     species_common: e.species_common,
     portrait_file: e.image_file ?? null,
+    // The return IS the latest visit's opening (#602): when the bird was heard.
+    ts: e.last_ts ?? null,
   };
 }
 
@@ -2290,6 +2296,13 @@ export function newBestBody(slot: number, confidence: number | null): string {
  * later one for the same bird announces again. */
 export function newBestNotice(c: NewBestChange): AviaryNotice {
   const e = c.entry;
+  // The moment is the take's recording (#602): the champion's `best_ts`,
+  // a showcase slot's own `ts`; null when the roster carries neither, and
+  // the strip then says nothing rather than guessing at the poll clock.
+  const ts =
+    c.slot === 1
+      ? (e.best_ts ?? null)
+      : (e.showcase?.find((s) => s.slot === c.slot)?.ts ?? null);
   return {
     id: newBestNoticeId(e.species_sci, c.clip),
     kind: "new_best",
@@ -2300,6 +2313,7 @@ export function newBestNotice(c: NewBestChange): AviaryNotice {
     species_common: e.species_common,
     portrait_file: e.image_file ?? null,
     clip: c.clip,
+    ts,
   };
 }
 
@@ -2337,7 +2351,10 @@ export function sampleNotice(
   model: RosterEntry | null,
   now: number,
 ): AviaryNotice | null {
-  if (kind === "demo") return demoNotice();
+  // Every sample is stamped `now` (#602) so the flag desk-checks the
+  // moment line too; the rare return gets it through last_ts, the others
+  // directly.
+  if (kind === "demo") return { ...demoNotice(), ts: now };
   if (!model) return null;
   if (kind === "rare_return")
     return {
@@ -2353,6 +2370,7 @@ export function sampleNotice(
         confidence: model.best_confidence ?? 0.97,
       }),
       id: "demo:new_best",
+      ts: now,
     };
   return null;
 }

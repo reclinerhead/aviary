@@ -2511,7 +2511,13 @@ describe("rare-return notice helpers (#549)", () => {
       species_sci: "Dryocopus pileatus",
       species_common: "Pileated Woodpecker",
       portrait_file: "Dryocopus_pileatus.jpg",
+      ts: 1_700_000_000,
     });
+  });
+  it("the moment is the visit's opening, null when the roster has none (#602)", () => {
+    const e = entry("Dryocopus pileatus", "Pileated Woodpecker", 3) as RosterEntry;
+    expect(rareReturnNotice({ ...e, last_ts: 1_700_000_500 }).ts).toBe(1_700_000_500);
+    expect(rareReturnNotice({ ...e, last_ts: null }).ts).toBeNull();
   });
 });
 
@@ -2658,6 +2664,7 @@ describe("new best recording (#447 Phase 2)", () => {
       species_common: "Northern Cardinal",
       portrait_file: "Cardinalis_cardinalis.jpg",
       clip: "amcrest/900-NC.wav",
+      ts: 1000,
     });
     const owl = champ("Strix varia", "Barred Owl", "b.wav", null);
     expect(newBestNotice({ entry: owl, slot: 2, clip: "b2.wav", confidence: null })).toMatchObject({
@@ -2668,6 +2675,27 @@ describe("new best recording (#447 Phase 2)", () => {
     expect(newBestNotice({ entry: owl, slot: 3, clip: "b3.wav", confidence: 0.8 }).body).toBe(
       "a new third call for its showcase · confidence 0.80 · press play to hear it",
     );
+  });
+
+  it("the moment is the take's recording: best_ts for the champion, the showcase row's ts for a slot, null when neither (#602)", () => {
+    const e = {
+      ...champ("Strix varia", "Barred Owl", "b.wav"),
+      best_ts: 1_700_000_100,
+      showcase: [
+        { slot: 2, clip: "b2.wav", confidence: 0.8, vocal_fill: null, ts: 1_700_000_200 },
+        { slot: 3, clip: "b3.wav", confidence: 0.7, vocal_fill: null, ts: null },
+      ],
+    } as RosterEntry;
+    expect(newBestNotice({ entry: e, slot: 1, clip: "b.wav", confidence: 0.9 }).ts).toBe(
+      1_700_000_100,
+    );
+    expect(newBestNotice({ entry: e, slot: 2, clip: "b2.wav", confidence: 0.8 }).ts).toBe(
+      1_700_000_200,
+    );
+    expect(newBestNotice({ entry: e, slot: 3, clip: "b3.wav", confidence: 0.7 }).ts).toBeNull();
+    const bare = { ...e, best_ts: null, showcase: [] } as RosterEntry;
+    expect(newBestNotice({ entry: bare, slot: 1, clip: "b.wav", confidence: 0.9 }).ts).toBeNull();
+    expect(newBestNotice({ entry: bare, slot: 2, clip: "x.wav", confidence: null }).ts).toBeNull();
   });
 
   it("merging keeps one notice per species, newest champion winning, arrival order kept", () => {
@@ -2738,6 +2766,11 @@ describe("desk-check samples: ?notice=<kinds> (#447)", () => {
     expect(
       demoNoticesFor("new_best, new_best,demo", yard, now).map((n) => n.id),
     ).toEqual(["demo:new_best", "demo:announcement-strip"]);
+  });
+  it("every sample is stamped `now`, so the flag desk-checks the moment line (#602)", () => {
+    for (const kind of DEMO_NOTICE_KINDS) {
+      expect(sampleNotice(kind, yard[1], now)?.ts).toBe(now);
+    }
   });
   it("sample ids never collide with a real notice's dismiss key", () => {
     const real = newBestNotice({ entry: yard[1], slot: 1, clip: "c.wav", confidence: 0.91 });
