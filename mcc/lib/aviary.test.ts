@@ -111,6 +111,12 @@ import {
   weatherChipExplain,
   weekWindowStart,
   yardRecords,
+  refreshUrl,
+  refreshStep,
+  refreshLabel,
+  REFRESH_DEADLINE_S,
+  REFRESH_HOLD_S,
+  type RefreshUi,
 } from "./aviary";
 
 const bird = (over: Partial<BirdEvent> = {}): BirdEvent => ({
@@ -3068,5 +3074,91 @@ describe("species mask", () => {
     writeSessionQuery(store, MASK_QUERY_KEY, "");
     expect(mem.has(MASK_QUERY_KEY)).toBe(false);
     expect(readSessionQuery(null, MASK_QUERY_KEY)).toBe("");
+  });
+});
+
+
+// --- the on-demand refresh (#613) ---------------------------------------------
+
+describe("refreshUrl", () => {
+  it("encodes the scientific name into the route", () => {
+    expect(refreshUrl("Cardinalis cardinalis")).toBe(
+      "/aviary/analysis/Cardinalis%20cardinalis/refresh",
+    );
+    expect(refreshUrl("A/b?c")).toBe("/aviary/analysis/A%2Fb%3Fc/refresh");
+  });
+});
+
+describe("refreshStep", () => {
+  const idle: RefreshUi = { kind: "idle" };
+  const writing: RefreshUi = { kind: "writing", since: 1000 };
+
+  it("starts writing on a click, and only from idle", () => {
+    expect(refreshStep(idle, { type: "click" }, 1000)).toEqual(writing);
+    expect(refreshStep(writing, { type: "click" }, 1005)).toBe(writing);
+    const failed: RefreshUi = { kind: "failed", reason: "busy", at: 1 };
+    expect(refreshStep(failed, { type: "click" }, 2)).toBe(failed);
+  });
+
+  it("returns to idle when the server says the note landed", () => {
+    expect(
+      refreshStep(writing, { type: "status", state: "done" }, 1030),
+    ).toEqual(idle);
+  });
+
+  it("keeps writing while the pass runs, or after an MCC restart", () => {
+    for (const state of ["running", "idle"] as const)
+      expect(refreshStep(writing, { type: "status", state }, 1030)).toBe(
+        writing,
+      );
+  });
+
+  it("fails on a refusal, a failed job, or the deadline", () => {
+    expect(refreshStep(writing, { type: "refused", busy: true }, 1001))
+      .toEqual({ kind: "failed", reason: "busy", at: 1001 });
+    expect(refreshStep(writing, { type: "refused", busy: false }, 1001))
+      .toEqual({ kind: "failed", reason: "model", at: 1001 });
+    expect(refreshStep(writing, { type: "status", state: "failed" }, 1040))
+      .toEqual({ kind: "failed", reason: "model", at: 1040 });
+    expect(
+      refreshStep(writing, { type: "tick" }, 1000 + REFRESH_DEADLINE_S),
+    ).toBe(writing);
+    expect(
+      refreshStep(writing, { type: "tick" }, 1001 + REFRESH_DEADLINE_S),
+    ).toEqual({
+      kind: "failed",
+      reason: "model",
+      at: 1001 + REFRESH_DEADLINE_S,
+    });
+  });
+
+  it("offers the control again after the hold", () => {
+    const failed: RefreshUi = { kind: "failed", reason: "model", at: 2000 };
+    expect(refreshStep(failed, { type: "tick" }, 2000 + REFRESH_HOLD_S - 1))
+      .toBe(failed);
+    expect(refreshStep(failed, { type: "tick" }, 2000 + REFRESH_HOLD_S))
+      .toEqual(idle);
+  });
+
+  it("ignores status and refusals when nothing is being written", () => {
+    expect(refreshStep(idle, { type: "status", state: "failed" }, 5)).toBe(
+      idle,
+    );
+    expect(refreshStep(idle, { type: "refused", busy: true }, 5)).toBe(idle);
+  });
+});
+
+describe("refreshLabel", () => {
+  it("says what the one reserved line should say", () => {
+    expect(refreshLabel({ kind: "idle" })).toBe("write a fresh entry");
+    expect(refreshLabel({ kind: "writing", since: 0 })).toBe(
+      "writing… (this can take a minute)",
+    );
+    expect(refreshLabel({ kind: "failed", reason: "busy", at: 0 })).toBe(
+      "another entry is being written, try again shortly",
+    );
+    expect(refreshLabel({ kind: "failed", reason: "model", at: 0 })).toBe(
+      "couldn't reach a model",
+    );
   });
 });
