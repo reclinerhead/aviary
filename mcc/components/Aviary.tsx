@@ -159,6 +159,22 @@ const stampOf = (ts: number, midnight: number | null) =>
   midnight !== null && ts >= midnight
     ? timeOf(ts)
     : `${dayOf(ts)} · ${timeOf(ts)}`;
+/** The announcement strip's moment line (#602): date AND time, always --
+ * a notice can sit under the tab bar past midnight, so stampOf's time-alone
+ * shortcut for today would mislead -- with the year only when it isn't this
+ * one (dayLabelOf's rule). Render-time locale calls are safe: the strip
+ * selects its notice post-mount and never takes part in hydration. */
+const whenOf = (ts: number) => {
+  const d = new Date(ts * 1000);
+  const day = d.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(d.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" as const }),
+  });
+  return `${day} · ${timeOf(ts)}`;
+};
 /** The archive's day headers (#211): weekday + date, the year only when it
  * isn't this one. Render-time locale calls are fine here for the same reason
  * stampOf's are -- archive rows only exist client-side. */
@@ -1157,6 +1173,11 @@ function AviaryNoticeStrip({
         {notice.body ? (
           <span className="mt-0.5 block text-xs text-inkdim">{notice.body}</span>
         ) : null}
+        {/* The moment (#602), in the rows' faint stamp voice. The line is
+            reserved when a notice carries none, so a card never shifts. */}
+        <span className="stamp mt-0.5 block text-[9px] text-inkfaint">
+          {notice.ts != null ? whenOf(notice.ts) : " "}
+        </span>
       </span>
     </>
   );
