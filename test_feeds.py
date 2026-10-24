@@ -222,6 +222,19 @@ def test_shipped_station_registry_is_a_working_ear():
     device = argv[argv.index("-D") + 1]
     assert "CARD=" in device, device
     assert not re.search(r"plughw:\d", device), device
+    # The capture's slack (#607): the worker classifies one window while the
+    # next waits in the pipe (~0.68 s) plus ALSA's buffer. arecord's default
+    # 0.5 s overran nearly every window on birdhouse (0.867x real time), so
+    # the cmd must ask for at least 2 s. Kestrel's window-mic is held equal
+    # to this entry below, so the guard covers both stations.
+    buffer_us = None
+    for i, arg in enumerate(argv):
+        if arg == "-B":
+            buffer_us = int(argv[i + 1])
+        elif arg.startswith("--buffer-time="):
+            buffer_us = int(arg.split("=", 1)[1])
+    assert buffer_us is not None and buffer_us >= 2_000_000, \
+        station["window-mic"].cmd
 
 
 def test_shipped_kestrel_registry_is_two_ears():

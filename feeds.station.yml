@@ -23,6 +23,18 @@
 # stable across enumeration order. A future card swap is a rename here
 # (and in toddtech-infrastructure/servers/Birdhouse.md § The mic), not an index hunt.
 #
+# `-B 2000000` (arecord --buffer-time, microseconds; #607) is the capture's
+# slack. A worker reads one 3 s window, then classifies it, and meanwhile the
+# next window waits in the 64 KiB pipe (~0.68 s) plus ALSA's buffer.
+# arecord's default 0.5 s buffer left ~1.2 s, which a one-worker station at
+# schedutil clocks exceeds: birdhouse overran nearly every window from its
+# bench build on, each recovery discarding ~0.45 s, and heard 0.867x real
+# time -- silently, since -q hides the xrun and the worker drops a command's
+# stderr. 2 s gives ~2.7 s. arecord applies it as a "nearest allowed" request,
+# so a device that can't hold 2 s gets its largest buffer, never a failed
+# open. The tell is /proc/asound/S3/pcm0c/sub0/status: a trigger_time that
+# changes means the stream restarted.
+#
 # The feed name is its published source label, its clip directory under
 # MERLE_EARL_CLIPS, and the bird record's `source` column -- renaming it is a
 # data migration (#270's runbook). `window-mic` is named for what it will
@@ -32,5 +44,5 @@
 feeds:
   window-mic:
     kind: command
-    cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q
+    cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q -B 2000000
     earl: true
