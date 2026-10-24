@@ -30,6 +30,157 @@ def rms(x):
     return float(np.sqrt(np.mean(np.square(x))))
 
 
+# --- 0. the de-hum (#609) ----------------------------------------------------
+# Kestrel's window-mic hears the power line: tones on the odd multiples of a
+# slightly-off-60 Hz fundamental, 2.5-11.5 kHz. Synthesized the same way here
+# -- a 9 s clip, the length write_clip() stores, so the transform resolves
+# lines as finely as it does on a real clip.
+
+CLIP_S = 9.0
+LINE_HALF_HZ = 0.5        # what counts as "on a harmonic" when we listen
+
+
+def mains_comb(f0=60.013, harmonics=range(41, 191, 2), amp=0.002,
+               seconds=CLIP_S, seed=609, wander_hz=0.0):
+    """`wander_hz` lets the grid drift sinusoidally within the clip, as
+    kestrel's measured: tens of degrees a second at 5 kHz."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * SR)) / SR
+    cycles = f0 * t + wander_hz * 7 / (2 * np.pi) * (1 - np.cos(2 * np.pi * t / 7))
+    return amp * sum(np.sin(2 * np.pi * k * cycles + rng.uniform(0, 2 * np.pi))
+                     for k in harmonics)
+
+
+def chirp(lo_hz=3000, hi_hz=5000, seconds=1.0, amp=0.1):
+    """A bird-like upsweep: its energy never sits still on one bin."""
+    t = np.arange(int(seconds * SR)) / SR
+    return amp * np.sin(2 * np.pi * (lo_hz * t + (hi_hz - lo_hz) * t ** 2
+                                      / (2 * seconds)))
+
+
+def hiss(sigma=0.001, seconds=CLIP_S, seed=7):
+    return np.random.default_rng(seed).normal(0, sigma, int(seconds * SR))
+
+
+def comb_share(y, f0):
+    """The share of y's kept-band energy that sits on the comb's harmonics --
+    what the ear hears as the buzz."""
+    power = np.abs(np.fft.rfft(y)) ** 2
+    freqs = np.fft.rfftfreq(y.size, 1 / SR)
+    band = (freqs >= ce.BAND_PASS_HZ) & (freqs <= ce.BAND_TOP_PASS_HZ)
+    k = np.rint(freqs / f0)
+    on = band & (k >= 1) & (np.abs(freqs - k * f0) <= LINE_HALF_HZ)
+    return power[on].sum() / power[band].sum()
+
+
+def test_detect_mains_finds_an_off_nominal_60hz_comb():
+    """The grid wanders; kestrel's clips fit 59.95-60.04 Hz. The fundamental
+    has to be found to the mHz, or the 166th harmonic misses its notch."""
+    f0 = ce.detect_mains(mains_comb(f0=60.013) + hiss(), SR)
+    assert f0 == pytest.approx(60.013, abs=0.002)
+
+
+def test_detect_mains_finds_a_50hz_comb():
+    """Portability: a station on a 50 Hz grid, every harmonic present."""
+    f0 = ce.detect_mains(mains_comb(f0=49.987, harmonics=range(30, 200))
+                         + hiss(), SR)
+    assert f0 == pytest.approx(49.987, abs=0.002)
+
+
+def test_detect_mains_says_none_without_a_comb():
+    """Noise alone, a sweeping bird, and -- the case the median exists for --
+    one loud steady whistle parked exactly on a multiple of 60 Hz. None of
+    them is a comb across the band."""
+    assert ce.detect_mains(hiss(), SR) is None
+    bird = np.concatenate([np.zeros(4 * SR), chirp(amp=0.2),
+                           np.zeros(4 * SR)])
+    assert ce.detect_mains(bird + hiss(), SR) is None
+    whistle = tone(67 * 60.0, seconds=CLIP_S, amp=0.3)
+    assert ce.detect_mains(whistle + hiss(), SR) is None
+    assert ce.detect_mains(np.zeros(int(CLIP_S * SR)), SR) is None
+
+
+def test_detect_mains_needs_a_second_of_audio():
+    assert ce.detect_mains(mains_comb(seconds=0.5), SR) is None
+
+
+def test_dehum_removes_a_steady_comb_everywhere_including_the_edges():
+    """At least 30 dB off the whole clip, and the first and last quarter
+    second as clean as the middle. A whole-clip notch measured -16 dB here,
+    with the leftover piled up at both ends (+23 dB over the middle)."""
+    comb = mains_comb()
+    out = ce.dehum(comb, SR, 60.013)
+    assert out.size == comb.size
+    assert rms(out) < 10 ** (-30 / 20) * rms(comb)
+    q = SR // 4
+    ends = rms(np.concatenate([out[:q], out[-q:]]))
+    assert ends < 10 ** (-30 / 20) * rms(comb)
+
+
+def test_dehum_follows_a_wandering_grid():
+    """The grid drifts within a clip; the tracked phase follows it. A fixed
+    f0 template smears the high harmonics and keeps most of the comb."""
+    comb = mains_comb(f0=60.01, wander_hz=0.002) + hiss(sigma=0.002)
+    f0 = ce.detect_mains(comb, SR)
+    assert f0 is not None
+    clean = mains_comb(f0=60.01, wander_hz=0.002)
+    residual = ce.dehum(comb, SR, f0) - (comb - clean)
+    assert rms(residual) < 10 ** (-25 / 20) * rms(clean)
+
+
+def test_dehum_spares_the_bird():
+    """Only what repeats in step with the grid for the whole clip goes. A
+    sweeping chirp loses under 0.2 dB, and even a steady whistle parked
+    exactly on a harmonic for a second loses under 1 dB (a notch: 4)."""
+    bird = np.concatenate([np.zeros(4 * SR), chirp(), np.zeros(4 * SR)])
+    assert 20 * np.log10(rms(ce.dehum(bird, SR, 60.013)) / rms(bird)) > -0.2
+    whistle = np.concatenate([np.zeros(4 * SR),
+                              tone(67 * 60.013, amp=0.1) * np.hanning(SR),
+                              np.zeros(4 * SR)])
+    kept = rms(ce.dehum(whistle, SR, 60.013)) / rms(whistle)
+    assert 20 * np.log10(kept) > -1.0
+
+
+def test_enhance_without_a_comb_is_the_v2_chain_byte_for_byte():
+    """The containment guarantee: a clip with no hum takes exactly the path
+    it took before #609, so every comb-free mic's siblings are unchanged."""
+    rng = np.random.default_rng(190)
+    x = (tone(200, seconds=CLIP_S, amp=0.5) + rng.normal(0, 0.01, int(CLIP_S * SR))
+         + np.concatenate([np.zeros(4 * SR), chirp(amp=0.02), np.zeros(4 * SR)]))
+    banded = ce.band_limit(x, SR)
+    pre = banded[:int(gate_window_s() * SR)]
+    v2 = ce.normalize(ce.spectral_subtract(banded, ce.noise_profile(pre)),
+                      ref=banded)
+    assert ce.detect_mains(x, SR) is None
+    assert np.array_equal(ce.enhance(x, SR), v2)
+
+
+def gate_window_s():
+    from listener import gate
+    return gate.WINDOW_S
+
+
+def test_enhance_takes_the_buzz_out_before_the_gain():
+    """The bug, as a regression: a faint bird over hum. Through v2 alone the
+    floor keeps the comb and the normalize lifts it with the bird, so it is a
+    large share of the result; with the de-hum the result's share is what
+    the same clip without any hum scores (any sound puts ~1.7% of its band
+    within half a hertz of some multiple of 60)."""
+    bird = np.concatenate([np.zeros(3 * SR), chirp(amp=0.004, seconds=3.0),
+                           np.zeros(3 * SR)])
+    clean = bird + hiss(sigma=0.0005)
+    x = mains_comb() + clean
+    f0 = ce.detect_mains(x, SR)
+    assert f0 == pytest.approx(60.013, abs=0.002)
+
+    banded = ce.band_limit(x, SR)
+    v2_only = ce.normalize(ce.spectral_subtract(
+        banded, ce.noise_profile(banded[:3 * SR])), ref=banded)
+    assert comb_share(v2_only, f0) > 0.20
+    baseline = comb_share(ce.enhance(clean, SR), f0)
+    assert comb_share(ce.enhance(x, SR), f0) < baseline + 0.005
+
+
 # --- 1. the band-limit -------------------------------------------------------
 
 def test_band_limit_kills_low_frequency_noise():

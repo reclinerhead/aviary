@@ -1,7 +1,8 @@
 # =============================================================================
 # project-squirrel -- listener/clip_enhance.py
 #
-# The clip enhancement pass (epic #182, issue #190; v2 in #599): make a faint
+# The clip enhancement pass (epic #182, issue #190; v2 in #599; de-hum in
+# #609): make a faint
 # bird AUDIBLE to a human. BirdNET finds birds buried under a plane, road
 # noise, wind, or HVAC -- that is the whole point of the model -- but the clip
 # is the only evidence a person can independently evaluate, and a clip you
@@ -22,6 +23,21 @@
 # --refresh calls today).
 #
 # THE SIGNAL CHAIN, AND WHY THE ORDER IS LOAD-BEARING:
+#
+#   0. DE-HUM (#609), and only when there is hum to remove. A mic on a long
+#      analog cable picks up the power line as a picket fence of tones on
+#      multiples of 50/60 Hz, straight across the bird band. It is
+#      stationary, so it sits in the pre-roll profile -- but the floor below
+#      caps what the subtraction can take off ANY stationary noise at about
+#      10 dB, and the normalize then adds 45-50 dB to a passive station
+#      clip. Kestrel's window-mic measured the result: a comb inaudible in
+#      the raw clip became 40% of the enhanced bird band, a shrill buzz. A
+#      comb is not diffuse noise; it has a known structure and a fundamental
+#      that can be measured, so it gets a stage of its own, ahead of the
+#      subtraction and the gain: detect_mains() finds it or says there is
+#      none, dehum() subtracts the comb's own waveform on the grid's tracked
+#      phase, and a clip with no comb takes the rest of the chain byte for
+#      byte as before.
 #
 #   1. BAND-LIMIT. Songbird vocalization lives roughly 2-8 kHz; aircraft,
 #      road, wind and HVAC energy is overwhelmingly sub-1 kHz. Rolling off
@@ -126,6 +142,36 @@ BAND_PASS_HZ = 1500.0
 BAND_TOP_PASS_HZ = 10000.0
 BAND_TOP_STOP_HZ = 12000.0
 
+# --- The de-hum (#609) -------------------------------------------------------
+# Grids hold their nominal frequency within a few hundredths of a hertz, so a
+# +/-0.1 Hz search in 1 mHz steps finds the clip's average fundamental; what
+# the grid does around that average during the clip is mains_phase()'s job.
+# 50 Hz is searched too: the station is meant to be portable.
+MAINS_FAMILIES_HZ = (50.0, 60.0)
+MAINS_SEARCH_HZ = 0.1
+MAINS_STEP_HZ = 0.001
+# Detection is the median, over the harmonics in the kept band, of how far
+# each stands above the point halfway to the next. Calibrated 2026-10-24 on
+# 400 real originals: every comb-free source (kestrel's Warbler32, orchid's
+# four) had a p90 at or under 1.73 dB; both station window-mics a p10 at or
+# over 7.1 dB.
+MAINS_DETECT_DB = 3.0
+MAINS_MIN_S = 1.0         # below this the bins are too coarse to pin f0
+# The removal is a synchronous template, not a notch. Kestrel's real combs
+# drift tens of degrees per second at 5 kHz (the grid wanders a few mHz
+# within a clip), and a notch narrow enough to spare the birds rebuilds the
+# tone over ~1/(2*width) seconds at each clip edge -- a buzz blip at both
+# ends. So the mains phase is TRACKED through the clip from the strongest
+# harmonics' phases in 1 s blocks, and one template -- the comb's own
+# waveform averaged over all ~540 cycles on that tracked time axis -- is
+# subtracted. Measured on the enhanced output (comb share of the bird band,
+# kestrel window-mic, start/middle/end): v2 44/29/43%, a 0.5 Hz notch
+# 14/1.2/12%, this 2.0/1.6/1.7%.
+TRACK_BLOCK_S = 1.0       # phase is read per block...
+TRACK_HOP_S = 0.25        # ...this often (small steps keep the unwrap honest)
+TRACK_HARMONICS = 24      # the most prominent harmonics carry the phase
+TEMPLATE_BINS = 8192      # one mains cycle, finely enough for 12 kHz
+
 # --- The subtraction ---------------------------------------------------------
 N_FFT = 1024              # 21ms at 48k -- fine enough for song, coarse enough
 HOP = 256                 # 75% overlap; Hann + hop=N/4 reconstructs cleanly
@@ -150,6 +196,121 @@ def _raised_cosine_edge(freqs, lo_hz, hi_hz):
     band edges use."""
     t = np.clip((freqs - lo_hz) / (hi_hz - lo_hz), 0.0, 1.0)
     return 0.5 - 0.5 * np.cos(np.pi * t)
+
+
+def detect_mains(x, sr):
+    """The power line's fundamental in Hz if the clip carries its comb, else
+    None.
+
+    One Hann-windowed transform of the whole clip, each bin max-filtered over
+    its neighbours so a harmonic that falls between bins still counts. For
+    each family and candidate fundamental, every harmonic inside the kept
+    band is compared with the point halfway to the next one: a comb puts
+    energy on the first and none on the second, where diffuse noise and
+    birdsong put it on both. The candidate with the highest MEAN contrast is
+    the fundamental; the decision is the MEDIAN contrast there, so one loud
+    steady whistle that happens to sit on a multiple of 60 Hz cannot trip it
+    -- the comb has to be there across the band."""
+    x = np.asarray(x, dtype=np.float64)
+    if x.size < MAINS_MIN_S * sr:
+        return None
+    power = np.abs(np.fft.rfft(x * np.hanning(x.size))) ** 2
+    power = np.maximum(np.maximum(power, np.roll(power, 1)),
+                       np.roll(power, -1)) + EPS
+    df = sr / x.size
+    best_f0, best_db = None, -np.inf
+    for nominal in MAINS_FAMILIES_HZ:
+        # The half-harmonic of the top candidate must stay under Nyquist.
+        top_hz = min(BAND_TOP_PASS_HZ, sr / 2 - nominal)
+        k = np.arange(int(np.ceil(BAND_PASS_HZ / nominal)),
+                      int(top_hz // nominal))
+        if k.size == 0:
+            continue
+        f0s = nominal + np.arange(-MAINS_SEARCH_HZ,
+                                  MAINS_SEARCH_HZ + MAINS_STEP_HZ / 2,
+                                  MAINS_STEP_HZ)
+        on = power[np.rint(np.outer(f0s, k) / df).astype(int)]
+        off = power[np.rint(np.outer(f0s, k + 0.5) / df).astype(int)]
+        contrast = 10 * np.log10(on / off)
+        i = int(np.argmax(contrast.mean(axis=1)))
+        median = float(np.median(contrast[i]))
+        if median > best_db:
+            best_f0, best_db = float(f0s[i]), median
+    return best_f0 if best_db >= MAINS_DETECT_DB else None
+
+
+def mains_phase(x, sr, f0):
+    """The power line's phase at every sample, in cycles: f0*t plus the drift
+    the grid adds while the clip runs.
+
+    Each TRACK_BLOCK_S block's spectrum gives the phase of every harmonic;
+    the TRACK_HARMONICS that stand out most over the clip are followed from
+    block to block with the nominal f0 advance taken off, unwrapped, divided
+    by their harmonic number, and the median across them is the drift. A
+    bird that swamps one harmonic for a while moves that harmonic's estimate,
+    not the median. Between block centres the drift is interpolated, and
+    past the first and last it is extended along its end slope. A clip too
+    short for two blocks gets plain f0*t."""
+    x = np.asarray(x, dtype=np.float64)
+    t = np.arange(x.size) / sr
+    length = min(int(TRACK_BLOCK_S * sr), x.size)
+    hop = max(1, int(TRACK_HOP_S * sr))
+    if x.size - length < hop:
+        return f0 * t
+    frames = np.lib.stride_tricks.sliding_window_view(x, length)[::hop]
+    starts = np.arange(frames.shape[0]) * hop
+    spec = np.fft.rfft(frames * np.hanning(length), axis=1)
+    k = np.arange(int(np.ceil(BAND_PASS_HZ / f0)),
+                  int(min(BAND_TOP_PASS_HZ, sr / 2 - f0) // f0))
+    if k.size == 0:
+        return f0 * t
+    on = np.rint(k * f0 * length / sr).astype(int)
+    off = np.rint((k + 0.5) * f0 * length / sr).astype(int)
+    power = np.abs(spec) ** 2
+    prominence = power[:, on].mean(axis=0) / (power[:, off].mean(axis=0) + EPS)
+    pick = np.argsort(prominence)[::-1][:TRACK_HARMONICS]
+    h = k[pick]
+    advance = (np.outer(starts, h) * (f0 / sr)) % 1.0
+    theta = np.unwrap(np.angle(spec[:, on[pick]]) - 2 * np.pi * advance,
+                      axis=0)
+    drift = np.median((theta - theta[:1]) / (2 * np.pi * h), axis=1)
+    centres = (starts + length / 2) / sr
+    d = np.interp(t, centres, drift)
+    head = drift[0] + (t - centres[0]) * (
+        (drift[1] - drift[0]) / (centres[1] - centres[0]))
+    tail = drift[-1] + (t - centres[-1]) * (
+        (drift[-1] - drift[-2]) / (centres[-1] - centres[-2]))
+    d = np.where(t < centres[0], head, np.where(t > centres[-1], tail, d))
+    return f0 * t + d
+
+
+def dehum(x, sr, f0):
+    """Subtract the comb: its own waveform, averaged over every mains cycle
+    in the clip on the tracked phase (mains_phase()), band-limited to the
+    harmonics the sample rate can carry, read back at each sample's phase.
+    Every harmonic goes at once, odd and even, with no edge to rebuild and
+    no notch carved out of the bird: what is removed is only what repeats in
+    step with the grid for the whole clip, so a sweeping chirp loses
+    nothing measurable and even a steady whistle parked on a harmonic loses
+    about a third of a dB. If the phase cannot be followed, the cycles
+    average toward nothing and so does the subtraction."""
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return x
+    phase = mains_phase(x, sr, f0) % 1.0
+    idx = np.minimum((phase * TEMPLATE_BINS).astype(int), TEMPLATE_BINS - 1)
+    counts = np.bincount(idx, minlength=TEMPLATE_BINS)
+    template = np.bincount(idx, weights=x, minlength=TEMPLATE_BINS) / (
+        np.maximum(counts, 1))
+    spec = np.fft.rfft(template)
+    spec[0] = 0
+    spec[int((sr / 2) // f0) + 1:] = 0
+    template = np.fft.irfft(spec, TEMPLATE_BINS)
+    pos = phase * TEMPLATE_BINS - 0.5
+    i0 = np.floor(pos).astype(int)
+    frac = pos - i0
+    return x - (template[i0 % TEMPLATE_BINS] * (1 - frac)
+                + template[(i0 + 1) % TEMPLATE_BINS] * frac)
 
 
 def band_limit(x, sr, stop_hz=BAND_STOP_HZ, pass_hz=BAND_PASS_HZ,
@@ -291,7 +452,14 @@ def enhance(samples, sr=gate.SAMPLE_RATE, preroll_s=gate.WINDOW_S):
     window at the very start of a stream, where there was no prev to save)
     gets the band-limit and the normalize and honestly skips the subtraction
     rather than estimating the noise from the bird itself. The normalize is
-    capped against the band-limited clip (the header says why not the raw)."""
+    capped against the band-limited clip (the header says why not the raw).
+
+    A detected mains comb comes out first (#609); a clip with none takes
+    the chain exactly as it was before the de-hum existed."""
+    samples = np.asarray(samples, dtype=np.float64)
+    f0 = detect_mains(samples, sr)
+    if f0 is not None:
+        samples = dehum(samples, sr, f0)
     banded = band_limit(samples, sr)
     x = banded
     pre = x[:int(preroll_s * sr)]
