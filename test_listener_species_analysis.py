@@ -295,7 +295,8 @@ def test_describe_weather_labels_direction_as_a_keyword():
                      "conditions": more, "temperature": []}})
     assert "MORE OFTEN" in text and "LESS OFTEN" in text
     # The direction sits in front of the number, not buried in a phrase.
-    assert "SKY clear: MORE OFTEN" in text
+    # clear runs 2.0/hr against a 1.4/hr baseline: +43%.
+    assert "Under clear skies, this bird turns up 43% MORE OFTEN" in text
 
 
 def test_describe_stats_characterises_the_microphone_split_itself():
@@ -338,7 +339,11 @@ def test_prompts_speak_in_one_voice_the_reader_is_you():
         assert "What our own" not in prompt
         assert 'Address the reader as "you"' in prompt
         assert 'never "our" or "my"' in prompt
-    assert sa.PROMPT_VERSION == 2  # the bump that re-narrates the archive once
+        # #612: the yard is not a driveway, and the model opens on the lede.
+        assert "driveway" not in prompt
+        assert "Open with the first fact given" in prompt
+    assert "driveway" not in sa.VOICE
+    assert sa.PROMPT_VERSION == 3  # the bump that re-narrates the archive once
 
 
 def test_fact_lines_separate_thousands_so_the_prose_copies_the_comma():
@@ -466,16 +471,32 @@ def test_analyze_species_dry_run_computes_without_writing(conn):
                         ).fetchone()["c"] == 0
 
 
+ANSWER = object()   # "reply the way a rule-abiding model would"
+
+
+def answer(prompt):
+    """A draft that passes the #612 validator: its first sentence states the
+    figures of the fact it was told to open with, and nothing else."""
+    from listener import notes_validate
+    for marker in ("Open the note with this fact:\n",
+                   "Open the note with this finding:\n"):
+        if marker in prompt:
+            lede = prompt.split(marker, 1)[1].split("\n", 1)[0]
+            return ("Some prose, "
+                    + ", ".join(sorted(notes_validate.figures(lede))) + ".")
+    return "Some prose."
+
+
 class FakeOllama:
     model = "gemma3:12b"
 
-    def __init__(self, reply="Some prose."):
+    def __init__(self, reply=ANSWER):
         self.reply = reply
         self.calls = []
 
     def complete(self, system, prompt, **kw):
         self.calls.append(prompt)
-        return self.reply
+        return answer(prompt) if self.reply is ANSWER else self.reply
 
 
 def test_analyze_species_stores_both_blocks_and_the_audit_trail(conn):
@@ -488,7 +509,8 @@ def test_analyze_species_stores_both_blocks_and_the_audit_trail(conn):
     assert status == "written"
     assert len(llm.calls) == 2                       # rhythm + weather
     row = conn.execute("SELECT * FROM species_analysis").fetchone()
-    assert row["rhythm_text"] == "Some prose."
+    assert row["rhythm_text"].startswith("Some prose")
+    assert row["fallback"] == 0
     assert row["visits_watermark"] == 12
     assert row["model"] == "gemma3:12b"
     # stats_json is the auditable record the prose was written from.
@@ -750,6 +772,315 @@ def test_a_pre217_row_regenerates_once_then_settles(conn):
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                                    weather_path=None, now=now)
     assert status == "current"
+
+
+# --- #612: hygiene ------------------------------------------------------------
+
+import feeds  # noqa: E402 -- grouped with the tests that need it
+
+HOUSE = {
+    "house-rear": feeds.Place("the back of the house, over the driveway", True),
+    "house-front": feeds.Place("the front of the house, by the front door", True),
+    "garage-rear": feeds.Place("the back of the garage", True),
+    "rover": feeds.Place("the rover, parked in the driveway", False),
+    "Warbler32": feeds.Place("the back of the garage", False),
+}
+
+
+def test_the_shipped_house_places_are_the_ones_these_tests_use():
+    assert feeds.places(feeds.DEFAULT_PATH) == HOUSE
+
+
+def test_describe_stats_drops_the_weekday_line():
+    visits = [at(2026, 7, 1, 7) + d * 86400 for d in range(40)]
+    stats = sa.build_stats(visits, [], visits[-1] + 3600)
+    assert stats["weekdays"]                       # still in the record...
+    text = sa.describe_stats(stats)
+    assert "weekday" not in text.lower()           # ...never in the prose input
+    for day in sa.WEEKDAYS:
+        assert day not in text.lower()
+
+
+def test_trend_moved_needs_size_and_a_real_difference():
+    assert sa.trend_moved(None) is False
+    assert sa.trend_moved({"recent": 3, "prior": 1, "window_days": 7}) is False
+    # The Cardinal's week on 2026-10-19: down 26% -- real, but not the lede.
+    assert sa.trend_moved({"recent": 93, "prior": 126, "window_days": 7}) is False
+    assert sa.trend_moved({"recent": 80, "prior": 126, "window_days": 7})
+    assert sa.trend_moved({"recent": 100, "prior": 90, "window_days": 7}) is False
+    assert sa.trend_moved({"recent": 10, "prior": 0, "window_days": 7})
+
+
+def test_the_lede_is_a_moved_trend_else_the_peak():
+    now = at(2026, 8, 1, 12)
+    steady = [now - d * 86400 + h * 3600 for d in range(1, 15) for h in (0, 1)]
+    stats = sa.build_stats(steady, [], now)
+    first = sa.describe_stats(stats).splitlines()[0]
+    assert first.startswith("Busiest stretch of the day")
+    # Ten visits a day this week, one a day the week before: news.
+    rising = ([now - d * 86400 + m * 120 for d in range(1, 8)
+               for m in range(10)]
+              + [now - d * 86400 for d in range(8, 15)])
+    stats = sa.build_stats(rising, [], now)
+    lines = sa.describe_stats(stats).splitlines()
+    assert lines[0].startswith("Last 7 days")
+    assert lines[0].endswith("That is a clear rise.")
+    assert sum(1 for line in lines if line.startswith("Last 7 days")) == 1
+    assert lines[1].startswith("Total visits on record")
+
+
+def test_a_bird_gone_quiet_leads_with_its_absence():
+    now = at(2026, 10, 24, 12)
+    left = [at(2026, 8, 1, 7) + d * 86400 for d in range(30)]   # gone Aug 30
+    stats = sa.build_stats(left, [], now)
+    assert sa.gone_quiet(stats["trend"])
+    lede = sa.describe_stats(stats).splitlines()[0]
+    assert lede == ("Not heard at all in the last 14 days; last heard "
+                    "August 30, 2026.")
+    assert "Last 7 days" not in sa.describe_stats(stats)   # no "0 against 0"
+    assert "Not heard at all in the last 14 days." in sa.plain_rhythm(stats)
+
+
+def test_microphones_are_named_by_place_and_retired_ones_said_as_formerly():
+    base = at(2026, 7, 18, 7)
+    stats = sa.build_stats([base], [], base + 3600, sources={
+        "house-rear": 2544, "house-front": 800, "garage-rear": 10,
+        "Warbler32": 499, "rover": 39})
+    text = sa.describe_sources(stats["sources"], HOUSE)
+    assert "the microphone at the back of the house, over the driveway: 2,544" \
+        in text
+    assert "The microphone at the back of the house" in text   # the shape
+    assert "Formerly also heard by" in text
+    # Two boards share the garage: the retired one is "the old microphone".
+    assert "the old microphone at the back of the garage (499)" in text
+    assert "the microphone at the back of the garage: 10" in text
+    assert "the old microphone at the rover, parked in the driveway (39)" \
+        in text
+    assert "no longer listen." in text
+    # The live split is judged on live microphones only: 2,544 of 3,354.
+    assert "hears this bird clearly the most" in text
+    # No registry at all: the pre-#612 wording, every source counted live.
+    assert "Formerly" not in sa.describe_sources(stats["sources"], None)
+
+
+def test_a_bird_only_retired_microphones_heard_says_so():
+    text = sa.describe_sources({"Warbler32": 100, "house-rear": 0}, {
+        "Warbler32": HOUSE["Warbler32"],
+        "house-rear": feeds.Place("the back", False)})
+    assert "None of these microphones is listening any more." in text
+
+
+def test_listening_posts_name_only_live_ears():
+    posts = sa.listening_posts(HOUSE)
+    assert posts.startswith("Your reader listens from 3 places:")
+    assert "; and the back of the garage." in posts
+    assert "rover" not in posts and "first garage" not in posts
+    assert sa.listening_posts({}) == ""
+    one = sa.listening_posts({"window-mic": feeds.Place("the window", True)})
+    assert one == "Your reader listens from one place: the window."
+    # A live ear with no phrase is named by its label, quoted.
+    assert '"cam-a"' in sa.listening_posts({"cam-a": feeds.Place(None, True)})
+
+
+def test_driveway_is_allowed_only_by_a_place_phrase():
+    assert sa.allow_driveway(HOUSE) is True
+    assert sa.allow_driveway({"w": feeds.Place("the window", True)}) is False
+    assert sa.allow_driveway({}) is False
+
+
+def test_the_rhythm_prompt_names_its_lede_and_the_listening_posts():
+    stats = sa.build_stats([at(2026, 7, 18, 7)], [], at(2026, 7, 19, 12))
+    prompt = sa.rhythm_prompt("Northern Cardinal", None, stats, HOUSE)
+    assert "Where your reader listens: Your reader listens from 3" in prompt
+    assert ("Open the note with this fact:\n" + sa.rhythm_lede(stats, HOUSE)
+            in prompt)
+    # The lede is said once, not again among the other facts.
+    assert prompt.count(sa.rhythm_lede(stats, HOUSE)) == 1
+
+
+def test_the_weather_prompt_never_mentions_a_microphone_place():
+    # The first desk run, handed the posts, invented per-mic weather claims.
+    conditions = sa.bucket_rates({"clear": 60, "cloudy": 20},
+                                 {"clear": 30.0, "cloudy": 40.0})
+    stats = {"active_hours": [7], "weather": {
+        "visits_matched": 80, "enough": True, "conditions": conditions,
+        "temperature": []}}
+    prompt = sa.weather_prompt("Northern Cardinal", stats, HOUSE)
+    assert "back of the house" not in prompt
+    assert "do not mention any microphone or place" in prompt
+    assert "Open the note with this finding:\n- Under clear skies" in prompt
+
+
+def test_the_weather_lede_needs_a_real_solid_story():
+    thin = sa.build_stats([at(2026, 7, 18, 7)], [], at(2026, 7, 19, 12))
+    assert sa.weather_lede(thin) is None                 # too few matched
+    flat = sa.bucket_rates({"clear": 30, "cloudy": 40},
+                           {"clear": 30.0, "cloudy": 40.0})
+    stats = {"active_hours": [7], "weather": {
+        "visits_matched": 70, "enough": True, "conditions": flat,
+        "temperature": []}}
+    assert sa.weather_lede(stats) is None                # about average
+
+
+def test_describe_weather_skips_unknown_and_leads_with_the_strongest():
+    conditions = sa.bucket_rates({"clear": 60, "cloudy": 20, "unknown": 5},
+                                 {"clear": 30.0, "cloudy": 40.0,
+                                  "unknown": 10.0})
+    stats = {"active_hours": [7],
+             "weather": {"visits_matched": 85, "enough": True,
+                         "conditions": conditions, "temperature": []}}
+    text = sa.describe_weather(stats)
+    assert "unknown" not in text
+    findings = [l for l in text.splitlines() if l.startswith("- ")]
+    # clear runs +65%, cloudy -59%: the bigger effect leads.
+    assert findings[0].startswith("- Under clear skies")
+    assert [f["bucket"] for _, f in sa.weather_findings(stats)] == \
+        ["clear", "cloudy"]
+
+
+def test_the_plain_record_passes_its_own_validator():
+    """The fallback is what gets stored when the model fails twice; it must
+    never fail the very check that triggered it."""
+    from listener import notes_validate
+    base = at(2026, 7, 1, 7)
+    visits = [base + d * 86400 + (d % 3) * 3600 for d in range(30)]
+    obs_rows = []
+    for d in range(30):
+        for h in range(24):
+            obs_rows.append(obs(base - 7 * 3600 + d * 86400 + h * 3600,
+                                "Clear" if d % 2 else "Clouds"))
+    stats = sa.build_stats(visits, obs_rows, base + 31 * 86400,
+                           sources={"house-rear": 25, "Warbler32": 5})
+    r_prompt = sa.rhythm_prompt("Robin", None, stats, HOUSE)
+    w_prompt = sa.weather_prompt("Robin", stats, HOUSE)
+    plain_r = sa.plain_rhythm(stats, HOUSE)
+    plain_w = sa.plain_weather(stats)
+    assert "30 visits on record since July 1, 2026." in plain_r
+    assert "Heard most often by the microphone at the back of the house" in plain_r
+    assert notes_validate.validate(plain_r, r_prompt, True) == []
+    assert notes_validate.validate(plain_w, w_prompt, True) == []
+    thin = sa.build_stats([base], [], base + 3600)
+    assert "too few to call a pattern" in sa.plain_weather(thin)
+
+
+class ScriptedOllama:
+    """Answers each complete() with the next scripted reply."""
+    model = "gemma3:12b"
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def complete(self, system, prompt, **kw):
+        self.calls.append(prompt)
+        reply = self.replies.pop(0) if self.replies else ANSWER
+        return answer(prompt) if reply is ANSWER else reply
+
+
+LEAK = "'Evidence: solid' -- they love mornings."
+
+
+def test_a_rule_breaking_draft_is_retried_once_with_the_violations(conn):
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    llm = ScriptedOllama(LEAK, ANSWER, "Rain or shine.")
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, places=HOUSE,
+                                   now=at(2026, 8, 1, 12))
+    assert status == "written"
+    assert len(llm.calls) == 3                      # draft, retry, weather
+    assert "Your previous draft broke these rules" in llm.calls[1]
+    assert "Evidence:" in llm.calls[1]
+    row = conn.execute("SELECT * FROM species_analysis").fetchone()
+    assert row["rhythm_text"].startswith("Some prose, ")
+    assert row["weather_text"] == "Rain or shine."   # no weather lede here
+    assert row["fallback"] == 0
+
+
+def test_two_bad_drafts_store_the_plain_record_and_say_so(conn):
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    llm = ScriptedOllama(LEAK, LEAK, "Rain or shine.")
+    sa.analyze_species(conn, "A sci", "Robin", ollama=llm, weather_path=None,
+                       places=HOUSE, now=at(2026, 8, 1, 12))
+    assert len(llm.calls) == 3                      # never a third rhythm try
+    row = conn.execute("SELECT * FROM species_analysis").fetchone()
+    assert row["rhythm_text"].startswith("12 visits on record since")
+    assert row["fallback"] == 1
+
+
+def test_a_model_dying_mid_retry_is_llm_down_and_touches_nothing(conn):
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    note(conn, "A sci", watermark=3, version=1)
+    llm = ScriptedOllama(LEAK, None)
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, places=HOUSE, force=True)
+    assert status == "llm-down"
+    assert conn.execute("SELECT rhythm_text FROM species_analysis"
+                        ).fetchone()["rhythm_text"] == "r"
+
+
+def test_renaming_a_place_is_a_changed_input(conn):
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    llm = ScriptedOllama()
+    now = at(2026, 8, 1, 12)
+    sa.analyze_species(conn, "A sci", "Robin", ollama=llm, weather_path=None,
+                       places=HOUSE, now=now)
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, places=HOUSE, now=now)
+    assert status == "current"
+    moved = dict(HOUSE, **{"house-rear": feeds.Place("the patio", True)})
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
+                                   weather_path=None, places=moved, now=now)
+    assert status == "written"
+
+
+def test_due_step_grows_with_the_record():
+    assert sa.due_step(20) == 5
+    assert sa.due_step(3400) == 340
+    assert sa.due_step(51) == 6                     # ceil, never rounds down
+    assert sa.due_step(30, step=20) == 20
+
+
+def test_a_big_regular_does_not_regenerate_on_five_visits(conn):
+    base = at(2026, 7, 1, 7)
+    seed(conn, "A sci", "Jay", [base + i * 120 for i in range(400)])
+    note(conn, "A sci", watermark=395)
+    assert sa.worklist(conn) == []                  # 5 new of 400: not due
+    seed(conn, "A sci", "Jay", [base + 10**6 + i * 120 for i in range(40)])
+    assert [w[0] for w in sa.worklist(conn)] == ["A sci"]   # 45 >= 44
+
+
+def test_purge_drops_only_unreachable_rows(conn):
+    base = at(2026, 7, 18, 7)
+    seed(conn, "Frozen sci", "Thrasher", [base])               # 1 visit
+    note(conn, "Frozen sci", watermark=1, version=1, model="gemma3:27b")
+    seed(conn, "Kept sci", "Wren", [base])                     # refreshed
+    note(conn, "Kept sci", watermark=1, version=sa.PROMPT_VERSION)
+    seed(conn, "Big sci", "Jay", spaced_visits(5))             # above floor
+    note(conn, "Big sci", watermark=5, version=1)
+    assert sa.purge_stale(conn) == ["Frozen sci"]
+    left = {r["species_sci"] for r in
+            conn.execute("SELECT species_sci FROM species_analysis")}
+    assert left == {"Kept sci", "Big sci"}
+    assert sa.purge_stale(conn) == []                          # idempotent
+
+
+def test_audit_reports_stored_violations(conn):
+    import json
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    stats = sa.build_stats(spaced_visits(12), [], at(2026, 8, 1, 12))
+    conn.execute(
+        "INSERT INTO species_analysis (species_sci, rhythm_text, weather_text,"
+        " stats_json, visits_watermark, model, generated_ts) VALUES"
+        " (?,?,?,?,?,?,?)",
+        ("A sci", "Our microphone heard 99 visits.", "Fine weather.",
+         json.dumps(stats), 12, "m", 1))
+    conn.commit()
+    found = sa.audit(conn, places=HOUSE)
+    assert len(found) == 1
+    sci, block, problems = found[0]
+    assert (sci, block) == ("A sci", "rhythm")
+    assert any("99" in p for p in problems)
+    assert any("Our microphone" in p for p in problems)
 
 
 def test_connect_upgrades_a_pre217_file(tmp_path):

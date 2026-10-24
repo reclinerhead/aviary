@@ -44,7 +44,8 @@
 #   4. Field-notes pass -- probe the MERLE_OLLAMA candidates in preference
 #      order via /api/tags (liveness + which models the host holds, one
 #      cheap call); the first that answers wins; drain a bounded slice of
-#      species_analysis.worklist() through its fingerprint gate.
+#      species_analysis.worklist() through its fingerprint gate. First,
+#      with or without a host, purge the notes no gate can reach (#612).
 # The order is load-bearing, not cosmetic: rhythm_prompt() feeds the model
 # the profile's description, so profile-before-notes means a brand-new bird
 # has its background before its first note is written -- same tick; and
@@ -435,10 +436,40 @@ def drain_analysis(host, port, model, cap, now=None):
     return counts
 
 
+def run_purge():
+    """Delete the notes no gate can reach (#612, species_analysis.
+    purge_stale) -- before any host probe, because it needs no model. Quiet
+    when there is nothing to purge, and a store that doesn't exist yet is
+    never created here (a bare checkout stays bare)."""
+    path = species_analysis.db_path()
+    if not os.path.exists(path):
+        return []
+    conn = species_analysis.connect(path)
+    try:
+        if not has_table(conn, "sightings"):
+            return []
+        purged = species_analysis.purge_stale(conn)
+    finally:
+        conn.close()
+    for sci in purged:
+        print(f"[enrich] notes {sci}: purged (old prompt version, under the "
+              "visit floor -- the page shows no notes until it earns them)",
+              flush=True)
+    return purged
+
+
 def run_analysis_pass(now=None):
     """Probe the candidates in preference order; the first that answers gets
     this tick's slice. No host answering is a no-op that logs nothing --
     bluejay being off IS the designed steady state, not an incident."""
+    purged = run_purge()
+    counts = drain_first_host(now)
+    if purged:
+        counts["purged"] = len(purged)
+    return counts
+
+
+def drain_first_host(now=None):
     for i, (host, port) in enumerate(ollama_candidates()):
         cap = tick_cap(os.environ.get("MERLE_ENRICH_CAP", ""), i)
         if cap == 0:

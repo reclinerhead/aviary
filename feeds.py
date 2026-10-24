@@ -17,6 +17,16 @@
 # its required field, unknown keys (typo'd flags must not read as false),
 # non-boolean flags, and more than one naturalist feed.
 #
+# PLACES (issue #612): a feed may carry `place:`, the plain-English phrase
+# for where it listens ("the back of the house, over the driveway"), and the
+# file may carry a top-level `retired_sources:` map from a label that still
+# sits in the bird record's `source` column but no longer runs ("Warbler32",
+# the garage mic's first board) to its phrase. Both are optional and purely
+# descriptive -- no consumer dispatches on them; the field notes name the
+# yard with them instead of calling every microphone "the driveway". A
+# blank phrase, a non-string one, or a retired label that is also a live
+# feed is a config bug and raises like everything else here.
+#
 # Import cost: yaml only. `yaml` sits on every venv in the fleet including
 # the Pi's two-package one (test_import_boundary.py's PI_DEPS) -- the one
 # venv that needs a deploy step is Earl's separate py3.11 venv on pearl
@@ -40,7 +50,7 @@ CONSUMERS = ("earl", "naturalist")
 # an entry here plus dispatch in the consumers that can use it.
 REQUIRED_BY_KIND = {"rtsp": "url", "command": "cmd"}
 
-_ALLOWED_KEYS = {"kind", "url", "cmd"} | set(CONSUMERS)
+_ALLOWED_KEYS = {"kind", "url", "cmd", "place"} | set(CONSUMERS)
 
 
 class FeedsError(RuntimeError):
@@ -56,6 +66,17 @@ class Feed:
     cmd: str = None
     earl: bool = False
     naturalist: bool = False
+    place: str = None
+
+
+@dataclass(frozen=True)
+class Place:
+    """Where one `source` label listens from, for prose. `current` is True
+    for a feed Earl runs today (`earl: true`); a registry feed Earl no longer
+    runs (the rover) and every `retired_sources` entry are False. `phrase` is
+    None when the registry gives none -- callers fall back to the label."""
+    phrase: str = None
+    current: bool = False
 
 
 def redact_rtsp(url):
@@ -118,15 +139,18 @@ def _build(path, name, spec):
         if flag in spec and not isinstance(spec[flag], bool):
             raise FeedsError(f"{where}: {flag!r} must be true or false, "
                              f"got {spec[flag]!r}")
+    place = spec.get("place")
+    if "place" in spec and (not isinstance(place, str) or not place.strip()):
+        raise FeedsError(f"{where}: 'place' must be a non-empty phrase, "
+                         f"got {place!r}")
     return Feed(name=name, kind=kind,
                 url=spec.get("url"), cmd=spec.get("cmd"),
+                place=place.strip() if place else None,
                 **{flag: bool(spec.get(flag, False)) for flag in CONSUMERS})
 
 
-def load_feeds(path=None):
-    """The registry -> {name: Feed}, in file order, validated. Raises
-    FeedsError on anything malformed -- see the module header for the list."""
-    path = Path(path) if path is not None else registry_path()
+def _read(path):
+    """The parsed, shape-checked registry document (both readers' start)."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -139,6 +163,14 @@ def load_feeds(path=None):
             or not data["feeds"]:
         raise FeedsError(f"{path}: expected a top-level 'feeds:' mapping "
                          "with at least one feed")
+    return data
+
+
+def load_feeds(path=None):
+    """The registry -> {name: Feed}, in file order, validated. Raises
+    FeedsError on anything malformed -- see the module header for the list."""
+    path = Path(path) if path is not None else registry_path()
+    data = _read(path)
     feeds = {name: _build(path, name, spec)
              for name, spec in data["feeds"].items()}
     naturalists = [f.name for f in feeds.values() if f.naturalist]
@@ -147,6 +179,30 @@ def load_feeds(path=None):
                          f"naturalist ({naturalists}) -- the vision daemon "
                          "has exactly one video source")
     return feeds
+
+
+def places(path=None):
+    """Every source label the registry can name -> Place, live feeds first
+    in file order, then `retired_sources` (issue #612). A registry with
+    neither key answers each feed with phrase None -- callers render the
+    bare label, exactly as before places existed."""
+    path = Path(path) if path is not None else registry_path()
+    feeds = load_feeds(path)
+    out = {name: Place(phrase=f.place, current=f.earl)
+           for name, f in feeds.items()}
+    retired = _read(path).get("retired_sources") or {}
+    if not isinstance(retired, dict):
+        raise FeedsError(f"{path}: 'retired_sources' must be a mapping of "
+                         "source label to phrase")
+    for label, phrase in retired.items():
+        if label in feeds:
+            raise FeedsError(f"{path}: {label!r} is both a live feed and a "
+                             "retired source")
+        if not isinstance(phrase, str) or not phrase.strip():
+            raise FeedsError(f"{path}: retired source {label!r} needs a "
+                             f"non-empty phrase, got {phrase!r}")
+        out[label] = Place(phrase=phrase.strip(), current=False)
+    return out
 
 
 def feed(name, path=None):

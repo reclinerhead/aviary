@@ -16,6 +16,7 @@
 #      ssh waits on the kernel's 2-hour keepalive (issue #201).
 # =============================================================================
 
+import dataclasses
 import re
 import shlex
 
@@ -170,6 +171,69 @@ def test_redact_rtsp_masks_credentials_and_passes_restreams():
         "rtsp://pearl:8554/house-rear"
 
 
+# --- places (issue #612) -------------------------------------------------------
+
+def test_places_default_to_none_without_the_keys(tmp_path):
+    # A registry that predates #612 loads exactly as before: every feed has
+    # no phrase (callers fall back to the label) and nothing is retired.
+    path = write_registry(tmp_path, SAMPLE)
+    got = feeds.places(path)
+    assert list(got) == ["cam-a", "cam-b", "mic-c"]
+    assert all(p.phrase is None for p in got.values())
+    # current follows the earl flag: cam-b is in the registry but Earl
+    # doesn't run it, so prose must not call it a live microphone.
+    assert [k for k, p in got.items() if p.current] == ["cam-a", "mic-c"]
+
+
+def test_places_read_phrases_and_retired_sources(tmp_path):
+    path = write_registry(tmp_path, SAMPLE.replace(
+        "    earl: true\n    naturalist: true",
+        "    earl: true\n    naturalist: true\n    place: the back porch")
+        + "retired_sources:\n  old-mic: the old shed\n")
+    got = feeds.places(path)
+    assert got["cam-a"] == feeds.Place("the back porch", True)
+    assert got["old-mic"] == feeds.Place("the old shed", False)
+    assert list(got)[-1] == "old-mic"              # retired after live feeds
+    assert feeds.load_feeds(path)["cam-a"].place == "the back porch"
+
+
+@pytest.mark.parametrize("bad", ["''", "7", "[a, b]"])
+def test_a_blank_or_non_string_place_raises(tmp_path, bad):
+    path = write_registry(tmp_path,
+                          "feeds:\n  f:\n    kind: rtsp\n    url: rtsp://x/f\n"
+                          f"    place: {bad}\n")
+    with pytest.raises(feeds.FeedsError, match="place"):
+        feeds.load_feeds(path)
+
+
+def test_a_retired_label_that_is_still_live_raises(tmp_path):
+    path = write_registry(tmp_path, SAMPLE
+                          + "retired_sources:\n  cam-a: the porch\n")
+    with pytest.raises(feeds.FeedsError, match="both a live feed"):
+        feeds.places(path)
+
+
+def test_a_retired_source_needs_a_phrase(tmp_path):
+    path = write_registry(tmp_path, SAMPLE + "retired_sources:\n  old: ''\n")
+    with pytest.raises(feeds.FeedsError, match="non-empty phrase"):
+        feeds.places(path)
+
+
+def test_every_shipped_registry_names_every_live_ear():
+    """The field notes call each microphone by its phrase; a live ear with
+    no phrase would be named by its raw label ("house-rear") on the page."""
+    root = feeds.DEFAULT_PATH.parent
+    for name in ("feeds.yml", "feeds.station.yml", "feeds.kestrel.yml"):
+        got = feeds.places(root / name)
+        unnamed = [k for k, p in got.items() if p.current and not p.phrase]
+        assert unnamed == [], (name, unnamed)
+    house = feeds.places(feeds.DEFAULT_PATH)
+    # The garage trial board's rows (Sep 1 - Oct 13, 2026) are still in the
+    # house record and must be named rightly, as a retired post.
+    assert house["Warbler32"].current is False
+    assert house["rover"].current is False
+
+
 # --- the SHIPPED registry -----------------------------------------------------
 
 def test_shipped_registry_is_valid_and_names_the_house():
@@ -248,9 +312,12 @@ def test_shipped_kestrel_registry_is_two_ears():
     assert [f.name for f in feeds.feeds_for("earl", kestrel_path)] == \
         ["window-mic", "house-rear"]
     assert not any(f.naturalist for f in kestrel.values())
-    # The front ear is the shared station entry exactly, not a fork of it.
+    # The front ear is the shared station entry exactly, not a fork of it --
+    # in every CAPTURE field. The place phrase (#612) is the one honest
+    # difference: birdhouse's mic is in a window, kestrel's under an eave.
     station = feeds.load_feeds(root / "feeds.station.yml")
-    assert kestrel["window-mic"] == station["window-mic"]
+    assert dataclasses.replace(kestrel["window-mic"], place=None) == \
+        dataclasses.replace(station["window-mic"], place=None)
     rear = kestrel["house-rear"]
     assert rear.kind == "command"
     argv = shlex.split(rear.cmd)

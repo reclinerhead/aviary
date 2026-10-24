@@ -46,3 +46,4 @@ feeds:
     kind: command
     cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q -B 2000000
     earl: true
+    place: the window, facing the feeder

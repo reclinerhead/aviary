@@ -4,7 +4,15 @@
 // node:sqlite, read-only per request, quiet empties, no default path.
 //
 // GET /aviary/analysis/<species_sci>
-//   -> { rhythm, weather, stats, generated_ts, model, visits_watermark } | nulls
+//   -> { rhythm, weather, stats, generated_ts, model, visits_watermark,
+//        fallback } | nulls
+//
+// `fallback` (#612) is true when the pass stored the plain record because
+// the model's drafts broke the validator twice. Read with SELECT * rather
+// than by name so a store whose pass hasn't added the column yet still
+// answers (deploy order: the MCC may rebuild before the loop's next tick
+// upgrades the table) -- a missing column reads as false, not as an error
+// that would blank every note on the page.
 //
 // `stats` (#220) is the pass's stored stats_json, parsed -- the exact
 // numbers the prose was written from, shipped so the margin figures and the
@@ -22,9 +30,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 
-const SQL =
-  "SELECT rhythm_text, weather_text, stats_json, model, visits_watermark," +
-  " generated_ts FROM species_analysis WHERE species_sci = ?";
+const SQL = "SELECT * FROM species_analysis WHERE species_sci = ?";
 
 type Body = {
   rhythm: string | null;
@@ -33,6 +39,7 @@ type Body = {
   model: string | null;
   visits_watermark: number | null;
   generated_ts: number | null;
+  fallback: boolean;
 };
 
 const EMPTY: Body = {
@@ -42,6 +49,7 @@ const EMPTY: Body = {
   model: null,
   visits_watermark: null,
   generated_ts: null,
+  fallback: false,
 };
 
 /** The stored blob, or null -- a row predating stats, or a corrupt one,
@@ -85,6 +93,7 @@ export async function GET(
           model: string | null;
           visits_watermark: number;
           generated_ts: number;
+          fallback?: number | null; // absent on a pre-#612 table
         }
       | undefined;
     if (!row) return body(EMPTY);
@@ -95,6 +104,7 @@ export async function GET(
       model: row.model,
       visits_watermark: row.visits_watermark,
       generated_ts: row.generated_ts,
+      fallback: row.fallback === 1,
     });
   } catch {
     // A store predating the analysis pass has no such table -- the same
