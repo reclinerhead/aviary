@@ -2483,11 +2483,19 @@ describe("rare-return notice helpers (#549)", () => {
     expect(rareReturnNoticeId("Strix varia", nextDay)).not.toBe(a);
     expect(a.startsWith("rare_return:Strix varia:")).toBe(true);
   });
-  it("ordinal copy reads naturally", () => {
-    expect(rareReturnBody(2)).toBe("only its 2nd visit ever");
-    expect(rareReturnBody(3)).toBe("only its 3rd visit ever");
-    expect(rareReturnBody(4)).toBe("only its 4th visit ever");
-    expect(rareReturnBody(5)).toBe("only its 5th visit ever");
+  it("ordinal copy reads naturally, and says when the bird was first heard (#603)", () => {
+    expect(rareReturnBody(2, "Sep 2")).toBe(
+      "only its 2nd visit ever, first heard on Sep 2",
+    );
+    expect(rareReturnBody(3, "Sep 2")).toBe(
+      "only its 3rd visit ever, first heard on Sep 2",
+    );
+    expect(rareReturnBody(4, "Sep 2")).toBe(
+      "only its 4th visit ever, first heard on Sep 2",
+    );
+    expect(rareReturnBody(5, "Sep 2, 2025")).toBe(
+      "only its 5th visit ever, first heard on Sep 2, 2025",
+    );
     expect(ordinal(1)).toBe("1st");
     expect(ordinal(11)).toBe("11th");
     expect(ordinal(12)).toBe("12th");
@@ -2496,17 +2504,21 @@ describe("rare-return notice helpers (#549)", () => {
     expect(ordinal(22)).toBe("22nd");
     expect(ordinal(103)).toBe("103rd");
   });
+  // The component owns locale formatting; the builder takes the formatter.
+  // A test's formatter echoes the epoch it was handed, so the body proves
+  // WHICH timestamp went in without touching a locale.
+  const echo = (ts: number) => `@${ts}`;
   it("builds the strip notice: the bird is the title, the stamp is the kind", () => {
     const e = {
-      ...entry("Dryocopus pileatus", "Pileated Woodpecker", 3, 1, 1, 0),
+      ...entry("Dryocopus pileatus", "Pileated Woodpecker", 3, 1, 1, 1_690_000_000),
       last_ts: 1_700_000_000,
       image_file: "Dryocopus_pileatus.jpg",
     } as RosterEntry;
-    expect(rareReturnNotice(e)).toEqual({
+    expect(rareReturnNotice(e, echo)).toEqual({
       id: rareReturnNoticeId("Dryocopus pileatus", 1_700_000_000),
       kind: "rare_return",
       title: "Pileated Woodpecker",
-      body: "only its 3rd visit ever",
+      body: "only its 3rd visit ever, first heard on @1690000000",
       href: "/aviary/Dryocopus%20pileatus",
       species_sci: "Dryocopus pileatus",
       species_common: "Pileated Woodpecker",
@@ -2514,10 +2526,27 @@ describe("rare-return notice helpers (#549)", () => {
       ts: 1_700_000_000,
     });
   });
+  it("the first-heard day is first_ts, never the return (#603); the title stays the common name alone", () => {
+    const e = {
+      ...entry("Columba livia", "Rock Pigeon", 5, 1, 1, 1_690_000_000),
+      last_ts: 1_700_000_000,
+    } as RosterEntry;
+    const seen: number[] = [];
+    const n = rareReturnNotice(e, (ts) => {
+      seen.push(ts);
+      return "Sep 2";
+    });
+    expect(seen).toEqual([1_690_000_000]);
+    expect(n.body).toBe("only its 5th visit ever, first heard on Sep 2");
+    expect(n.title).toBe("Rock Pigeon");
+    expect(n.species_sci).toBe("Columba livia");
+  });
   it("the moment is the visit's opening, null when the roster has none (#602)", () => {
     const e = entry("Dryocopus pileatus", "Pileated Woodpecker", 3) as RosterEntry;
-    expect(rareReturnNotice({ ...e, last_ts: 1_700_000_500 }).ts).toBe(1_700_000_500);
-    expect(rareReturnNotice({ ...e, last_ts: null }).ts).toBeNull();
+    expect(rareReturnNotice({ ...e, last_ts: 1_700_000_500 }, echo).ts).toBe(
+      1_700_000_500,
+    );
+    expect(rareReturnNotice({ ...e, last_ts: null }, echo).ts).toBeNull();
   });
 });
 
@@ -2717,64 +2746,67 @@ describe("desk-check samples: ?notice=<kinds> (#447)", () => {
   const now = 1_700_000_000;
   const yard = [
     { ...entry("Zz", "Zebra Finch", 40, 0, 1, 0), image_file: null },
-    { ...entry("Cc", "Carolina Wren", 300, 0, 1, 0), image_file: "Cc.jpg", best_clip: "c.wav", best_confidence: 0.91 },
+    { ...entry("Cc", "Carolina Wren", 300, 0, 1, 1_650_000_000), image_file: "Cc.jpg", best_clip: "c.wav", best_confidence: 0.91 },
     { ...entry("Aa", "Acadian Flycatcher", 1, 0, 0, 0), image_file: null },
   ] as RosterEntry[];
+  const echo = (ts: number) => `@${ts}`;
 
   it("no flag, no samples", () => {
-    expect(demoNoticesFor(null, yard, now)).toEqual([]);
-    expect(demoNoticesFor("", yard, now)).toEqual([]);
+    expect(demoNoticesFor(null, yard, now, echo)).toEqual([]);
+    expect(demoNoticesFor("", yard, now, echo)).toEqual([]);
   });
-  it("dresses the first species BY NAME that has a portrait", () => {
-    const [n] = demoNoticesFor("rare_return", yard, now);
+  it("dresses the first species BY NAME that has a portrait, keeping its real first-heard day (#603)", () => {
+    const [n] = demoNoticesFor("rare_return", yard, now, echo);
     expect(n).toMatchObject({
       id: "demo:rare_return",
       kind: "rare_return",
       title: "Carolina Wren",
-      body: "only its 3rd visit ever",
+      body: "only its 3rd visit ever, first heard on @1650000000",
       species_sci: "Cc",
       portrait_file: "Cc.jpg",
     });
   });
   it("falls back to the first by name when no portrait exists, and to nothing on an empty roster", () => {
     const bare = yard.map((e) => ({ ...e, image_file: null }));
-    expect(demoNoticesFor("new_best", bare, now)[0]?.species_common).toBe(
+    expect(demoNoticesFor("new_best", bare, now, echo)[0]?.species_common).toBe(
       "Acadian Flycatcher",
     );
-    expect(demoNoticesFor("new_best", [], now)).toEqual([]);
+    expect(demoNoticesFor("new_best", [], now, echo)).toEqual([]);
     // The bare shell needs no species: the profile page can still show it.
-    expect(demoNoticesFor("demo", [], now).map((n) => n.kind)).toEqual(["demo"]);
+    expect(demoNoticesFor("demo", [], now, echo).map((n) => n.kind)).toEqual([
+      "demo",
+    ]);
   });
   it("new_best borrows the real champion when there is one, invents one otherwise", () => {
-    expect(sampleNotice("new_best", yard[1], now)).toMatchObject({
+    expect(sampleNotice("new_best", yard[1], now, echo)).toMatchObject({
       id: "demo:new_best",
       kind: "new_best",
       title: "We've captured a new best recording of the Carolina Wren!",
       body: "confidence 0.91 · press play to hear it",
       clip: "c.wav",
     });
-    expect(sampleNotice("new_best", yard[0], now)?.body).toBe(
+    expect(sampleNotice("new_best", yard[0], now, echo)?.body).toBe(
       "confidence 0.97 · press play to hear it",
     );
-    expect(sampleNotice("bogus", yard[0], now)).toBeNull();
-    expect(sampleNotice("rare_return", null, now)).toBeNull();
+    expect(sampleNotice("bogus", yard[0], now, echo)).toBeNull();
+    expect(sampleNotice("rare_return", null, now, echo)).toBeNull();
   });
   it("`all` is every kind in rank order, and a list dedupes", () => {
-    expect(demoNoticesFor("all", yard, now).map((n) => n.kind)).toEqual([
+    expect(demoNoticesFor("all", yard, now, echo).map((n) => n.kind)).toEqual([
       ...DEMO_NOTICE_KINDS,
     ]);
     expect(
-      demoNoticesFor("new_best, new_best,demo", yard, now).map((n) => n.id),
+      demoNoticesFor("new_best, new_best,demo", yard, now, echo).map((n) => n.id),
     ).toEqual(["demo:new_best", "demo:announcement-strip"]);
   });
   it("every sample is stamped `now`, so the flag desk-checks the moment line (#602)", () => {
     for (const kind of DEMO_NOTICE_KINDS) {
-      expect(sampleNotice(kind, yard[1], now)?.ts).toBe(now);
+      expect(sampleNotice(kind, yard[1], now, echo)?.ts).toBe(now);
     }
   });
   it("sample ids never collide with a real notice's dismiss key", () => {
     const real = newBestNotice({ entry: yard[1], slot: 1, clip: "c.wav", confidence: 0.91 });
-    const sample = sampleNotice("new_best", yard[1], now);
+    const sample = sampleNotice("new_best", yard[1], now, echo);
     expect(sample?.id).not.toBe(real.id);
   });
   it("undismissNotice forgets a dismissal", () => {

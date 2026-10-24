@@ -159,22 +159,26 @@ const stampOf = (ts: number, midnight: number | null) =>
   midnight !== null && ts >= midnight
     ? timeOf(ts)
     : `${dayOf(ts)} · ${timeOf(ts)}`;
-/** The announcement strip's moment line (#602): date AND time, always --
- * a notice can sit under the tab bar past midnight, so stampOf's time-alone
- * shortcut for today would mislead -- with the year only when it isn't this
- * one (dayLabelOf's rule). Render-time locale calls are safe: the strip
- * selects its notice post-mount and never takes part in hydration. */
-const whenOf = (ts: number) => {
+/** dayOf with the year only when it isn't this one (dayLabelOf's rule):
+ * the strip's day vocabulary, shared by its moment line and the rare
+ * visitor's first-heard day (#603) -- a yard listening since last year has
+ * rare birds first heard last year, and "Sep 2" alone would lie by a year.
+ * Render-time `new Date()` is safe here: the strip selects its notice
+ * post-mount and never takes part in hydration. */
+const dayWithYearOf = (ts: number) => {
   const d = new Date(ts * 1000);
-  const day = d.toLocaleDateString([], {
+  return d.toLocaleDateString([], {
     month: "short",
     day: "numeric",
     ...(d.getFullYear() === new Date().getFullYear()
       ? {}
       : { year: "numeric" as const }),
   });
-  return `${day} · ${timeOf(ts)}`;
 };
+/** The announcement strip's moment line (#602): date AND time, always --
+ * a notice can sit under the tab bar past midnight, so stampOf's time-alone
+ * shortcut for today would mislead. */
+const whenOf = (ts: number) => `${dayWithYearOf(ts)} · ${timeOf(ts)}`;
 /** The archive's day headers (#211): weekday + date, the year only when it
  * isn't this one. Render-time locale calls are fine here for the same reason
  * stampOf's are -- archive rows only exist client-side. */
@@ -1164,11 +1168,26 @@ function AviaryNoticeStrip({
       )}
       <span className="min-w-0 flex-1">
         <span className="stamp block text-xs text-notice">{kindLabel}</span>
-        <span
-          className="mt-0.5 block text-sm text-ink"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
-          {notice.title}
+        {/* The name line (#603): the title in the display face, then -- on
+            the rare visitor, whose title IS the bird -- the scientific name
+            in parentheses in the page's sci-name voice (the New Arrivals
+            card's italic dim mono), a field guide's "Rock Pigeon (Columba
+            livia)". The new best's title is a sentence, and a binomial
+            after its exclamation mark read as a stray (the owner's call on
+            the PR), so the gate is the kind, not species_sci. It wraps
+            on a phone rather than truncating (the sci name is the part a
+            cut would take), and the binomial drops to the next line WHOLE
+            rather than splitting mid-name: nowrap on a ~25-char 11px span
+            is always narrower than the card's text column. The
+            parenthetical is render-side so `title` stays the common name
+            alone (dismiss ids, the link's name). */}
+        <span className="mt-0.5 block text-sm text-ink">
+          <span style={{ fontFamily: "var(--font-display)" }}>{notice.title}</span>
+          {notice.kind === "rare_return" && notice.species_sci ? (
+            <span className="ml-1.5 whitespace-nowrap text-[11px] italic text-inkdim">
+              ({notice.species_sci})
+            </span>
+          ) : null}
         </span>
         {notice.body ? (
           <span className="mt-0.5 block text-xs text-inkdim">{notice.body}</span>
@@ -1243,6 +1262,7 @@ function useAviaryNoticeStrip(
           flag,
           samples,
           Math.floor(Date.now() / 1000),
+          dayWithYearOf,
         )) {
           if (!undismissed.current.has(d.id)) {
             undismissNotice(localStorage, d.id);
@@ -1661,7 +1681,7 @@ export function Aviary({
             rosterEntries,
             nowTs,
             archiveStats(rosterEntries, nowTs).since,
-          ).map(rareReturnNotice);
+          ).map((e) => rareReturnNotice(e, dayWithYearOf));
     return [...rare, ...newBestQueue];
   }, [rosterEntries, nowTs, newBestQueue]);
   const { notice, onDismiss } = useAviaryNoticeStrip(noticeQueue, rosterEntries);
