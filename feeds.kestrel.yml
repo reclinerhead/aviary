@@ -7,7 +7,8 @@
 # never carry a Kathy-only feed (a worker there could never connect).
 #
 # window-mic is feeds.station.yml's entry exactly (test_feeds.py holds them
-# equal): the Play! 3 + Movo lav under the front eave. See that file's header
+# equal in everything but its `place:` phrase, #612): the Play! 3 + Movo lav
+# under the front eave. See that file's header
 # before touching the device name or the -B buffer (#607).
 #
 # house-rear is the Warbler32 under the rear eave (#512 built it). It is found
@@ -31,7 +32,9 @@ feeds:
     kind: command
     cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q -B 2000000
     earl: true
+    place: the front of the house, under the eave
   house-rear:
     kind: command
     cmd: /home/todd/earl-venv/bin/python -m listener.mic_by_mac 90:70:69:1a:1c:a8
     earl: true
+    place: the back of the house, under the eave

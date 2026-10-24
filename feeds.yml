@@ -31,6 +31,14 @@
 #   naturalist: true  the vision daemon's video source (exactly one feed;
 #                     feeds.py enforces it).
 #
+# Descriptive (issue #612):
+#   place: "..."      where this feed listens, in plain English, worded to
+#                     read after "the microphone at ..." -- the Aviary's
+#                     field notes call each microphone that way.
+#   retired_sources:  (top level) a label still in the bird record's
+#                     `source` column whose feed is gone, mapped to its
+#                     phrase, so old detections are named rightly too.
+#
 # MERLE_FEEDS points a process at an alternate registry file -- tests, a dev
 # variant, or the break-glass direct-camera file for a Frigate that's down
 # (see docs/guide/earl.md).
@@ -45,6 +53,7 @@ feeds:
     url: rtsp://nvr.lan:8554/house-rear
     earl: true
     naturalist: true
+    place: the back of the house, over the driveway
 
   # The front-door camera (192.168.1.173, added by #269). Audio only for
   # now -- deliberately NOT a naturalist feed; squirrel/turkey detection
@@ -53,6 +62,7 @@ feeds:
     kind: rtsp
     url: rtsp://nvr.lan:8554/house-front
     earl: true
+    place: the front of the house, by the front door
 
   # The garage Warbler32 (#589), mounted at the rear of the garage: an
   # ESP32-S3 + USB lav streaming rtsp://<ip>/audio. Found by its MAC on every
@@ -67,6 +77,7 @@ feeds:
     kind: command
     cmd: /home/todd/earl-venv/bin/python -m listener.mic_by_mac 90:70:69:1a:1b:fc
     earl: true
+    place: the back of the garage
 
   # The rover's own USB-camera mic, arecord piped over ssh (Phase 0 D5: the
   # JMTek dongle is silent; plughw:0,0 is the camera). BatchMode + the
@@ -88,3 +99,10 @@ feeds:
       -o ServerAliveCountMax=3 todd@merle
       arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw -q
     earl: false
+    place: the rover, parked in the driveway
+
+# Labels still in the bird record whose feed is gone (issue #612). The
+# garage trial board (#512) published as `Warbler32` from Sep 1 to Oct 13,
+# 2026, and carried the Barred Owl almost alone; garage-rear replaced it.
+retired_sources:
+  Warbler32: the back of the garage

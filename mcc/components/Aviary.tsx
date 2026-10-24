@@ -2308,8 +2308,12 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
       </section>
     );
   const stats = analysis?.stats ?? null;
+  // The plain record (#612) is the facts set down without the naturalist's
+  // voice, so the dateline names that rather than a model that didn't write
+  // it. Same stamp, same slot -- only the words change.
+  const author = analysis?.fallback ? "plain record" : analysis?.model;
   const dateline = analysis?.generated_ts
-    ? `${dayOf(analysis.generated_ts)}${analysis.model ? ` · ${analysis.model}` : ""}`
+    ? `${dayOf(analysis.generated_ts)}${author ? ` · ${author}` : ""}`
     : null;
   return (
     // overflow-x-clip is the page-never-scrolls-sideways guard for the weather
@@ -2675,6 +2679,9 @@ type Analysis = {
   stats: AnalysisStats | null;
   model: string | null;
   generated_ts: number | null;
+  /** #612: true when the pass stored the plain record because the model
+   * broke the rules twice -- the dateline says so instead of the model. */
+  fallback: boolean;
 };
 
 export function SpeciesProfile({
