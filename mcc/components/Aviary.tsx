@@ -112,6 +112,12 @@ import {
   weatherChips,
   weatherChipExplain,
   yardRecords,
+  refreshUrl,
+  refreshStep,
+  refreshLabel,
+  REFRESH_HOLD_S,
+  type RefreshEvent,
+  type RefreshUi,
 } from "@/lib/aviary";
 import { VisitsChart } from "@/components/VisitsChart";
 
@@ -2284,28 +2290,49 @@ export function Aviary({
  * signature -- notes in a book, not columns in a panel. Prose written by the
  * analysis pass on pearl and merely read here -- nothing generates at render
  * time, ever. The no-notes empty state keeps the pre-#220 panel footprint
- * exactly, so day one still can't shift the page. */
-function FieldNotes({ analysis }: { analysis: Analysis | null }) {
+ * exactly, so day one still can't shift the page.
+ *
+ * Under the spread, on a box that can run it (`refreshable`, #613), one
+ * line offers "write a fresh entry": it asks the server to run the pass's
+ * own --refresh for this bird -- still the pass writing, never this page --
+ * and swaps the new notes in when they land. The line is the page's last
+ * element, so its arrival with the payload moves nothing above it, and
+ * only its words change between states. */
+function FieldNotes({
+  analysis,
+  sci,
+  onNotes,
+}: {
+  analysis: Analysis | null;
+  sci: string;
+  onNotes: (a: Analysis) => void;
+}) {
   const has = analysis?.rhythm || analysis?.weather;
+  const refresh = analysis?.refreshable ? (
+    <RefreshLine sci={sci} onNotes={onNotes} />
+  ) : null;
   if (!has)
     return (
-      <section className="panel mt-4 rounded-sm border border-line bg-panel">
-        <div className="flex items-baseline justify-between gap-3 px-4 pb-2 pt-3">
-          <h2
-            className="text-lg text-ink"
-            style={{ fontFamily: "var(--font-display)" }}
-          >
-            Field Notes
-          </h2>
-        </div>
-        <div className="grid min-h-[120px] gap-5 px-4 pb-4">
-          <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
-            <span className="stamp px-6 text-center text-xs text-inkfaint">
-              no field notes yet — they arrive with the analysis pass
-            </span>
+      <>
+        <section className="panel mt-4 rounded-sm border border-line bg-panel">
+          <div className="flex items-baseline justify-between gap-3 px-4 pb-2 pt-3">
+            <h2
+              className="text-lg text-ink"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Field Notes
+            </h2>
           </div>
-        </div>
-      </section>
+          <div className="grid min-h-[120px] gap-5 px-4 pb-4">
+            <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
+              <span className="stamp px-6 text-center text-xs text-inkfaint">
+                no field notes yet — they arrive with the analysis pass
+              </span>
+            </div>
+          </div>
+        </section>
+        {refresh}
+      </>
     );
   const stats = analysis?.stats ?? null;
   // The plain record (#612) is the facts set down without the naturalist's
@@ -2357,7 +2384,97 @@ function FieldNotes({ analysis }: { analysis: Analysis | null }) {
           dateline={dateline}
         />
       </div>
+      {refresh}
     </section>
+  );
+}
+
+/** The "write a fresh entry" line (#613). One right-aligned stamp button in
+ * the page's operator chrome (the `remove species` vocabulary: faint ink, a
+ * hairline border that brightens on hover); its height is fixed and only
+ * its words change, so no state moves anything. The state machine is
+ * `refreshStep` in lib/aviary.ts; this component only wires it to the
+ * route: POST to start, poll the job every 3 s while writing, refetch the
+ * notes on "done", tick for the deadline and the failure hold. */
+function RefreshLine({
+  sci,
+  onNotes,
+}: {
+  sci: string;
+  onNotes: (a: Analysis) => void;
+}) {
+  const [ui, setUi] = useState<RefreshUi>({ kind: "idle" });
+  const step = useCallback(
+    (e: RefreshEvent) =>
+      setUi((s) => refreshStep(s, e, Math.floor(Date.now() / 1000))),
+    [],
+  );
+
+  const start = () => {
+    step({ type: "click" });
+    fetch(refreshUrl(sci), { method: "POST" })
+      .then((r) => {
+        if (r.status !== 202) step({ type: "refused", busy: r.status === 409 });
+      })
+      .catch(() => step({ type: "refused", busy: false }));
+  };
+
+  // While writing: poll the job; on "done" fetch the new notes FIRST and
+  // only then leave the writing state, so the label never says "write a
+  // fresh entry" over the old prose.
+  const writing = ui.kind === "writing";
+  useEffect(() => {
+    if (!writing) return;
+    let alive = true;
+    const timer = setInterval(() => {
+      step({ type: "tick" });
+      fetch(refreshUrl(sci), { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then(async (job: { state?: string } | null) => {
+          if (!alive || !job?.state) return;
+          if (job.state === "done") {
+            const a = await fetch(
+              `/aviary/analysis/${encodeURIComponent(sci)}`,
+              { cache: "no-store" },
+            ).then((r) => (r.ok ? (r.json() as Promise<Analysis>) : null));
+            if (!alive) return;
+            if (a) onNotes(a);
+            step({ type: "status", state: "done" });
+          } else if (job.state === "failed") {
+            step({ type: "status", state: "failed" });
+          }
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [writing, sci, onNotes, step]);
+
+  // A failure's words stay for the hold, then the control comes back.
+  const failedAt = ui.kind === "failed" ? ui.at : null;
+  useEffect(() => {
+    if (failedAt === null) return;
+    const timer = setTimeout(
+      () => step({ type: "tick" }),
+      REFRESH_HOLD_S * 1000,
+    );
+    return () => clearTimeout(timer);
+  }, [failedAt, step]);
+
+  return (
+    <div className="mt-2 flex h-8 items-center justify-end">
+      <button
+        type="button"
+        disabled={ui.kind !== "idle"}
+        onClick={start}
+        aria-live="polite"
+        className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:hover:border-line disabled:hover:text-inkfaint"
+      >
+        {refreshLabel(ui)}
+      </button>
+    </div>
   );
 }
 
@@ -2682,6 +2799,8 @@ type Analysis = {
   /** #612: true when the pass stored the plain record because the model
    * broke the rules twice -- the dateline says so instead of the model. */
   fallback: boolean;
+  /** #613: this box can run the on-demand refresh (the route says why). */
+  refreshable: boolean;
 };
 
 export function SpeciesProfile({
@@ -3432,7 +3551,14 @@ export function SpeciesProfile({
         <>
           <StandingsBand roster={roster} sci={sci} openings={openings} now={now} />
           <VisitsChart sci={sci} />
-          <FieldNotes analysis={analysis} />
+          {/* keyed by bird: a refresh in flight belongs to the species it
+              was asked for, never to the next page's (#613) */}
+          <FieldNotes
+            key={sci}
+            analysis={analysis}
+            sci={sci}
+            onNotes={setAnalysis}
+          />
         </>
       )}
       {/* The confirm (#216): an overlay, never in-place expansion (house

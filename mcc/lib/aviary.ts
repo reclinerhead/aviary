@@ -2628,3 +2628,71 @@ export function stationBrandingFromEnv(): {
   const title = aviaryTitle(env["MERLE_AVIARY_TITLE"]);
   return { stationName, title };
 }
+
+
+// --- The on-demand field-notes refresh (#613) --------------------------------
+
+/** The refresh route for one species (scientific name, URL-encoded). */
+export function refreshUrl(sci: string): string {
+  return `/aviary/analysis/${encodeURIComponent(sci)}/refresh`;
+}
+
+/** Past this the page stops waiting: the server kills the pass at five
+ * minutes (lib/notesRefresh.ts), so half a minute more is only slack. */
+export const REFRESH_DEADLINE_S = 330;
+/** How long a failure message stays before the control is offered again. */
+export const REFRESH_HOLD_S = 8;
+
+export type RefreshUi =
+  | { kind: "idle" }
+  | { kind: "writing"; since: number }
+  | { kind: "failed"; reason: "busy" | "model"; at: number };
+
+export type RefreshEvent =
+  | { type: "click" }
+  | { type: "refused"; busy: boolean }
+  | { type: "status"; state: "idle" | "running" | "done" | "failed" }
+  | { type: "tick" };
+
+/** The control's state machine, pure (times in epoch seconds). idle →
+ * writing on click; writing → idle when the server says done (the caller
+ * refetches the notes on exactly that transition); writing → failed when
+ * the POST is refused, the server says failed, or the deadline passes;
+ * failed → idle after the hold. A server status of "idle" while writing
+ * (the MCC restarted mid-run) changes nothing -- the deadline settles it. */
+export function refreshStep(
+  s: RefreshUi,
+  e: RefreshEvent,
+  now: number,
+): RefreshUi {
+  switch (e.type) {
+    case "click":
+      return s.kind === "idle" ? { kind: "writing", since: now } : s;
+    case "refused":
+      return s.kind === "writing"
+        ? { kind: "failed", reason: e.busy ? "busy" : "model", at: now }
+        : s;
+    case "status":
+      if (s.kind !== "writing") return s;
+      if (e.state === "done") return { kind: "idle" };
+      if (e.state === "failed")
+        return { kind: "failed", reason: "model", at: now };
+      return s;
+    case "tick":
+      if (s.kind === "writing" && now - s.since > REFRESH_DEADLINE_S)
+        return { kind: "failed", reason: "model", at: now };
+      if (s.kind === "failed" && now - s.at >= REFRESH_HOLD_S)
+        return { kind: "idle" };
+      return s;
+  }
+}
+
+/** The words in the control's one reserved line, per state. */
+export function refreshLabel(s: RefreshUi): string {
+  if (s.kind === "writing") return "writing… (this can take a minute)";
+  if (s.kind === "failed")
+    return s.reason === "busy"
+      ? "another entry is being written, try again shortly"
+      : "couldn't reach a model";
+  return "write a fresh entry";
+}

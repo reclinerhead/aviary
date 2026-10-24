@@ -23,12 +23,21 @@
 // for the roster and would carry two paragraphs per species it never
 // renders. The profile is the only reader, and it wants exactly one bird's.
 //
-// **Nothing here generates anything.** The prose is produced by a pass, on
-// a schedule a human chooses; this route serves whatever the store holds and
+// **Nothing here generates anything.** The prose is produced by a pass --
+// the enrichment loop, or the pass's own CLI run on request through the
+// sibling refresh route (#613); this route serves whatever the store holds and
 // answers a quiet empty when the pass hasn't run for this species yet (the
 // honest day-one state, which the page renders as its own sentence).
 
+//
+// `refreshable` (#613): whether this box can run the on-demand refresh
+// (lib/notesRefresh.ts refreshConfig() -- a model, the pass's venv, the
+// checkout). False on every quiet empty where the store itself is missing;
+// true even for a bird with no notes yet, which is exactly when a human
+// most wants the button.
+
 import { DatabaseSync } from "node:sqlite";
+import { refreshConfig } from "@/lib/notesRefresh";
 
 const SQL = "SELECT * FROM species_analysis WHERE species_sci = ?";
 
@@ -40,6 +49,7 @@ type Body = {
   visits_watermark: number | null;
   generated_ts: number | null;
   fallback: boolean;
+  refreshable: boolean;
 };
 
 const EMPTY: Body = {
@@ -50,6 +60,7 @@ const EMPTY: Body = {
   visits_watermark: null,
   generated_ts: null,
   fallback: false,
+  refreshable: false,
 };
 
 /** The stored blob, or null -- a row predating stats, or a corrupt one,
@@ -84,6 +95,7 @@ export async function GET(
   } catch {
     return body(EMPTY);
   }
+  const refreshable = refreshConfig() !== null;
   try {
     const row = db.prepare(SQL).get(decodeURIComponent(species)) as
       | {
@@ -96,7 +108,7 @@ export async function GET(
           fallback?: number | null; // absent on a pre-#612 table
         }
       | undefined;
-    if (!row) return body(EMPTY);
+    if (!row) return body({ ...EMPTY, refreshable });
     return body({
       rhythm: row.rhythm_text,
       weather: row.weather_text,
@@ -105,11 +117,12 @@ export async function GET(
       visits_watermark: row.visits_watermark,
       generated_ts: row.generated_ts,
       fallback: row.fallback === 1,
+      refreshable,
     });
   } catch {
     // A store predating the analysis pass has no such table -- the same
     // quiet empty, not an error at a viewer.
-    return body(EMPTY);
+    return body({ ...EMPTY, refreshable });
   } finally {
     db.close();
   }
