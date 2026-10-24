@@ -8,7 +8,7 @@
 #
 # window-mic is feeds.station.yml's entry exactly (test_feeds.py holds them
 # equal): the Play! 3 + Movo lav under the front eave. See that file's header
-# before touching the device name.
+# before touching the device name or the -B buffer (#607).
 #
 # house-rear is the Warbler32 under the rear eave (#512 built it). It is found
 # by its MAC on every capture (re)start, never by address: no mDNS on the
@@ -29,7 +29,7 @@
 feeds:
   window-mic:
     kind: command
-    cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q
+    cmd: arecord -D plughw:CARD=S3,DEV=0 -f S16_LE -r 48000 -c 1 -t raw -q -B 2000000
     earl: true
   house-rear:
     kind: command
