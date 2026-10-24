@@ -1168,10 +1168,13 @@ function AviaryNoticeStrip({
       )}
       <span className="min-w-0 flex-1">
         <span className="stamp block text-xs text-notice">{kindLabel}</span>
-        {/* The name line (#603): the title in the display face, then the
-            scientific name in parentheses in the page's sci-name voice (the
-            New Arrivals card's italic dim mono) for any notice that carries
-            one -- a field guide's "Rock Pigeon (Columba livia)". It wraps
+        {/* The name line (#603): the title in the display face, then -- on
+            the rare visitor, whose title IS the bird -- the scientific name
+            in parentheses in the page's sci-name voice (the New Arrivals
+            card's italic dim mono), a field guide's "Rock Pigeon (Columba
+            livia)". The new best's title is a sentence, and a binomial
+            after its exclamation mark read as a stray (the owner's call on
+            the PR), so the gate is the kind, not species_sci. It wraps
             on a phone rather than truncating (the sci name is the part a
             cut would take), and the binomial drops to the next line WHOLE
             rather than splitting mid-name: nowrap on a ~25-char 11px span
@@ -1180,7 +1183,7 @@ function AviaryNoticeStrip({
             alone (dismiss ids, the link's name). */}
         <span className="mt-0.5 block text-sm text-ink">
           <span style={{ fontFamily: "var(--font-display)" }}>{notice.title}</span>
-          {notice.species_sci ? (
+          {notice.kind === "rare_return" && notice.species_sci ? (
             <span className="ml-1.5 whitespace-nowrap text-[11px] italic text-inkdim">
               ({notice.species_sci})
             </span>
