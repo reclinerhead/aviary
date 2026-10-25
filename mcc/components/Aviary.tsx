@@ -88,6 +88,14 @@ import {
   writeSessionQuery,
   mastheadSub,
   pickVisibleNotice,
+  FACT_DISMISS_COOKIE,
+  FACT_DISMISS_MAX_AGE_S,
+  FACT_EVENT_COOKIE,
+  FACT_REST_AFTER_EVENT_H,
+  factIdOf,
+  isAmbientKind,
+  NOTICE_KIND_INK,
+  type NoticeInk,
   championPaths,
   demoNoticesFor,
   mergeNewBestNotices,
@@ -1127,11 +1135,13 @@ const MASTHEAD_TABS = [
  * zero footprint. One visible notice at a time; parent owns the queue and
  * dismiss persistence (pure helpers in lib/aviary.ts).
  *
- * It wears the notice ink (--notice, gold) on a warm wash: the one lit card
- * on a cold-green page, so a moment reads as a moment and not as another
- * panel -- the owner's ask after the first two consumers shipped on the
- * house green and vanished into it. Still one border, one wash, one stamp:
- * lit, not loud.
+ * Events wear the notice ink (--notice, gold) on a warm wash: the one lit
+ * card on a cold-green page, so a moment reads as a moment and not as
+ * another panel -- the owner's ask after the first two consumers shipped on
+ * the house green and vanished into it. Still one border, one wash, one
+ * stamp: lit, not loud. The ink is per kind CLASS (#422, NOTICE_KIND_INK):
+ * the fun fact wears heather (--fact), so gold only ever means an event.
+ * Geometry never varies by kind.
  *
  * A notice that carries a `clip` gets the page's play slot (the same
  * PlaySlot every recording row uses, the same shared player, so one clip
@@ -1139,6 +1149,24 @@ const MASTHEAD_TABS = [
  * epic's "no play slot in the strip" line: no AUTOplay stays the rule. The
  * slot sits outside the link so a tap to listen never navigates.
  */
+const NOTICE_INK_CLASSES: Record<
+  NoticeInk,
+  { card: string; stamp: string; edge: string; button: string }
+> = {
+  notice: {
+    card: "border-notice bg-noticewash",
+    stamp: "text-notice",
+    edge: "border-notice/40",
+    button: "border-notice/40 hover:border-notice",
+  },
+  fact: {
+    card: "border-fact bg-factwash",
+    stamp: "text-fact",
+    edge: "border-fact/40",
+    button: "border-fact/40 hover:border-fact",
+  },
+};
+
 function AviaryNoticeStrip({
   notice,
   onDismiss,
@@ -1149,6 +1177,7 @@ function AviaryNoticeStrip({
   player?: ClipPlayer;
 }) {
   if (!notice) return null;
+  const ink = NOTICE_INK_CLASSES[NOTICE_KIND_INK[notice.kind] ?? "notice"];
   const kindLabel =
     notice.kind === "rare_return"
       ? "rare visitor"
@@ -1168,18 +1197,18 @@ function AviaryNoticeStrip({
           // policy rather than plumbing a lookup for a dismissible strip.
           src={portraitUrl(portraitSci, { thumb: true })}
           alt=""
-          className="h-12 w-12 shrink-0 rounded-sm border border-notice/40 object-cover object-top bg-panel2"
+          className={`h-12 w-12 shrink-0 rounded-sm border ${ink.edge} object-cover object-top bg-panel2`}
         />
       ) : (
         <span
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-sm border border-notice/40 bg-panel2 text-sm text-inkdim"
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-sm border ${ink.edge} bg-panel2 text-sm text-inkdim`}
           aria-hidden
         >
           ·
         </span>
       )}
       <span className="min-w-0 flex-1">
-        <span className="stamp block text-xs text-notice">{kindLabel}</span>
+        <span className={`stamp block text-xs ${ink.stamp}`}>{kindLabel}</span>
         {/* The name line (#603): the title in the display face, then -- on
             the rare visitor, whose title IS the bird -- the scientific name
             in parentheses in the page's sci-name voice (the New Arrivals
@@ -1214,7 +1243,7 @@ function AviaryNoticeStrip({
   );
   return (
     <div
-      className="mt-3 flex items-stretch gap-3 rounded-sm border border-notice bg-noticewash px-3 py-2.5"
+      className={`mt-3 flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5`}
       role="status"
       aria-live="polite"
     >
@@ -1236,7 +1265,7 @@ function AviaryNoticeStrip({
       <button
         type="button"
         onClick={() => onDismiss(notice.id)}
-        className="stamp shrink-0 self-center rounded-sm border border-notice/40 px-2.5 py-2 text-xs text-inkdim transition-colors hover:border-notice hover:text-ink"
+        className={`stamp shrink-0 self-center rounded-sm border ${ink.button} px-2.5 py-2 text-xs text-inkdim transition-colors hover:text-ink`}
         aria-label="Dismiss notice"
       >
         ✕
@@ -1245,17 +1274,38 @@ function AviaryNoticeStrip({
   );
 }
 
+/** A cookie the dashboard's server reads (#422's two fact cookies). Path
+ * `/` so every page sends it; Lax and not Secure, because a station's LAN
+ * address serves plain http. Blocked cookies just mean nothing is
+ * remembered: the fact shows again, never an error. */
+function writeCookie(name: string, value: string, maxAgeS: number) {
+  try {
+    document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAgeS}; samesite=lax`;
+  } catch {
+    // cookies unavailable
+  }
+}
+
 /**
  * Post-mount notice selection so localStorage / URL demo never hydration-
- * mismatch. `queued` is the product queue; `?notice=demo|rare_return|
+ * mismatch (the server-picked fun fact, below, is the seeded exception). `queued` is the product queue; `?notice=demo|rare_return|
  * new_best|all` adds desk-check samples (demoNoticesFor) dressed on
  * `samples`, the roster the page holds, without shipping permanent chrome.
  */
 function useAviaryNoticeStrip(
   queued: AviaryNotice[] = [],
   samples: RosterEntry[] = [],
+  ambient: AviaryNotice | null = null,
 ) {
-  const [visible, setVisible] = useState<AviaryNotice | null>(null);
+  // The one exception to post-mount selection: the server's fun fact
+  // (#422) is the first paint, seeded here so the strip is in the server
+  // HTML and hydrates identically. It needs no localStorage read -- its
+  // dismissal is a cookie the server has already honoured -- and it
+  // carries no `ts`, so the strip makes no locale call for it.
+  const [visible, setVisible] = useState<AviaryNotice | null>(ambient);
+  // Set once an event has been on screen or the fact was dismissed: the
+  // fact never comes back this load, so trivia never backfills an event.
+  const ambientRetired = useRef(false);
   const queuedKey = queued.map((n) => n.id).join("|");
   // The current candidates, kept for dismiss to re-pick from (#549): closing
   // the visible notice reveals the next one the queue holds, in rank order,
@@ -1286,6 +1336,7 @@ function useAviaryNoticeStrip(
     } catch {
       // ignore
     }
+    if (ambient && !ambientRetired.current) all.push(ambient);
     candidates.current = all;
     const next = pickVisibleNotice(all, (id) =>
       isNoticeDismissed(localStorage, id),
@@ -1301,10 +1352,38 @@ function useAviaryNoticeStrip(
         ? cur
         : next,
     );
-  }, [queued, queuedKey, samples]);
+  }, [queued, queuedKey, samples, ambient]);
+
+  // An event on screen retires the fact for this load and rests facts for
+  // FACT_REST_AFTER_EVENT_H (#422) -- the cookie the server reads before it
+  // picks. A desk-check sample never stamps it: looking at the flag must
+  // not silence a real yard's facts for two days.
+  useEffect(() => {
+    if (!visible || isAmbientKind(visible.kind)) return;
+    ambientRetired.current = true;
+    candidates.current = candidates.current.filter(
+      (n) => !isAmbientKind(n.kind),
+    );
+    if (!visible.id.startsWith("demo:"))
+      writeCookie(
+        FACT_EVENT_COOKIE,
+        String(Math.floor(Date.now() / 1000)),
+        FACT_REST_AFTER_EVENT_H * 3600,
+      );
+  }, [visible]);
 
   const onDismiss = useCallback((id: string) => {
-    dismissNotice(localStorage, id);
+    const dismissed = candidates.current.find((n) => n.id === id);
+    if (dismissed && isAmbientKind(dismissed.kind)) {
+      // A fact's dismissal ends facts for the day: the cookie holds its id,
+      // and tomorrow's fact is a different id by construction. Never
+      // localStorage -- the server makes the pick and can't read it.
+      ambientRetired.current = true;
+      writeCookie(FACT_DISMISS_COOKIE, factIdOf(id), FACT_DISMISS_MAX_AGE_S);
+      candidates.current = candidates.current.filter((n) => n.id !== id);
+    } else {
+      dismissNotice(localStorage, id);
+    }
     setVisible(
       pickVisibleNotice(candidates.current, (nid) =>
         isNoticeDismissed(localStorage, nid),
@@ -1625,9 +1704,12 @@ function ArchiveHero({
 export function Aviary({
   stationName,
   title,
+  funFact = null,
 }: {
   stationName?: string;
   title?: string;
+  /** Today's fun fact, picked by the page's server (#422), or null. */
+  funFact?: AviaryNotice | null;
 } = {}) {
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
@@ -1680,7 +1762,9 @@ export function Aviary({
   // passes (the New Arrivals clock rule), never mid-read. First paint may
   // show one: the day-keyed id plus localStorage dismiss is the whole
   // nag policy, and "come back and see it" is the point. New-best notices
-  // ride behind them; pickVisibleNotice ranks the kinds. Memoized on the
+  // ride behind them; pickVisibleNotice ranks the kinds. The server's fun
+  // fact (#422) is the hook's seed, not part of this queue: it is in the
+  // first paint and yields to any of these. Memoized on the
   // same inputs so the strip hook sees a stable queue between events.
   // Desk-check with /aviary?notice=all (or one kind: demo, rare_return,
   // new_best) -- samples dressed on a real roster species.
@@ -1696,7 +1780,11 @@ export function Aviary({
           ).map((e) => rareReturnNotice(e, dayWithYearOf));
     return [...rare, ...newBestQueue];
   }, [rosterEntries, nowTs, newBestQueue]);
-  const { notice, onDismiss } = useAviaryNoticeStrip(noticeQueue, rosterEntries);
+  const { notice, onDismiss } = useAviaryNoticeStrip(
+    noticeQueue,
+    rosterEntries,
+    funFact,
+  );
 
   // Session-persist the life-list query (#410): same post-mount pattern as
   // clip gain -- sessionStorage is not available on the server render, so

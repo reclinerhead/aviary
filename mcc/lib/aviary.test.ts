@@ -122,6 +122,19 @@ import {
   rhythmCaption,
   journalStamp,
   earlierLabel,
+  FACT_CYCLE_DAYS,
+  FACT_REST_AFTER_EVENT_H,
+  NOTICE_KIND_INK,
+  type FunFactPool,
+  factCycleDay,
+  factIdOf,
+  factOfTheDay,
+  factsResting,
+  funFactFor,
+  funFactNotice,
+  funFactNoticeId,
+  isAmbientKind,
+  localDayNumber,
 } from "./aviary";
 
 const bird = (over: Partial<BirdEvent> = {}): BirdEvent => ({
@@ -3298,5 +3311,213 @@ describe("earlierLabel", () => {
     expect(earlierLabel(3, false)).toBe("earlier entries (3)");
     expect(earlierLabel(3, true)).toBe("hide earlier entries");
     expect(earlierLabel(1200, false)).toBe("earlier entries (1,200)");
+  });
+});
+
+describe("fun facts (#422)", () => {
+  /** n species with k facts each; fact ids are unique and stable. */
+  const poolOf = (n: number, k: number, prefix = "s"): FunFactPool => ({
+    version: 1,
+    species: Array.from({ length: n }, (_, i) => ({
+      species_sci: `${prefix}${i} sci`,
+      species_common: `${prefix}${i} common`,
+      facts: Array.from({ length: k }, (_, j) => ({
+        id: `${prefix}${i}-f${j}`,
+        text: `Fact ${j} about ${prefix}${i}.`,
+      })),
+    })),
+  });
+  const lifeOf = (pool: FunFactPool) =>
+    new Set(pool.species.map((s) => s.species_sci));
+  const DAY0 = localDayNumber(new Date(2026, 9, 25));
+
+  it("gives events gold and the fun fact its own ink", () => {
+    expect(NOTICE_KIND_INK.rare_return).toBe("notice");
+    expect(NOTICE_KIND_INK.new_best).toBe("notice");
+    expect(NOTICE_KIND_INK.fun_fact).toBe("fact");
+    expect(isAmbientKind("fun_fact")).toBe(true);
+    expect(isAmbientKind("rare_return")).toBe(false);
+    expect(isAmbientKind("new_best")).toBe(false);
+  });
+
+  it("counts local calendar days, DST included", () => {
+    expect(localDayNumber(new Date(2026, 9, 25, 0, 5))).toBe(
+      localDayNumber(new Date(2026, 9, 25, 23, 55)),
+    );
+    // US spring-forward and fall-back days are still one day apart.
+    expect(
+      localDayNumber(new Date(2026, 2, 9, 12)) -
+        localDayNumber(new Date(2026, 2, 8, 12)),
+    ).toBe(1);
+    expect(
+      localDayNumber(new Date(2026, 10, 2, 12)) -
+        localDayNumber(new Date(2026, 10, 1, 12)),
+    ).toBe(1);
+  });
+
+  it("puts every fact on one stable day of the cycle per station", () => {
+    const d = factCycleDay("abc123", "house");
+    expect(d).toBeGreaterThanOrEqual(0);
+    expect(d).toBeLessThan(FACT_CYCLE_DAYS);
+    expect(factCycleDay("abc123", "house")).toBe(d);
+  });
+
+  it("never repeats a fact within the cycle across a year", () => {
+    const pool = poolOf(40, 4);
+    const life = lifeOf(pool);
+    const shown = new Map<string, number>();
+    let days = 0;
+    for (let day = DAY0; day < DAY0 + 365; day++) {
+      const pick = factOfTheDay(pool, life, "house", day);
+      if (!pick) continue;
+      days++;
+      const last = shown.get(pick.fact.id);
+      if (last !== undefined)
+        expect(day - last).toBeGreaterThanOrEqual(FACT_CYCLE_DAYS);
+      shown.set(pick.fact.id, day);
+    }
+    // 160 facts over 91 slots: 1 - (90/91)^160, about 5 days in 6, have one.
+    expect(days).toBeGreaterThan(250);
+  });
+
+  it("keeps the guarantee when facts are added mid-year", () => {
+    const before = poolOf(30, 4);
+    const after: FunFactPool = {
+      species: [...before.species, ...poolOf(30, 4, "n").species],
+    };
+    const shown = new Map<string, number>();
+    for (let day = DAY0; day < DAY0 + 365; day++) {
+      const pool = day < DAY0 + 180 ? before : after;
+      const pick = factOfTheDay(pool, lifeOf(pool), "house", day);
+      if (!pick) continue;
+      const last = shown.get(pick.fact.id);
+      if (last !== undefined)
+        expect(day - last).toBeGreaterThanOrEqual(FACT_CYCLE_DAYS);
+      shown.set(pick.fact.id, day);
+    }
+  });
+
+  it("only offers birds on this box's life list", () => {
+    const pool = poolOf(20, 5);
+    const life = new Set(["s3 sci"]);
+    for (let day = DAY0; day < DAY0 + FACT_CYCLE_DAYS; day++) {
+      const pick = factOfTheDay(pool, life, "house", day);
+      if (pick) expect(pick.species.species_sci).toBe("s3 sci");
+    }
+    expect(factOfTheDay(pool, new Set(), "house", DAY0)).toBeNull();
+    expect(factOfTheDay({ species: [] }, life, "house", DAY0)).toBeNull();
+  });
+
+  it("shows a small pool on few days, each fact once a cycle", () => {
+    const pool = poolOf(1, 4);
+    const life = lifeOf(pool);
+    const picks = [];
+    for (let day = DAY0; day < DAY0 + FACT_CYCLE_DAYS; day++) {
+      const pick = factOfTheDay(pool, life, "house", day);
+      if (pick) picks.push(pick.fact.id);
+    }
+    expect(picks.length).toBeLessThanOrEqual(4);
+    expect(new Set(picks).size).toBe(picks.length);
+  });
+
+  it("lets facts sharing a day take turns, cycle by cycle", () => {
+    // Two ids that hash to the same cycle day at this station.
+    const ids: string[] = [];
+    const target = factCycleDay("t0", "house");
+    for (let i = 1; ids.length < 1; i++)
+      if (factCycleDay(`t${i}`, "house") === target) ids.push(`t${i}`);
+    const pool: FunFactPool = {
+      species: [
+        {
+          species_sci: "A a",
+          species_common: "Aa",
+          facts: ["t0", ids[0]].map((id) => ({ id, text: `fact ${id}` })),
+        },
+      ],
+    };
+    const life = new Set(["A a"]);
+    // The first day >= DAY0 whose slot is the shared one, and the same
+    // slot one cycle later.
+    let day = DAY0;
+    while (((day % FACT_CYCLE_DAYS) + FACT_CYCLE_DAYS) % FACT_CYCLE_DAYS !== target)
+      day++;
+    const first = factOfTheDay(pool, life, "house", day)?.fact.id;
+    const second = factOfTheDay(pool, life, "house", day + FACT_CYCLE_DAYS)
+      ?.fact.id;
+    expect(new Set([first, second])).toEqual(new Set(["t0", ids[0]]));
+  });
+
+  it("schedules each station on its own, and identically on every device", () => {
+    const pool = poolOf(40, 4);
+    const life = lifeOf(pool);
+    const at = (station: string) =>
+      Array.from(
+        { length: 30 },
+        (_, i) => factOfTheDay(pool, life, station, DAY0 + i)?.fact.id,
+      );
+    expect(at("house")).toEqual(at("house"));
+    expect(at("birdhouse")).not.toEqual(at("house"));
+  });
+
+  it("rests facts for 48 h after the last event the browser saw", () => {
+    const now = 1_800_000_000;
+    const h = 3600;
+    expect(FACT_REST_AFTER_EVENT_H).toBe(48);
+    expect(factsResting(undefined, now)).toBe(false);
+    expect(factsResting(String(now - 47 * h), now)).toBe(true);
+    expect(factsResting(String(now - 48 * h), now)).toBe(false);
+    expect(factsResting(String(now + 600), now)).toBe(false); // skewed clock
+    expect(factsResting("yesterday", now)).toBe(false);
+    expect(factsResting("", now)).toBe(false);
+  });
+
+  it("builds the strip's fact: the fact as headline, the bird and the credit", () => {
+    const species = {
+      species_sci: "Cardinalis cardinalis",
+      species_common: "Northern Cardinal",
+      facts: [],
+    };
+    const n = funFactNotice(species, {
+      id: "abc123",
+      text: "The male feeds the female seed beak-to-beak.",
+    });
+    expect(n).toEqual({
+      id: "fun_fact:abc123",
+      kind: "fun_fact",
+      title: "The male feeds the female seed beak-to-beak.",
+      body: "Northern Cardinal · from Wikipedia",
+      href: "/aviary/Cardinalis%20cardinalis",
+      species_sci: "Cardinalis cardinalis",
+      species_common: "Northern Cardinal",
+    });
+    expect(n.ts).toBeUndefined(); // seeded server-side: no locale call
+    expect(factIdOf(funFactNoticeId("abc123"))).toBe("abc123");
+  });
+
+  it("drops today's fact once it was dismissed, and only that one", () => {
+    const pool = poolOf(40, 4);
+    const life = lifeOf(pool);
+    let day = DAY0;
+    while (!factOfTheDay(pool, life, "house", day)) day++;
+    const today = factOfTheDay(pool, life, "house", day)!;
+    const args = { pool, lifeList: life, station: "house", day };
+    expect(funFactFor(args)?.id).toBe(`fun_fact:${today.fact.id}`);
+    expect(funFactFor({ ...args, dismissedId: today.fact.id })).toBeNull();
+    expect(funFactFor({ ...args, dismissedId: "something-else" })?.id).toBe(
+      `fun_fact:${today.fact.id}`,
+    );
+  });
+
+  it("yields to any event, and never backfills after the event's dismiss", () => {
+    const fact = funFactNotice(
+      { species_sci: "A a", species_common: "Aa", facts: [] },
+      { id: "f1", text: "A fact." },
+    );
+    const rare = { id: "r1", kind: "rare_return" as const, title: "Rare" };
+    expect(pickVisibleNotice([rare, fact], () => false)?.id).toBe("r1");
+    // The hook's rule once an event has been on screen: ambient kinds leave
+    // the candidates, so dismissing the event empties the strip.
+    const retired = [rare, fact].filter((n) => !isAmbientKind(n.kind));
+    expect(pickVisibleNotice(retired, (id) => id === "r1")).toBeNull();
   });
 });

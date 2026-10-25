@@ -1241,6 +1241,24 @@ const NOTICE_KIND_RANK: Record<AviaryNoticeKind, number> = {
   fun_fact: 9,
 };
 
+/** The strip's inks (#422): each notice CLASS wears its own, so gold keeps
+ * meaning "something happened". Events wear `notice` (gold); the ambient
+ * fun fact wears `fact` (heather). A later kind picks one deliberately --
+ * a new class, a new token pair in globals.css -- never by default. The
+ * strip's geometry never varies by kind; only border, wash and stamp do. */
+export type NoticeInk = "notice" | "fact";
+export const NOTICE_KIND_INK: Record<AviaryNoticeKind, NoticeInk> = {
+  rare_return: "notice",
+  new_best: "notice",
+  demo: "notice",
+  fun_fact: "fact",
+};
+
+/** Ambient kinds fill a quiet strip; everything else is an event. */
+export function isAmbientKind(kind: AviaryNoticeKind): boolean {
+  return kind === "fun_fact";
+}
+
 /** Stable dismiss key for a notice id. */
 export function noticeDismissKey(id: string): string {
   return NOTICE_DISMISS_PREFIX + id;
@@ -2342,6 +2360,161 @@ export function mergeNewBestNotices(
   if (incoming.length === 0) return prev;
   const replaced = new Set(incoming.map((n) => n.species_sci));
   return [...prev.filter((n) => !replaced.has(n.species_sci)), ...incoming];
+}
+
+// --- Fun facts (#422, the strip's ambient consumer) -------------------------
+//
+// The pool is mcc/data/fun-facts.json, written on orchid by
+// listener/fun_facts.py and reviewed in a PR: per species, 3-5 facts drawn
+// from its Wikipedia article, each with the sentence it rests on. The
+// dashboard's SERVER picks at most one, so the strip is in the first paint
+// and never pops in after hydration (house rule #1); the browser never
+// downloads the pool.
+//
+// A FACT OF THE DAY, NEVER REPEATED WITHIN A SEASON, WITH NO STORED STATE.
+// Each fact hashes (station + fact id) to one day of a FACT_CYCLE_DAYS
+// cycle, and only facts whose day it is are eligible; several sharing a day
+// take turns, one per cycle. So a fact can only return a whole number of
+// cycles later, however the pool grows -- adding facts moves nobody else's
+// day -- and every device on a box sees the same fact. A day with no
+// eligible fact shows none, so a young station's small pool shows less
+// often, which is the right direction.
+//
+// IT BACKS OFF AROUND EVENTS. A fact never shares a load with an event
+// (the hook retires it once an event is on screen); for
+// FACT_REST_AFTER_EVENT_H after the last event a browser saw (a cookie the
+// hook stamps), the server offers none; and dismissing the fact (another
+// cookie, holding its id) ends facts for the day, because tomorrow's fact
+// is a different id by construction. Cookies, not localStorage, because the
+// server makes the pick.
+
+export const FACT_CYCLE_DAYS = 91;
+export const FACT_REST_AFTER_EVENT_H = 48;
+/** Holds the id of the fact dismissed today. */
+export const FACT_DISMISS_COOKIE = "aviary_fact_dismissed";
+/** Holds the epoch second the strip last showed an event. */
+export const FACT_EVENT_COOKIE = "aviary_fact_event";
+/** Long enough to outlive the day it names; the id does the day's work. */
+export const FACT_DISMISS_MAX_AGE_S = 2 * 86_400;
+
+export type FunFact = { id: string; text: string; quote?: string };
+export type FunFactSpecies = {
+  species_sci: string;
+  species_common: string;
+  article?: string | null;
+  facts: FunFact[];
+};
+export type FunFactPool = { version?: number; species: FunFactSpecies[] };
+
+/** FNV-1a, 32-bit: small, stable across runtimes, plenty for spreading a
+ * few hundred facts over 91 days. Not a security hash. */
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** The box's local calendar day as a whole number (days since the epoch),
+ * from the server clock -- the box lives in its yard's timezone. */
+export function localDayNumber(d: Date): number {
+  return Math.floor(
+    Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000,
+  );
+}
+
+/** The one day of the cycle this fact may show on, at this station. */
+export function factCycleDay(factId: string, station: string): number {
+  return fnv1a(`${station}|${factId}`) % FACT_CYCLE_DAYS;
+}
+
+/** Today's fact for a box: a fact of a species on its own life list whose
+ * cycle day is today, taking turns by cycle when several share the day;
+ * null when none does. */
+export function factOfTheDay(
+  pool: FunFactPool,
+  lifeList: ReadonlySet<string>,
+  station: string,
+  day: number,
+): { species: FunFactSpecies; fact: FunFact } | null {
+  const slot = ((day % FACT_CYCLE_DAYS) + FACT_CYCLE_DAYS) % FACT_CYCLE_DAYS;
+  const cycle = Math.floor(day / FACT_CYCLE_DAYS);
+  const due: { species: FunFactSpecies; fact: FunFact; order: number }[] = [];
+  for (const species of pool.species ?? []) {
+    if (!lifeList.has(species.species_sci)) continue;
+    for (const fact of species.facts ?? []) {
+      if (!fact?.id || !fact.text) continue;
+      if (factCycleDay(fact.id, station) !== slot) continue;
+      due.push({ species, fact, order: fnv1a(`turn|${station}|${fact.id}`) });
+    }
+  }
+  if (due.length === 0) return null;
+  due.sort((a, b) => a.order - b.order || a.fact.id.localeCompare(b.fact.id));
+  const pick = due[((cycle % due.length) + due.length) % due.length];
+  return { species: pick.species, fact: pick.fact };
+}
+
+/** Do facts rest? True within FACT_REST_AFTER_EVENT_H of the event cookie's
+ * stamp. A malformed stamp, or one from the future (a skewed clock), does
+ * not silence facts. */
+export function factsResting(
+  eventCookie: string | undefined | null,
+  nowS: number,
+): boolean {
+  if (!eventCookie || !/^\d+$/.test(eventCookie)) return false;
+  const ts = Number(eventCookie);
+  return ts <= nowS && nowS - ts < FACT_REST_AFTER_EVENT_H * 3600;
+}
+
+export function funFactNoticeId(factId: string): string {
+  return `fun_fact:${factId}`;
+}
+
+/** The strip's fact: the fact is the headline, the bird and the credit
+ * under it. No `ts` -- a fact has no moment, and a server-seeded notice
+ * must carry nothing the strip formats with a locale call. */
+export function funFactNotice(
+  species: FunFactSpecies,
+  fact: FunFact,
+): AviaryNotice {
+  return {
+    id: funFactNoticeId(fact.id),
+    kind: "fun_fact",
+    title: fact.text,
+    body: `${species.species_common} · from Wikipedia`,
+    href: `/aviary/${encodeURIComponent(species.species_sci)}`,
+    species_sci: species.species_sci,
+    species_common: species.species_common,
+  };
+}
+
+/** The server's whole decision for one page load: no fact while facts rest
+ * or after today's fact was dismissed, else today's fact, as a notice. */
+export function funFactFor({
+  pool,
+  lifeList,
+  station,
+  day,
+  dismissedId,
+}: {
+  pool: FunFactPool;
+  lifeList: ReadonlySet<string>;
+  station: string;
+  day: number;
+  dismissedId?: string | null;
+}): AviaryNotice | null {
+  const pick = factOfTheDay(pool, lifeList, station, day);
+  if (!pick || pick.fact.id === dismissedId) return null;
+  return funFactNotice(pick.species, pick.fact);
+}
+
+/** The fact id inside a fun-fact notice id (the dismiss cookie's value). */
+export function factIdOf(noticeId: string): string {
+  return noticeId.startsWith("fun_fact:")
+    ? noticeId.slice("fun_fact:".length)
+    : noticeId;
 }
 
 // --- Desk-check samples: ?notice=<kind[,kind]|all> ---------------------------
