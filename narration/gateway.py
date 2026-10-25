@@ -50,6 +50,14 @@ DEFAULT_MODEL = "anthropic/claude-opus-5.5"
 # A patient ceiling: one entry is a few hundred output tokens plus the
 # model's own thinking, well under a minute; two is slack for a slow day.
 GATEWAY_TIMEOUT_S = 120
+# The request's max_tokens. NOT the pass's NUM_PREDICT (448, a backstop
+# for gemma's visible output): Claude thinks before it writes and the
+# thinking counts against the same ceiling, so handed 448 it spent the
+# whole budget thinking and answered with no text at all -- three presses
+# on 2026-10-25, each stop_reason max_tokens, nothing written, a cent and
+# a half apiece. 8192 is room for the thinking and a 220-word note, and a
+# bounded worst case (about 16 cents on Opus 5.5).
+GATEWAY_MAX_TOKENS = 8192
 
 # What the journal says for a status the gateway answers with, in the
 # reader's words -- each is a different thing for Todd to go and fix.
@@ -74,22 +82,24 @@ def gateway_config(environ=None):
     return key, model
 
 
-def gateway_payload(system, prompt, model, num_predict):
+def gateway_payload(system, prompt, model, max_tokens=GATEWAY_MAX_TOKENS):
     """EXACTLY what leaves the box (#620's rule, applied here first): the
     voice, the prompt the pass built, the model slug and a token ceiling.
     Nothing is added -- no sampling, no thinking settings, no metadata --
     and test_narration_gateway pins the body to these four keys."""
-    return {"model": model, "max_tokens": int(num_predict), "system": system,
+    return {"model": model, "max_tokens": int(max_tokens), "system": system,
             "messages": [{"role": "user", "content": prompt}]}
 
 
 def parse_reply(body):
-    """The answer's text blocks joined, or None: a refusal stop reason, a
-    body that isn't a message, or no text at all -- all 'nothing written'
-    to the caller, the way a dead Ollama is."""
+    """The answer's text blocks joined, or None: a refusal, a cut-off
+    (stop_reason max_tokens -- a note truncated mid-sentence must never
+    reach the validator as if it were whole), a body that isn't a message,
+    or no text at all -- all 'nothing written' to the caller, the way a
+    dead Ollama is."""
     if not isinstance(body, dict):
         return None
-    if body.get("stop_reason") == "refusal":
+    if body.get("stop_reason") in ("refusal", "max_tokens"):
         return None
     parts = [b.get("text") or "" for b in body.get("content") or []
              if isinstance(b, dict) and b.get("type") == "text"]
@@ -122,11 +132,14 @@ class Gateway:
 
     def complete(self, system, prompt, num_predict=120, temperature=0.9,
                  timeout=None):
-        """Raw model text, or None on any failure. `temperature` is the
-        Ollama signature's and is NOT sent (Claude Opus 5.5 rejects
-        non-default sampling); `num_predict` is the output ceiling."""
-        del temperature
-        payload = gateway_payload(system, prompt, self.model, num_predict)
+        """Raw model text, or None on any failure. `temperature` and
+        `num_predict` are the Ollama signature's and are NOT sent: Claude
+        Opus 5.5 rejects non-default sampling, and the pass's output
+        backstop is far too small once thinking counts against it (see
+        GATEWAY_MAX_TOKENS). The note's length is the prompt's word
+        budget and the validator's business, as it is for Ollama."""
+        del temperature, num_predict
+        payload = gateway_payload(system, prompt, self.model)
         req = urllib.request.Request(
             GATEWAY_URL, data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json",
@@ -152,9 +165,10 @@ class Gateway:
             return None
         usage = body.get("usage") if isinstance(body, dict) else None
         if isinstance(usage, dict):
+            stop = body.get("stop_reason")
             print(f"[gateway] {self.model}: {usage.get('input_tokens', '?')} "
-                  f"tokens in, {usage.get('output_tokens', '?')} out",
-                  flush=True)
+                  f"tokens in, {usage.get('output_tokens', '?')} out"
+                  f" (stop_reason {stop!r})", flush=True)
         text = parse_reply(body)
         if text is None:
             stop = body.get("stop_reason") if isinstance(body, dict) else None
