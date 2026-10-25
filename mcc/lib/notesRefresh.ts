@@ -20,7 +20,6 @@
 
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import type { RefreshWriter } from "./aviary";
 
 /** A refresh that hasn't finished by now is killed: model load + two blocks
  * + one retry each is ~30 s warm on gemma3:12b, so five minutes only ever
@@ -47,23 +46,15 @@ const registry: Registry = (g.__aviaryNotesRefresh ??= {
   running: null,
 });
 
-export type RefreshConfig = {
-  db: string;
-  python: string;
-  root: string;
-  /** #632: the unit also carries AI_GATEWAY_API_KEY, so the page may offer
-   * the cloud writer's control beside the house one. */
-  cloud: boolean;
-};
+export type RefreshConfig = { db: string; python: string; root: string };
 
 /** The box may offer a refresh only when every piece is configured: the
  * store, the interpreter that can run the pass (the enrichment venv), the
  * checkout to run it from, and at least one writer -- MERLE_OLLAMA or the
  * gateway key (#617: a gateway-only house keeps its control). A station
  * with neither answers null, and the page shows no control at all. The
- * plain control follows the unit's MERLE_LLM_CHAIN (the spawned pass
- * inherits this environment); the "(claude)" control (#632) is offered
- * only when the key is here. */
+ * control follows the unit's MERLE_LLM_CHAIN: the spawned pass inherits
+ * this environment, and the page never names a writer. */
 export function refreshConfig(): RefreshConfig | null {
   // Bracket access on purpose: Next can inline a static `process.env.FOO`
   // at build time (stationBrandingFromEnv in lib/aviary.ts has the story),
@@ -75,7 +66,7 @@ export function refreshConfig(): RefreshConfig | null {
   const ollama = !!env["MERLE_OLLAMA"]?.trim();
   const cloud = !!env["AI_GATEWAY_API_KEY"]?.trim();
   if (!db || !python || !root || !(ollama || cloud)) return null;
-  return { db, python, root, cloud };
+  return { db, python, root };
 }
 
 function readOne<T>(db: string, sql: string, arg: string): T | undefined {
@@ -138,7 +129,6 @@ export function jobStatus(sci: string): RefreshJob {
 export function startRefresh(
   cfg: RefreshConfig,
   sci: string,
-  writer: RefreshWriter = "ollama",
 ): "started" | "busy" {
   if (registry.running !== null) return "busy";
   const before = generatedTs(cfg.db, sci);
@@ -168,19 +158,11 @@ export function startRefresh(
   };
 
   // One argv element per argument and no shell: the scientific name comes
-  // off a URL, and it is never interpreted by anything but argparse. The
-  // cloud writer (#632) is the pass's own flag, always with --compare so
-  // the second opinion is written from the same facts as the entry it
-  // answers; this is the ONLY path in the codebase that reaches it.
+  // off a URL, and it is never interpreted by anything but argparse. No
+  // --writer: the pass's default is the unit's MERLE_LLM_CHAIN (#617).
   const child = spawn(
     cfg.python,
-    [
-      "-m",
-      "listener.species_analysis",
-      "--refresh",
-      sci,
-      ...(writer === "gateway" ? ["--writer", "gateway", "--compare"] : []),
-    ],
+    ["-m", "listener.species_analysis", "--refresh", sci],
     { cwd: cfg.root, env: process.env, stdio: ["ignore", "pipe", "pipe"] },
   );
   const relay = (buf: Buffer) => {
@@ -205,6 +187,6 @@ export function startRefresh(
     if (after !== null && after !== before) return finish("done", null);
     finish("failed", "no model answered");
   });
-  console.log(`[refresh] ${sci}: started (${writer})`);
+  console.log(`[refresh] ${sci}: started`);
   return "started";
 }
