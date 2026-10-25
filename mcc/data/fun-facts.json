@@ -712,11 +712,6 @@
           "quote": "The hermit thrush's song has been described as \"the finest sound in nature\" and is ethereal and flute-like, consisting of a beginning note, then several descending musical phrases in a minor key, repeated at different pitches."
         },
         {
-          "id": "91cc706060",
-          "text": "Over the years, authors gave this bird 17 additional species or subspecies names, and all of them are now treated as synonyms.",
-          "quote": "The specific name guttatus is Latin for \"spotted\", though historically this species has been given 17 additional species or subspecies names by various authors, now all treated as synonyms."
-        },
-        {
           "id": "6a0455053b",
           "text": "The Canadian indie-rock band Thrush Hermit got its name by reversing the bird's name.",
           "quote": "Former Canadian indie-rock band Thrush Hermit took their name from a reversal of the bird's name."
@@ -778,11 +773,6 @@
           "id": "20de1d20c8",
           "text": "Its song is a hurried series of flute-like tones spiraling upward.",
           "quote": "This bird's song is a hurried series of flute-like tones spiralling upwards."
-        },
-        {
-          "id": "f9352a484e",
-          "text": "Swainson's thrush is the most ancient North American species of its genus, and it looks like its relatives because of convergent evolution.",
-          "quote": "These results notwithstanding, analysis of mtDNA cytochrome b and NADH dehydrogenase subunit 2 as well as nuclear β-fibrinogen intron 7 sequence data shows that Swainson's thrush is the most ancient North American species of its genus; it is not closely related to other Catharus and the outward similarities with the other North American species are due to convergent evolution."
         }
       ]
     },
@@ -875,11 +865,6 @@
           "id": "85ec7bff30",
           "text": "Birders have found semipalmated plovers in Tierra del Fuego and the Isles of Scilly, far from their usual range.",
           "quote": "They are extremely rare vagrants to western Europe, and have been found in Tierra del Fuego and the Isles of Scilly."
-        },
-        {
-          "id": "c6d7209299",
-          "text": "The semipalmated plover used to be considered a subspecies of the ringed plover of Eurasia.",
-          "quote": "Their true status may be obscured by the difficulty in identifying them from the very similar ringed plover of Eurasia, of which it was formerly considered a subspecies."
         },
         {
           "id": "7e1f0c8d22",
@@ -1372,11 +1357,6 @@
       "model": "anthropic/claude-sonnet-5.5",
       "facts": [
         {
-          "id": "53dcd8f081",
-          "text": "Downy woodpeckers prey on the European corn borer, an invasive moth costing US agriculture over $1 billion a year.",
-          "quote": "They are a natural predator of the European corn borer, an invasive moth that costs the US agriculture industry more than $1 billion annually in crop losses and population control."
-        },
-        {
           "id": "687bac8bf6",
           "text": "The downy woodpecker's rattle call is a short burst that sounds similar to a bouncing ball.",
           "quote": "The rattle-call is a short burst that sounds similar to a bouncing ball, while that of the hairy woodpecker is a shorter burst of the same amplitude."
@@ -1405,11 +1385,6 @@
       "fetched": "2026-10-25",
       "model": "anthropic/claude-sonnet-5.5",
       "facts": [
-        {
-          "id": "327b2c6ba3",
-          "text": "An English naturalist, Mark Catesby, described and drew this bird on a hand-colored plate in a book published between 1729 and 1732.",
-          "quote": "The hairy woodpecker was described and illustrated with a hand-coloured plate by the English naturalist Mark Catesby in his The Natural History of Carolina, Florida and the Bahama Islands which was published between 1729 and 1732."
-        },
         {
           "id": "b65cc565ee",
           "text": "Hairy woodpeckers prey on the European corn borer, an invasive moth that costs US agriculture over $1 billion a year.",
@@ -1506,11 +1481,6 @@
           "id": "d26f2142c7",
           "text": "The least flycatcher's nickname, chebec, comes from the sound the bird makes.",
           "quote": "The least flycatcher (Empidonax minimus) (also called chebec, or chebecker, after the sound it makes) is a small insect-eating bird."
-        },
-        {
-          "id": "6938108f77",
-          "text": "One study found that least flycatchers go after 81.1% of their prey by hovering.",
-          "quote": "In short, Robinson and Holmes (1982) determined that the least flycatcher attacks 81.1% of their preys by hovering, 9.6% by hawking, 6.2% by flush-chasing and 3.1% by gleaning."
         }
       ]
     },
@@ -2365,11 +2335,6 @@
           "id": "d1503f6636",
           "text": "It sometimes brakes and hovers to pick insects off leaves, and sometimes it crashes into the foliage while doing it.",
           "quote": "They can also be seen abruptly braking and hovering, picking insects or small fruits off of leaves, trunks or other surfaces, sometimes crashing into the foliage in the process."
-        },
-        {
-          "id": "37265b672e",
-          "text": "When Linnaeus described this bird in 1758, he placed it with the thrushes.",
-          "quote": "The great crested flycatcher was formally described in 1758 by the Swedish naturalist Carl Linnaeus in the tenth edition of his Systema Naturae. He placed it with the thrushes in the genus Turdus and coined the binomial name Turdus crinitus."
         }
       ]
     },
@@ -2700,11 +2665,6 @@
           "id": "89e95c4fba",
           "text": "Scarlet tanagers were classed as tanagers until 2009, when genetic studies moved them into the cardinal family.",
           "quote": "It was placed in the tanager family (Thraupidae) until 2009, but was moved to Cardinalidae following several genetic studies indicating the Piranga tanagers are more closely related to cardinals and their allies."
-        },
-        {
-          "id": "0b20462efb",
-          "text": "The genus name Piranga comes from a Tupi name for an unknown small bird.",
-          "quote": "The genus name Piranga is from Tupi Tijepiranga, the name for an unknown small bird, and the specific olivacea is from Neo-Latin olivaceus, \"olive-green\"."
         }
       ]
     },
@@ -3093,11 +3053,6 @@
           "id": "779fa2e4ca",
           "text": "Ornithologist Alexander Wilson found this species in magnolias near Fort Adams, Mississippi.",
           "quote": "American ornithologist Alexander Wilson found this species in magnolias near Fort Adams, Mississippi."
-        },
-        {
-          "id": "187bf44b3b",
-          "text": "The genus name Setophaga comes from Ancient Greek words meaning \"moth\" and \"eating\".",
-          "quote": "The genus name Setophaga is from Ancient Greek ses, \"moth\", and phagos, \"eating\", and the specific  magnolia refers to the type locality."
         },
         {
           "id": "a3bbb770a0",
@@ -3642,11 +3597,6 @@
           "id": "77a5863350",
           "text": "About three-quarters of an eastern meadowlark's diet comes from animal sources like beetles, grasshoppers, and crickets.",
           "quote": "About three-quarters of the eastern meadowlark's diet is from animal sources like beetles, grasshoppers, and crickets."
-        },
-        {
-          "id": "f81e37576b",
-          "text": "Linnaeus confusingly gave this bird's habitat as \"America, Africa\" when he described it.",
-          "quote": "Confusingly, Linnaeus specified the habitat as \"America, Africa\"."
         }
       ]
     },
@@ -4113,11 +4063,6 @@
       "fetched": "2026-10-25",
       "model": "anthropic/claude-sonnet-5.5",
       "facts": [
-        {
-          "id": "a463fb4ece",
-          "text": "White-throated sparrows scratch for food on the ground by kicking backward with both feet at the same time.",
-          "quote": "These birds forage on the ground under or near thickets or in low vegetation by kicking backward with both feet simultaneously."
-        },
         {
           "id": "7c03e32cd3",
           "text": "A newer version of the song turns the \"Peabody\" triplets into \"Cherry\" doublets; it began in British Columbia and spread east.",
