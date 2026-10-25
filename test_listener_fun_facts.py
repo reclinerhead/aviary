@@ -159,6 +159,20 @@ def test_the_swift_absolute_is_caught():
     assert out == ["absolutes its quote doesn't say: only"]
 
 
+def test_the_birds_own_name_is_never_an_absolute():
+    """The first pool run dropped six Least Sandpiper and Least Flycatcher
+    facts for saying "least"; the name's words are the bird, not a claim."""
+    quote = "The female may leave before the chicks can fly."
+    fact = "The female least sandpiper may leave before the chicks can fly."
+    assert fun_facts.check_fact(fact, quote, quote) == [
+        "absolutes its quote doesn't say: least"]
+    assert fun_facts.check_fact(fact, quote, quote, name="Least Sandpiper") == []
+    # The name excuses only its own words, never a real absolute.
+    only = "The female least sandpiper is the only parent left at the nest."
+    assert fun_facts.check_fact(only, quote, quote, name="Least Sandpiper") == [
+        "absolutes its quote doesn't say: only"]
+
+
 def test_an_absolute_the_quote_says_is_fine():
     article = "It is the only bird in the family that migrates."
     assert fun_facts.check_fact(
