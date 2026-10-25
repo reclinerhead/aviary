@@ -895,6 +895,73 @@ def test_the_first_entry_is_written_once_then_waits_for_news(conn):
     assert "it is the first entry" not in llm.calls[1]
 
 
+class FakeGateway(FakeOllama):
+    """The cloud writer's shape (#632): the same complete(), a slug for a
+    model, the gateway's host."""
+    model = "anthropic/claude-opus-5.5"
+    host = "ai-gateway.vercel.sh"
+
+
+def test_a_compare_entry_is_written_from_the_newest_entrys_own_facts(conn):
+    import json
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    ctx = ctx_for(conn, at(2026, 8, 1, 12))
+    # No entry yet: a compare refresh picks fresh, like any refresh.
+    cloud = FakeGateway()
+    status, trigger = sa.write_entry(conn, "A sci", "Robin", ollama=cloud,
+                                     ctx=ctx, force=True, compare=True,
+                                     host=cloud.host)
+    assert (status, trigger) == ("written", "refresh")
+    first = conn.execute("SELECT * FROM species_journal").fetchone()
+    assert first["model"] == "anthropic/claude-opus-5.5"
+    assert first["host"] == "ai-gateway.vercel.sh"
+    # Pretend the first entry was gemma's, with facts the editor would not
+    # pick today, and compare: the cloud entry carries THOSE facts verbatim.
+    planted = [{"kind": "dawn", "fact_line": "First heard 18 minutes before "
+                "sunrise.", "thin": False, "fields": {"label": "a dawn singer"},
+                "novelty_key": "dawn:x", "support": 60, "effect": 1.0},
+               {"kind": "place", "fact_line": "Heard mostly at the front door.",
+                "thin": False, "fields": {"source": "house-front"},
+                "novelty_key": "place:x", "support": 60, "effect": 0.5}]
+    conn.execute("UPDATE species_journal SET findings_json = ?, model = ?,"
+                 " title = 'up before the sun'",
+                 (json.dumps(planted), "gemma3:12b"))
+    conn.commit()
+    status, trigger = sa.write_entry(conn, "A sci", "Robin", ollama=cloud,
+                                     ctx=ctx, compare=True, host=cloud.host)
+    assert (status, trigger) == ("written", "compare")
+    assert "Open the note with this fact:\nFirst heard 18 minutes before " \
+        "sunrise." in cloud.calls[-1]
+    assert "- Heard mostly at the front door." in cloud.calls[-1]
+    second = conn.execute("SELECT * FROM species_journal ORDER BY id DESC"
+                          ).fetchone()
+    assert second["trigger"] == "compare" and second["lede_kind"] == "dawn"
+    assert second["title"] == "up before the sun"       # the same heading
+    assert json.loads(second["findings_json"]) == planted
+    assert second["model"] == "anthropic/claude-opus-5.5"
+    # Earlier entries are untouched: a journal is never re-narrated.
+    assert conn.execute("SELECT COUNT(*) c FROM species_journal"
+                        ).fetchone()["c"] == 2
+
+
+def test_the_cloud_writer_is_built_only_from_a_key(monkeypatch, capsys):
+    assert sa.cloud_writer({}) == (None, None)
+    assert "AI_GATEWAY_API_KEY not set" in capsys.readouterr().out
+    client, host = sa.cloud_writer({"AI_GATEWAY_API_KEY": "k",
+                                    "MERLE_GATEWAY_MODEL": "anthropic/x"})
+    assert host == "ai-gateway.vercel.sh" and client.model == "anthropic/x"
+    assert "writing on demand with anthropic/x" in capsys.readouterr().out
+    # The CLI refuses the writer anywhere but a --refresh (#632).
+    import pytest
+    monkeypatch.setattr("sys.argv", ["species_analysis", "--writer", "gateway"])
+    with pytest.raises(SystemExit) as e:
+        sa.main()
+    assert e.value.code == 2
+    monkeypatch.setattr("sys.argv", ["species_analysis", "--compare"])
+    with pytest.raises(SystemExit):
+        sa.main()
+
+
 def test_a_dead_model_writes_no_entry(conn):
     seed(conn, "A sci", "Robin", spaced_visits(12))
     ctx = ctx_for(conn, at(2026, 8, 1, 12))
