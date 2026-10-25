@@ -982,22 +982,82 @@ def test_a_compare_entry_is_written_from_the_newest_entrys_own_facts(conn):
                         ).fetchone()["c"] == 2
 
 
-def test_the_cloud_writer_is_built_only_from_a_key(monkeypatch, capsys):
-    assert sa.cloud_writer({}) == (None, None)
-    assert "AI_GATEWAY_API_KEY not set" in capsys.readouterr().out
-    client, host = sa.cloud_writer({"AI_GATEWAY_API_KEY": "k",
-                                    "MERLE_GATEWAY_MODEL": "anthropic/x"})
-    assert host == "ai-gateway.vercel.sh" and client.model == "anthropic/x"
-    assert "writing on demand with anthropic/x" in capsys.readouterr().out
-    # The CLI refuses the writer anywhere but a --refresh (#632).
+def test_the_chain_is_named_in_order_and_fails_loud(monkeypatch):
+    assert sa.llm_chain({}) == ["ollama"]                    # the default
+    assert sa.llm_chain({"MERLE_LLM_CHAIN": "gateway"}) == ["gateway"]
+    assert sa.llm_chain({"MERLE_LLM_CHAIN": " Gateway , ollama "}) == \
+        ["gateway", "ollama"]
     import pytest
-    monkeypatch.setattr("sys.argv", ["species_analysis", "--writer", "gateway"])
+    with pytest.raises(ValueError, match="unknown writer"):
+        sa.llm_chain({"MERLE_LLM_CHAIN": "gateway,claude"})
+    with pytest.raises(ValueError):
+        sa.llm_chain({"MERLE_LLM_CHAIN": ","})
+    # --compare still needs --refresh.
+    monkeypatch.setattr("sys.argv", ["species_analysis", "--compare"])
     with pytest.raises(SystemExit) as e:
         sa.main()
     assert e.value.code == 2
-    monkeypatch.setattr("sys.argv", ["species_analysis", "--compare"])
-    with pytest.raises(SystemExit):
-        sa.main()
+
+
+def test_the_gateways_daily_cap_counts_todays_rows(conn):
+    from narration import gateway
+    now = at(2026, 10, 25, 15)
+    assert sa.gateway_daily_cap({}) == 40
+    assert sa.gateway_daily_cap({"MERLE_GATEWAY_DAILY_CAP": "5"}) == 5
+    assert sa.gateway_daily_cap({"MERLE_GATEWAY_DAILY_CAP": "lots"}) == 40
+    assert sa.gateway_daily_cap({"MERLE_GATEWAY_DAILY_CAP": "-1"}) == 40
+    assert sa.gateway_entries_today(conn, now) == 0
+    rows = [(gateway.GATEWAY_HOST, at(2026, 10, 25, 9)),     # today
+            (gateway.GATEWAY_HOST, at(2026, 10, 25, 14)),    # today
+            (gateway.GATEWAY_HOST, at(2026, 10, 24, 23)),    # yesterday
+            ("bluejay:11434", at(2026, 10, 25, 10))]         # not the gateway
+    for host, ts in rows:
+        conn.execute(
+            "INSERT INTO species_journal (species_sci, entry_ts, trigger,"
+            " lede_kind, title, text, findings_json, model, host,"
+            " prompt_version) VALUES ('A sci',?,?,'dawn','t','x','[]','m',?,3)",
+            (ts, "routine", host))
+    conn.commit()
+    assert sa.gateway_entries_today(conn, now) == 2
+
+
+def test_resolve_writer_by_name(conn, monkeypatch, capsys):
+    from narration import gateway
+    now = at(2026, 10, 25, 15)
+    monkeypatch.delenv("MERLE_OLLAMA", raising=False)
+    # gateway: the key, and room under the cap.
+    assert sa.resolve_writer("gateway", conn, now, {}) == (None, None)
+    assert "AI_GATEWAY_API_KEY not set" in capsys.readouterr().out
+    env = {"AI_GATEWAY_API_KEY": "k", "MERLE_GATEWAY_MODEL": "anthropic/x",
+           "MERLE_GATEWAY_DAILY_CAP": "1"}
+    client, host = sa.resolve_writer("gateway", conn, now, env)
+    assert isinstance(client, gateway.Gateway) and client.model == "anthropic/x"
+    assert host == gateway.GATEWAY_HOST
+    assert "writing with anthropic/x via ai-gateway.vercel.sh" \
+        in capsys.readouterr().out
+    conn.execute(
+        "INSERT INTO species_journal (species_sci, entry_ts, trigger,"
+        " lede_kind, title, text, findings_json, model, host, prompt_version)"
+        " VALUES ('A sci',?,'routine','dawn','t','x','[]','m',?,3)",
+        (now - 60, gateway.GATEWAY_HOST))
+    conn.commit()
+    assert sa.resolve_writer("gateway", conn, now, env) == (None, None)
+    assert "1 entries today, cap 1" in capsys.readouterr().out
+    # ollama: MERLE_OLLAMA, no probe.
+    assert sa.resolve_writer("ollama", conn, now, {}) == (None, None)
+    assert "MERLE_OLLAMA not set" in capsys.readouterr().out
+    monkeypatch.setenv("MERLE_OLLAMA", "bluejay:11434")
+    client, host = sa.resolve_writer("ollama", conn, now,
+                                     {"MERLE_OLLAMA_MODEL": "gemma3:4b"})
+    assert isinstance(client, sa.Ollama) and client.model == "gemma3:4b"
+    assert host == "bluejay:11434"
+    # first_writer: the chain's order, skipping the unavailable.
+    client, host = sa.first_writer(["gateway", "ollama"], conn, now, env)
+    assert host == "bluejay:11434"                        # gateway over cap
+    assert sa.first_writer([], conn, now, env) == (None, None)
+    import pytest
+    with pytest.raises(ValueError):
+        sa.resolve_writer("claude", conn, now, env)
 
 
 def test_a_dead_model_writes_no_entry(conn):

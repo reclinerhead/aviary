@@ -58,11 +58,12 @@ export type RefreshConfig = {
 
 /** The box may offer a refresh only when every piece is configured: the
  * store, the interpreter that can run the pass (the enrichment venv), the
- * checkout to run it from, and a model to write with. A station without
- * MERLE_OLLAMA answers null, and the page shows no control at all. The
- * cloud writer (#632) is offered only on top of that, when the gateway key
- * is in THIS unit's environment -- the spawned pass inherits it; the
- * enrichment loop's unit has no use for it and never builds the writer. */
+ * checkout to run it from, and at least one writer -- MERLE_OLLAMA or the
+ * gateway key (#617: a gateway-only house keeps its control). A station
+ * with neither answers null, and the page shows no control at all. The
+ * plain control follows the unit's MERLE_LLM_CHAIN (the spawned pass
+ * inherits this environment); the "(claude)" control (#632) is offered
+ * only when the key is here. */
 export function refreshConfig(): RefreshConfig | null {
   // Bracket access on purpose: Next can inline a static `process.env.FOO`
   // at build time (stationBrandingFromEnv in lib/aviary.ts has the story),
@@ -71,9 +72,9 @@ export function refreshConfig(): RefreshConfig | null {
   const db = env["MERLE_EARL_DB"]?.trim();
   const python = env["MERLE_ENRICH_PYTHON"]?.trim();
   const root = env["MERLE_REPO_ROOT"]?.trim();
-  const ollama = env["MERLE_OLLAMA"]?.trim();
-  if (!db || !python || !root || !ollama) return null;
+  const ollama = !!env["MERLE_OLLAMA"]?.trim();
   const cloud = !!env["AI_GATEWAY_API_KEY"]?.trim();
+  if (!db || !python || !root || !(ollama || cloud)) return null;
   return { db, python, root, cloud };
 }
 

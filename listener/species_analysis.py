@@ -25,9 +25,9 @@
 #   python -m listener.species_analysis --refresh "..." --writer gateway --compare
 #                                                    (a second opinion from a
 #                                                     Claude model behind the
-#                                                     Vercel AI Gateway, #632:
-#                                                     ON DEMAND ONLY -- the
-#                                                     loop never builds it)
+#                                                     Vercel AI Gateway, #632;
+#                                                     the default --writer is
+#                                                     the box's chain, #617)
 #   python -m listener.species_analysis --dry-run    (findings + picks, no LLM)
 #   python -m listener.species_analysis --audit      (validator over the store)
 #
@@ -97,10 +97,13 @@
 #   MERLE_OLLAMA_MODEL  model name (default: the narrator's) -- CLI only;
 #                       the loop picks by MODEL_RANK from what a host holds
 #   MERLE_MODEL_RANK    override MODEL_RANK (comma-separated, best first)
-#   AI_GATEWAY_API_KEY  the cloud writer's key (narration/gateway.py), read
-#   MERLE_GATEWAY_MODEL   ONLY under --refresh --writer gateway; the loop's
-#                       ticks construct Ollama and nothing else, whatever the
-#                       unit's environment holds (#632: no surprise bills)
+#   MERLE_LLM_CHAIN     who writes, in preference order: "ollama", "gateway"
+#                       or "gateway,ollama" (#617); default "ollama", so a
+#                       box that has not opted in never builds the gateway
+#                       writer whatever else its environment holds
+#   AI_GATEWAY_API_KEY  the gateway writer's key and model (#632,
+#   MERLE_GATEWAY_MODEL   narration/gateway.py); MERLE_GATEWAY_DAILY_CAP
+#                       bounds its entries per local day (default 40)
 # =============================================================================
 
 import argparse
@@ -1233,22 +1236,112 @@ def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
                                       x[2][0] != "first"))
 
 
-# --- The cloud writer (#632) --------------------------------------------------
+# --- The writer chain (#617) --------------------------------------------------
+#
+# Who writes is a config choice per box: MERLE_LLM_CHAIN names writers in
+# preference order, and the first one AVAILABLE this run gets the work.
+#   ollama    MERLE_OLLAMA (the loop probes its candidates; the CLI just
+#             tries the first)
+#   gateway   a Claude model behind the Vercel AI Gateway (#632) --
+#             AI_GATEWAY_API_KEY, MERLE_GATEWAY_MODEL -- available only
+#             under its daily cap
+# Default "ollama": a box that has not opted in never builds the gateway
+# writer, whatever its environment holds (test_listener_enrichment_loop
+# pins it). The house runs "gateway,ollama" since 10-25: Sonnet writes,
+# bluejay is asked only when the gateway can't. A station runs "gateway".
 
-def cloud_writer(environ=None):
-    """(client, host) for the on-demand Claude writer, or (None, None) with
-    the reason printed. Called from ONE place -- main(), under --refresh
-    --writer gateway -- and never from the loop: a tick must not be able to
-    spend money, whatever environment the unit carries."""
-    cfg = gateway.gateway_config(environ)
-    if cfg is None:
-        print("[analysis] AI_GATEWAY_API_KEY not set -- no cloud writer, "
-              "nothing written", flush=True)
-        return None, None
-    key, model = cfg
-    print(f"[analysis] writing on demand with {model} via "
-          f"{gateway.GATEWAY_HOST}", flush=True)
-    return gateway.Gateway(key, model), gateway.GATEWAY_HOST
+WRITERS = ("ollama", "gateway")
+DEFAULT_CHAIN = ("ollama",)
+# Entries the gateway may write per local day per box -- the outer fence
+# against a runaway (the spend limit on the key is the fence beyond it).
+# Button presses count. Over it, the loop waits for tomorrow and falls
+# through to the next writer in the chain.
+GATEWAY_DAILY_CAP = 40
+
+
+def llm_chain(environ=None):
+    """MERLE_LLM_CHAIN -> ["ollama", "gateway"] in order; default
+    ["ollama"]. An unknown name raises (fail loud, the registry's ethos:
+    a typo must not read as 'no writer')."""
+    env = os.environ if environ is None else environ
+    raw = (env.get("MERLE_LLM_CHAIN") or "").strip()
+    if not raw:
+        return list(DEFAULT_CHAIN)
+    names = [n.strip().lower() for n in raw.split(",") if n.strip()]
+    unknown = [n for n in names if n not in WRITERS]
+    if unknown or not names:
+        raise ValueError(f"MERLE_LLM_CHAIN={raw!r}: unknown writer(s) "
+                         f"{unknown} (known: {list(WRITERS)})")
+    return names
+
+
+def gateway_daily_cap(environ=None):
+    env = os.environ if environ is None else environ
+    try:
+        n = int((env.get("MERLE_GATEWAY_DAILY_CAP") or "").strip())
+    except ValueError:
+        return GATEWAY_DAILY_CAP
+    return n if n >= 0 else GATEWAY_DAILY_CAP
+
+
+def gateway_entries_today(conn, now):
+    """Entries the gateway wrote in the LOCAL day `now` falls in -- the
+    loop's and the buttons' alike (host is the provenance column)."""
+    lt = time.localtime(now)
+    start = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0,
+                             0, 0, -1)))
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM species_journal WHERE host = ?"
+            " AND entry_ts >= ? AND entry_ts <= ?",
+            (gateway.GATEWAY_HOST, start, int(now))).fetchone()
+    except sqlite3.Error:
+        return 0
+    return row["c"]
+
+
+def resolve_writer(name, conn, now, environ=None):
+    """(client, host) for one chain name, or (None, None) with the reason
+    printed. 'gateway' needs the key and room under the daily cap;
+    'ollama' needs MERLE_OLLAMA (no probe here -- the CLI just tries, the
+    loop probes before it calls this)."""
+    env = os.environ if environ is None else environ
+    if name == "gateway":
+        cfg = gateway.gateway_config(env)
+        if cfg is None:
+            print("[analysis] gateway: AI_GATEWAY_API_KEY not set -- no "
+                  "cloud writer", flush=True)
+            return None, None
+        n, cap = gateway_entries_today(conn, now), gateway_daily_cap(env)
+        if n >= cap:
+            print(f"[analysis] gateway: {n} entries today, cap {cap} -- "
+                  "not asked again until tomorrow", flush=True)
+            return None, None
+        key, model = cfg
+        print(f"[analysis] writing with {model} via {gateway.GATEWAY_HOST}",
+              flush=True)
+        return gateway.Gateway(key, model), gateway.GATEWAY_HOST
+    if name == "ollama":
+        addr = ollama_address()
+        if not addr:
+            print("[analysis] ollama: MERLE_OLLAMA not set -- no local "
+                  "writer", flush=True)
+            return None, None
+        model = (env.get("MERLE_OLLAMA_MODEL") or "").strip() \
+            or OLLAMA_DEFAULT_MODEL
+        host = f"{addr[0]}:{addr[1]}"
+        print(f"[analysis] writing with {model} via {host}", flush=True)
+        return Ollama(*addr, model), host
+    raise ValueError(f"unknown writer {name!r}")
+
+
+def first_writer(chain, conn, now, environ=None):
+    """The first available writer in `chain`, or (None, None)."""
+    for name in chain:
+        client, host = resolve_writer(name, conn, now, environ)
+        if client is not None:
+            return client, host
+    return None, None
 
 
 # --- Audit --------------------------------------------------------------------
@@ -1311,19 +1404,18 @@ def main():
     ap.add_argument("--audit", action="store_true",
                     help="check every stored entry against the validator; "
                          "no LLM, no writes (#612)")
-    ap.add_argument("--writer", choices=("ollama", "gateway"),
-                    default="ollama",
-                    help="who writes a --refresh entry: ollama (MERLE_OLLAMA, "
-                         "the default) or gateway -- a Claude model behind "
-                         "the Vercel AI Gateway (AI_GATEWAY_API_KEY), on "
-                         "demand only (#632)")
+    ap.add_argument("--writer", choices=("chain", "ollama", "gateway"),
+                    default="chain",
+                    help="who writes: chain (the first available writer in "
+                         "MERLE_LLM_CHAIN, the default), ollama "
+                         "(MERLE_OLLAMA) or gateway -- a Claude model "
+                         "behind the Vercel AI Gateway (AI_GATEWAY_API_KEY, "
+                         "#632/#617)")
     ap.add_argument("--compare", action="store_true",
                     help="with --refresh: write the entry from the newest "
                          "entry's own facts, so the texts differ only by "
                          "writer (#632)")
     args = ap.parse_args()
-    if args.writer == "gateway" and not args.refresh:
-        ap.error("--writer gateway is on demand only: use it with --refresh")
     if args.compare and not args.refresh:
         ap.error("--compare needs --refresh")
 
@@ -1339,19 +1431,17 @@ def main():
         print(f"[audit] {len(found)} block(s) with violations", flush=True)
         raise SystemExit(1 if found else 0)
 
+    now = time.time()
     ollama, host = None, None
     if not args.dry_run:
-        addr = ollama_address()
-        if addr:
-            model = os.environ.get("MERLE_OLLAMA_MODEL", "").strip() \
-                or OLLAMA_DEFAULT_MODEL
-            ollama = Ollama(*addr, model)
-            host = f"{addr[0]}:{addr[1]}"
-            print(f"[analysis] narrating with {model} via {host}", flush=True)
-        else:
-            print("[analysis] MERLE_OLLAMA not set -- stats only", flush=True)
+        # The writer (#617): the box's chain, or the one named on the
+        # command line. None available means stats only, nothing written.
+        chain = llm_chain() if args.writer == "chain" else [args.writer]
+        ollama, host = first_writer(chain, conn, now)
+        if ollama is None:
+            print(f"[analysis] no writer available (chain: {','.join(chain)})"
+                  " -- stats only", flush=True)
 
-    now = time.time()
     try:
         ctx = journal_context(conn, weather_db_path(), now)
         if args.dry_run:
@@ -1378,25 +1468,17 @@ def main():
                 "SELECT species_common FROM life_list WHERE species_sci = ?",
                 (args.refresh,)).fetchone()
             common = row["species_common"] if row else args.refresh
-            # The writer: Ollama as configured, or -- the one place in the
-            # codebase that builds it -- the cloud writer (#632). The stats
-            # row is written by whichever is present (no model is called
-            # for it), with that writer's host as provenance.
-            writer, writer_host = ollama, host
-            if args.writer == "gateway":
-                writer, writer_host = cloud_writer()
-                if writer is None:
-                    return
+            # The stats row is written by whichever writer is present (no
+            # model is called for it), with that writer's host as
+            # provenance; then the entry.
             status, _ = analyze_species(conn, args.refresh, common,
-                                        ollama=ollama or writer,
-                                        weather_path=None, now=now,
-                                        force=True, host=host or writer_host,
+                                        ollama=ollama, weather_path=None,
+                                        now=now, force=True, host=host,
                                         ctx=ctx)
             print(f"[analysis] {common} stats: {status}", flush=True)
             status, trigger = write_entry(conn, args.refresh, common,
-                                          ollama=writer, ctx=ctx, force=True,
-                                          host=writer_host,
-                                          compare=args.compare)
+                                          ollama=ollama, ctx=ctx, force=True,
+                                          host=host, compare=args.compare)
             print(f"[analysis] {common} entry ({trigger}): {status}",
                   flush=True)
             return

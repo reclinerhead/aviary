@@ -87,7 +87,13 @@
 #                           MERLE_OLLAMA's order (last entry extends); 0
 #                           means "never generate on this host". Default 3
 #                           -- conservative, because today's only host is a
-#                           workstation someone is sitting at.
+#                           workstation someone is sitting at. The gateway
+#                           writer reads position 0.
+#   MERLE_LLM_CHAIN         who writes the notes, in preference order
+#                           (#617): "ollama" (default), "gateway", or
+#                           "gateway,ollama" -- the house since 10-25
+#   AI_GATEWAY_API_KEY      the gateway writer (narration/gateway.py) and
+#   MERLE_GATEWAY_MODEL     its daily cap, MERLE_GATEWAY_DAILY_CAP (40)
 # =============================================================================
 
 import json
@@ -98,6 +104,7 @@ import time
 import urllib.request
 
 from listener import species_analysis, species_profile
+from narration import gateway
 from narration.narrator import Ollama, ollama_candidates
 
 TICK_S = 900          # a no-op tick costs one SQL query, so this is plenty
@@ -403,19 +410,19 @@ def run_showcase_pass(cap=None, now=None):
     return counts
 
 
-def drain_analysis(host, port, model, cap, now=None):
-    """A bounded slice of the field-notes worklist against one host. The cap
-    counts GENERATIONS, not gate-skips -- a tick that finds forty settled
-    species and writes nothing spent nothing. 'llm-down' mid-drain stops the
-    slice: the host died under us, and hammering a corpse helps nobody."""
+def drain_analysis(ollama, where, model, cap, now=None):
+    """A bounded slice of the field-notes worklist against one writer
+    (`ollama` is any client with the narrator's complete(); `where` its
+    provenance host). The cap counts GENERATIONS, not gate-skips -- a tick
+    that finds forty settled species and writes nothing spent nothing.
+    'llm-down' mid-drain stops the slice: the writer died under us, and
+    hammering a corpse helps nobody."""
     counts = {}
     conn = species_analysis.connect(species_analysis.db_path())
     try:
         if not has_table(conn, "life_list"):
             return counts
         now = now if now is not None else time.time()
-        ollama = Ollama(host, port, model)
-        where = f"{host}:{port}"
         # One context for the whole slice: the weather archive, places,
         # Home and the fair microphones are read once, not per bird.
         ctx = species_analysis.journal_context(
@@ -549,7 +556,7 @@ def run_analysis_pass(now=None):
     bluejay being off IS the designed steady state, not an incident."""
     purged = run_purge()
     prior = run_prior()
-    counts = drain_first_host(now)
+    counts = drain_first_writer(now)
     if purged:
         counts["purged"] = len(purged)
     if prior:
@@ -557,19 +564,80 @@ def run_analysis_pass(now=None):
     return counts
 
 
-def drain_first_host(now=None):
-    for i, (host, port) in enumerate(ollama_candidates()):
-        cap = tick_cap(os.environ.get("MERLE_ENRICH_CAP", ""), i)
-        if cap == 0:
+_chain_warned = None      # the MERLE_LLM_CHAIN complaint said, once per value
+_gateway_warned = False   # "gateway named, no key", once per loop life
+
+
+def drain_first_writer(now=None):
+    """The tick's slice goes to the first writer in MERLE_LLM_CHAIN that is
+    available (#617): the gateway when its key is set and the box is under
+    its daily cap, Ollama when a candidate answers its probe. A box on the
+    default chain ("ollama") never builds the gateway writer, whatever its
+    environment holds -- the no-surprise-bill guarantee of #632, now pinned
+    to the chain rather than to the loop."""
+    global _chain_warned
+    now = now if now is not None else time.time()
+    try:
+        chain = species_analysis.llm_chain()
+    except ValueError as e:
+        if _chain_warned != str(e):
+            _chain_warned = str(e)
+            print(f"[enrich] notes: {e} -- no writer this tick", flush=True)
+        return {}
+    for name in chain:
+        if name == "gateway":
+            counts = drain_gateway(now)
+            if counts is not None:
+                return counts
             continue
-        models = probe(host, port)
-        if models is None:
-            continue
-        model = pick_model(models)
-        if not model:
-            continue
-        return drain_analysis(host, port, model, cap, now=now)
+        for i, (host, port) in enumerate(ollama_candidates()):
+            cap = tick_cap(os.environ.get("MERLE_ENRICH_CAP", ""), i)
+            if cap == 0:
+                continue
+            models = probe(host, port)
+            if models is None:
+                continue
+            model = pick_model(models)
+            if not model:
+                continue
+            return drain_analysis(Ollama(host, port, model),
+                                  f"{host}:{port}", model, cap, now=now)
     return {}
+
+
+def drain_gateway(now):
+    """The gateway writer's slice, or None when it cannot write this tick:
+    no key (said once per loop life, like the missing encoder), a tick cap
+    of 0, or the daily cap reached (one line per tick -- the day's budget
+    is news, a missing key is a standing state). The slice is bounded by
+    the tick cap AND what is left of the day."""
+    global _gateway_warned
+    cfg = gateway.gateway_config()
+    if cfg is None:
+        if not _gateway_warned:
+            _gateway_warned = True
+            print("[enrich] notes: MERLE_LLM_CHAIN names gateway but "
+                  "AI_GATEWAY_API_KEY is not set on this unit -- skipping it",
+                  flush=True)
+        return None
+    cap = tick_cap(os.environ.get("MERLE_ENRICH_CAP", ""), 0)
+    if cap == 0:
+        return None
+    conn = species_analysis.connect(species_analysis.db_path())
+    try:
+        if not has_table(conn, "life_list"):
+            return {}
+        today = species_analysis.gateway_entries_today(conn, now)
+    finally:
+        conn.close()
+    daily = species_analysis.gateway_daily_cap()
+    if today >= daily:
+        print(f"[enrich] notes: the gateway wrote {today} entries today, cap "
+              f"{daily} -- not asked again until tomorrow", flush=True)
+        return None
+    key, model = cfg
+    return drain_analysis(gateway.Gateway(key, model), gateway.GATEWAY_HOST,
+                          model, min(cap, daily - today), now=now)
 
 
 def tick(now=None):
@@ -611,8 +679,12 @@ def main():
     interval = int(
         os.environ.get("MERLE_ENRICH_INTERVAL_S", "").strip() or TICK_S)
     hosts = ", ".join(f"{h}:{p}" for h, p in ollama_candidates())
-    print(f"[enrich] loop up -- tick every {interval}s; ollama candidates: "
-          f"{hosts or 'none (profile pass only)'}", flush=True)
+    try:
+        chain = ",".join(species_analysis.llm_chain())
+    except ValueError as e:
+        chain = f"INVALID ({e})"
+    print(f"[enrich] loop up -- tick every {interval}s; writers: {chain}; "
+          f"ollama candidates: {hosts or 'none'}", flush=True)
     while True:
         tick()
         time.sleep(interval)
