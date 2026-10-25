@@ -2795,6 +2795,7 @@ export function fieldNote(a: {
 const TRIGGER_STAMPS: Record<string, string> = {
   first: "first entry",
   weekly: "this week",
+  routine: "routine",
   arrival: "arrival",
   departure: "departure",
   record: "a record",

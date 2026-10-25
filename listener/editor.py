@@ -15,13 +15,19 @@
 #   arrival    a season's first visit, not yet written up
 #   departure  a season's silence, not yet written up
 #   record     a new busiest day, or a streak crossing a 30-day mark
-#   weekly     a week since the last entry and the bird was heard in it,
-#              AND the pick says something the last entry didn't
+#   routine    ROUTINE_DAYS since the newest entry (whoever wrote it) and
+#              the bird was heard in them, AND the pick says something the
+#              last entries didn't (#638: 28 days, was a week -- four
+#              regulars a week was churn, and a routine entry took the top
+#              of the page a week after a hand-requested cloud one; the
+#              clock runs from the newest entry of ANY trigger, so a
+#              second opinion holds the page for a month)
 #   refresh    a human asked (the species page's link, #613)
-# A regular therefore gets about one entry a week; a migrant gets exactly
-# the entries its season deserves. (No fixed weekday for "weekly": the
-# loop's per-tick cap spreads the load across the week instead of piling
-# sixty birds onto one Sunday evening on a workstation's GPU.)
+#   compare    a human asked for the cloud writer's second opinion (#632)
+# A regular therefore gets about one entry a month plus its news; a migrant
+# gets exactly the entries its season deserves. (No fixed day for "routine":
+# the loop's per-tick cap spreads the load instead of piling sixty birds
+# onto one evening on a workstation's GPU.)
 #
 # WHAT (pick): interest = kind weight x min(effect, 1.5) x support factor,
 # thin findings and recently-said ones heavily discounted; the season's
@@ -59,7 +65,25 @@ NEWS_BONUS = {"anomaly": 30.0, "arrival": 20.0, "departure": 20.0,
 FULL_SUPPORT = 30
 THIN_FACTOR = 0.3
 SAID_FACTOR = 0.2
-WEEK_S = 7 * 86400
+# The routine cadence (#638): days since the newest entry before a bird
+# with nothing newsier to say gets another. MERLE_NOTES_ROUTINE_DAYS
+# overrides without a deploy.
+ROUTINE_DAYS = 28
+
+
+def routine_s(environ=None):
+    """The routine window in seconds, from the env override or the default;
+    a non-number or a value under one day falls back to the default."""
+    import os
+    raw = (os.environ if environ is None else environ).get(
+        "MERLE_NOTES_ROUTINE_DAYS", "")
+    try:
+        days = float(raw)
+    except (TypeError, ValueError):
+        days = ROUTINE_DAYS
+    if days < 1:
+        days = ROUTINE_DAYS
+    return days * 86400
 # How many recent entries count as "already said".
 RECENT_ENTRIES = 3
 
@@ -130,9 +154,10 @@ def by_kind(findings, kind):
     return next((f for f in findings if f["kind"] == kind), None)
 
 
-def due(findings, entries, now, visits_last_week, said=frozenset()):
+def due(findings, entries, now, visits_in_window, said=frozenset()):
     """The trigger that fires, or None. `entries` are this bird's stored
-    entries newest first, each {"entry_ts", "findings": [Finding...]}."""
+    entries newest first, each {"entry_ts", "findings": [Finding...]};
+    `visits_in_window` is the bird's visits in the last routine_s()."""
     if not findings:
         return None
     if not entries:
@@ -146,10 +171,10 @@ def due(findings, entries, now, visits_last_week, said=frozenset()):
                      if by_kind(e["findings"], "record")), None)
     if record_broken(by_kind(findings, "record"), previous):
         return "record"
-    if now - entries[0]["entry_ts"] >= WEEK_S and visits_last_week > 0:
+    if now - entries[0]["entry_ts"] >= routine_s() and visits_in_window > 0:
         lede, _ = pick(findings, said)
         if lede is not None and lede["novelty_key"] not in said:
-            return "weekly"
+            return "routine"
     return None
 
 

@@ -1159,8 +1159,8 @@ def entry_due(conn, sci, ctx, force=False):
     said = editor.said_recently(entries)
     if force:
         return ("refresh" if found else None), found, entries, said
-    week = sum(1 for ts in visits if ts > now - editor.WEEK_S)
-    return editor.due(found, entries, now, week, said), found, entries, said
+    heard = sum(1 for ts in visits if ts > now - editor.routine_s())
+    return editor.due(found, entries, now, heard, said), found, entries, said
 
 
 def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
@@ -1211,9 +1211,9 @@ def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
 # The queue (enrichment_loop.drain_analysis): the stats rows first (free --
 # no model, so they never count against the tick's cap, and the page's
 # figures are there when its first entry lands), then news entries, then
-# every bird's FIRST entry, then weekly and refresh entries.
+# every bird's FIRST entry, then routine entries (#638: every 28 days).
 NEWS_TRIGGERS = ("anomaly", "arrival", "departure", "record")
-AHEAD_OF_WEEKLY = NEWS_TRIGGERS + ("first",)
+AHEAD_OF_ROUTINE = NEWS_TRIGGERS + ("first",)
 
 
 def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):

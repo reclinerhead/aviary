@@ -51,8 +51,9 @@
 #      worklist + fingerprint gate let through (free -- no model, so they
 #      never count against the cap, and a page's figures are there when
 #      its first entry lands, #626), then news entries (anomaly, arrival,
-#      departure, record), then each bird's first entry, then weekly and
-#      refresh entries -- one MERLE_ENRICH_CAP across the entries.
+#      departure, record), then each bird's first entry, then routine
+#      entries (every 28 days, #638) -- one MERLE_ENRICH_CAP across the
+#      entries.
 # The order is load-bearing, not cosmetic: the entry prompt feeds the
 # model the profile's description, so profile-before-notes means
 # a brand-new bird has its background before its first note is written --
@@ -420,7 +421,7 @@ def drain_analysis(host, port, model, cap, now=None):
         ctx = species_analysis.journal_context(
             conn, species_analysis.weather_db_path(), now)
         entries = species_analysis.journal_worklist(conn, ctx)
-        ahead = species_analysis.AHEAD_OF_WEEKLY
+        ahead = species_analysis.AHEAD_OF_ROUTINE
         # The stats rows go first and cost nothing (#626: no model), so the
         # cap counts entries alone -- a tick that re-stores a hundred rows
         # on a version bump still writes its full slice of entries.
