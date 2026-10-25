@@ -17,6 +17,8 @@
 # whatever env a unit carries. The key belongs on orchid's mcc-dashboard
 # unit, which spawns the refresh; the earl-enrichment unit has no use for
 # it. #617 is where any automatic use of this writer would be decided.
+# The Aviary's fun-fact pool (listener/fun_facts.py, #422) is the other
+# hand-run builder: a person's CLI run on orchid whose output is a PR.
 #
 # One POST, no SDK: the Anthropic Messages API at the gateway's base URL
 # (verified against the gateway's docs on 2026-10-25), a bearer token, a

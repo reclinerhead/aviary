@@ -95,6 +95,25 @@
      by exactly one hue's worth, never a second surface color. */
   --notice: #d9a441;
   --notice-wash: color-mix(in oklab, var(--notice) 9%, var(--panel-2));
+
+  /* Fact ink (issue #422). The strip's second ink, and the rule it starts:
+     each notice CLASS wears its own, so gold keeps meaning "something
+     happened". A fun fact is knowledge, not news -- it must never borrow
+     the events' gold, or the family learns that the strip is usually
+     trivia and a rare visitor lands in a slot they have learned to skip.
+     Heather: the field guide's pressed flower, and the one hue range the
+     palette left empty (species 42/111, gold 80, wing 121, led ~145, rain
+     and sky ~240). Never a blue (weather), never a green (live, the
+     module), never warm (gold, the species).
+
+     Measured, not eyeballed (the --rain rule): #c58fc7 is OKLCH L 0.721 /
+     C 0.100 / h 325 -- quieter than the gold on both axes that make a card
+     read as lit (darker, and 0.03 less chroma, sitting exactly on the 0.10
+     floor that keeps it from reading gray), 6.8:1 on --panel and 6.3:1 on
+     --panel-2 (AA for the 12px stamp), 85 degrees from --sky and 115 from
+     the gold. The wash is the gold's recipe verbatim. */
+  --fact: #c58fc7;
+  --fact-wash: color-mix(in oklab, var(--fact) 9%, var(--panel-2));
 }
 
 @theme inline {
@@ -115,6 +134,8 @@
   --color-wing: var(--wing);
   --color-notice: var(--notice);
   --color-noticewash: var(--notice-wash);
+  --color-fact: var(--fact);
+  --color-factwash: var(--fact-wash);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
 }
