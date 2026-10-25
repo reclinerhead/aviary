@@ -44,6 +44,30 @@ def test_an_invented_figure_is_named():
     assert "14" in problems[0] and "35" not in problems[0]
 
 
+def test_evidence_figures_are_for_weighing_not_writing():
+    # #630: a fact line's "(evidence: ...)" holds the sample size for the
+    # model to judge the claim by; the first one-note entries recited every
+    # one ("only appearing 8 times over 10 hours of such conditions").
+    fact = ("In hot weather, this bird turns up 75% LESS OFTEN than is usual "
+            "for it (evidence: 8 visits over 10 hours of that weather).")
+    assert nv.given_figures(fact) == {"75"}
+    assert nv.strip_evidence(fact) == ("In hot weather, this bird turns up "
+                                       "75% LESS OFTEN than is usual for it.")
+    assert nv.validate("Hot days keep it away: 75% less often.", fact,
+                       lede=fact) == []
+    problems = nv.validate("Only 8 visits over 10 hours of heat.", fact)
+    assert len(problems) == 1
+    assert "evidence" in problems[0] and "10" in problems[0] \
+        and "8" in problems[0]
+    # The lede rule wants the claim's figure, not the evidence's.
+    problems = nv.validate("It made 8 visits in the heat, 75% fewer.", fact,
+                           lede=fact)
+    assert any("first sentence" in p for p in problems) is False
+    problems = nv.validate("Eight visits is thin. Still, 75% fewer.", fact,
+                           lede=fact)
+    assert any("first sentence" in p for p in problems)
+
+
 def test_inputs_may_be_a_list_and_the_background_counts():
     # The Wikipedia background rides the prompt, so its figures are given.
     background = "Its sale was banned by the Migratory Bird Treaty Act of 1918."

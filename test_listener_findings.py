@@ -81,7 +81,11 @@ def test_a_planted_dawn_offset_is_recovered():
     assert f["fields"]["median_min"] == -17
     assert f["fields"]["days"] == 30
     assert f["fields"]["label"].startswith("a dawn singer")
-    assert "17 minutes before sunrise" in f["fact_line"]
+    # The claim keeps its figure; the mornings and the spread are evidence,
+    # for the writer to weigh and never to write (#630).
+    assert f["fact_line"].startswith("First heard each morning around 17 "
+                                     "minutes before sunrise (evidence: 30 "
+                                     "mornings; the middle half between ")
     assert f["effect"] > 0.9                      # a tight cluster
 
 
@@ -184,20 +188,25 @@ def test_an_ordinary_regular_stands_in_its_season():
     f = fd.phenology(visits, now, [0.8] * 48)
     assert f["kind"] == "season" and f["effect"] == 0.5
     assert f["support"] == 90 and f["fields"]["days_heard"] == 28
-    assert f["fact_line"].startswith("Heard here since July 27, 2026, on 28 "
-                                     "of the last 28 days (90 visits in all).")
-    assert "it expects it here all year" in f["fact_line"]
+    # On a streak the line carries no day count: the records finding
+    # says "every day for the last 90 days", and one note must not state
+    # the frequency twice (#630).
+    assert f["fact_line"] == ("Heard here since July 27, 2026, and every day "
+                              "lately. BirdNET's range model expects it here "
+                              "all year.")
     assert f["novelty_key"] == "season:2026-10"        # once a month at most
-    # A migrant the model expects to leave: the week its curve drops.
+    # A migrant the model expects to leave: the week its curve drops, in
+    # words -- the percentages stay in the fields for the audit trail.
     week = region_prior.week_at(now)
     curve = [0.6] * 48
     for w in range(44, 49):                             # mid-Nov onward
         curve[w - 1] = 0.0
     f = fd.phenology(visits, now, curve)
     assert f["fields"]["ends_week"] == 44
-    assert "expects its season here to end around late November" \
-        in f["fact_line"]
-    assert f"rates it 60% likely here this week" in f["fact_line"]
+    assert f["fields"]["prior_now"] == 0.6 and f["fields"]["prior_peak"] == 0.6
+    assert f["fact_line"].endswith("BirdNET's range model expects its season "
+                                   "here to end around late November.")
+    assert "60%" not in f["fact_line"]
     assert fd.season_end(curve, week) == 44
     assert fd.season_end([0.5] * 48, week) is None
     # A bird the model barely expects at all: the yard out-hears the model.
@@ -214,8 +223,25 @@ def test_a_thin_visitor_gone_quiet_says_so():
     visits = [at(2026, 8, 3, 9), at(2026, 8, 5, 9), at(2026, 8, 9, 9)]
     f = fd.phenology(visits, now, None)
     assert f["kind"] == "season" and f["fields"]["days_heard"] == 0
-    assert f["fact_line"] == ("Heard here since August 3, 2026 (3 visits in "
-                              "all), but not in the last 76 days.")
+    assert f["fact_line"] == ("Heard here since August 3, 2026, but not in "
+                              "the last 76 days.")
+
+
+def test_the_28_day_window_is_28_calendar_days():
+    # #630: "present on 29 of the last 28 days" -- a window of 28 x 24 hours
+    # ending at noon touches 29 dates. The count is today and the 27 days
+    # before it, so it can never exceed 28.
+    now = at(2026, 10, 24, 12)
+    early = [at(2026, 10, 24, 0, 30) - i * 86400 for i in range(40)]
+    late = [at(2026, 10, 23, 23, 30) - i * 86400 for i in range(40)]
+    f = fd.phenology(early + late, now, None)
+    assert f["fields"]["days_heard"] == 28
+    assert "every day lately" in f["fact_line"]
+    # With gaps, the honest count of the 28 calendar days.
+    gappy = [t for i, t in enumerate(early) if i % 3]    # every third day out
+    f = fd.phenology(gappy, now, None)
+    assert f["fields"]["days_heard"] == 18
+    assert "on 18 of the last 28 days" in f["fact_line"]
 
 
 # --- place and night ----------------------------------------------------------
@@ -229,7 +255,8 @@ def test_place_judges_live_microphones_only():
     f = fd.place({"house-rear": 80, "house-front": 20, "Warbler32": 400},
                  PLACES)
     assert f["fields"]["source"] == "house-rear"
-    assert "80 of the 100 detections" in f["fact_line"]
+    assert ("80% of its detections from the microphones listening now "
+            "(evidence: 80 of 100)") in f["fact_line"]
     assert f["effect"] == 0.6                      # (0.8 - 0.5) * 2
     assert fd.place({"house-rear": 50, "house-front": 50}, PLACES) is None
     assert fd.place({"house-rear": 10}, PLACES) is None       # too few
@@ -369,5 +396,6 @@ def test_weather_sky_takes_the_strongest_solid_bucket():
          "hours": 3.0}]}}
     f = fd.weather_sky(stats)
     assert f["fields"] == {"bucket": "rain", "effect": 44}
-    assert f["fact_line"].startswith("When it rains, this bird turns up 44% "
-                                     "MORE OFTEN")
+    assert f["fact_line"] == ("When it rains, this bird turns up 44% MORE "
+                              "OFTEN than its own average rate (evidence: 281 "
+                              "visits over 53 hours of that weather).")

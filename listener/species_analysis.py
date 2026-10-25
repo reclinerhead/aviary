@@ -701,6 +701,14 @@ RULES = (
     "ABOUT AVERAGE, 'Evidence: solid', 'Evidence: THIN'. These are labels "
     "for you to read, NEVER words to copy. They must not appear anywhere in "
     "what you write; say it in ordinary English instead.\n"
+    "- A parenthesis marked 'evidence:' tells you how solid a finding is "
+    "-- how many mornings, how many hours of weather. Read it, weigh it, "
+    "and never write its figures.\n"
+    "- Figures are not a quota. Most sentences carry none; keep a figure "
+    "only where it is the point -- a date, a count that is itself the "
+    "story, the size of an effect -- and never more than two in a "
+    "sentence. A figure you leave out is said in plain words (far less "
+    "often, nearly every day), never replaced by another number.\n"
     "- Never reverse a direction. If a finding is labelled MORE OFTEN, the "
     "bird was heard MORE -- write it that way, whatever you think you know "
     "about birds.\n"
@@ -731,8 +739,11 @@ def prompt_line(f):
 
 def plain_line(f):
     """A finding as the plain record states it: the sentence with the
-    uppercase direction keywords put back into ordinary English."""
-    return (f["fact_line"].replace("MORE OFTEN", "more often")
+    uppercase direction keywords put back into ordinary English and the
+    evidence parenthesis dropped (#630) -- the reader gets the claim, as
+    the model would have written it."""
+    return (notes_validate.strip_evidence(f["fact_line"])
+            .replace("MORE OFTEN", "more often")
             .replace("LESS OFTEN", "less often"))
 
 

@@ -43,6 +43,14 @@
 # `effect` is each kind's own 0..~1.5 magnitude; `support` is the evidence
 # count in the kind's own unit (days, visits); `novelty_key` names the
 # finding coarsely enough that the same fact next week is "already said".
+#
+# A fact_line's "(evidence: ...)" parenthesis (#630) holds the sample size
+# and the spread -- what makes the claim solid -- for the model to weigh
+# and NEVER to write: the validator counts a figure found only there as
+# not given, and the plain record drops the parenthesis. The claim keeps
+# the one figure that is the point. The first one-note entries recited
+# every sample size ("only appearing 8 times over 10 hours of such
+# conditions") because the prompt handed them over as part of the fact.
 # =============================================================================
 
 import time
@@ -207,10 +215,13 @@ def dawn(visits, lat, lon):
     else:
         label = None
     effect = 1 / (1 + spread / 30) if label else 0.2
-    line = (f"First heard each morning, at the median, "
-            f"{relative(med, 'sunrise')}, across {len(offs):,} mornings; on "
-            f"half of them between {relative(q1, 'sunrise')} and "
-            f"{relative(q3, 'sunrise')}.")
+    # The mornings and the middle half are evidence for the writer to
+    # weigh, never figures to write (#630): "around 1 minute after sunrise,
+    # though on half of those mornings between 21 minutes before and 34
+    # after" is what the reader got when they rode the claim.
+    line = (f"First heard each morning around {relative(med, 'sunrise')} "
+            f"(evidence: {len(offs):,} mornings; the middle half between "
+            f"{relative(q1, 'sunrise')} and {relative(q3, 'sunrise')}).")
     if label:
         line += f" That makes it {label}."
     return finding("dawn", {"median_min": round(med), "q1": round(q1),
@@ -229,9 +240,8 @@ def dusk(visits, lat, lon):
     q1, med, q3 = quartiles(offs)
     if not (med >= -20 and q3 - q1 <= 60):
         return None
-    line = (f"Last heard each evening, at the median, "
-            f"{relative(med, 'sunset')}, across {len(offs):,} evenings: it "
-            "sings until dark.")
+    line = (f"Last heard each evening around {relative(med, 'sunset')} "
+            f"(evidence: {len(offs):,} evenings): it sings until dark.")
     return finding("dusk", {"median_min": round(med), "days": len(offs)},
                    len(offs), 1 / (1 + (q3 - q1) / 60), line,
                    f"dusk:{round(med / 15) * 15}")
@@ -334,17 +344,30 @@ def phenology(visits, now, curve):
     # Nothing newsier: where the bird stands in its season. Novelty is the
     # calendar month, so a quiet bird gets at most one season-led entry a
     # month, and the fact is still there to support any other lede.
-    heard = len({local_date(t) for t in v
-                 if t > now - SEASON_WINDOW_DAYS * 86400})
+    # The window is CALENDAR days -- today and the 27 before it (#630: a
+    # window of 28 x 24 hours touches 29 dates, and the first note said
+    # "29 of the last 28 days"). A bird on a streak that covers the window
+    # says "every day lately" with no figure: the records finding carries
+    # the streak's number, and one note must not state the frequency twice.
+    import datetime
+    today = datetime.date(*local_date(now))
+    dates = {datetime.date(*local_date(t)) for t in v}
+    window = [today - datetime.timedelta(days=i)
+              for i in range(SEASON_WINDOW_DAYS)]
+    heard = sum(1 for d in window if d in dates)
     line = f"Heard here since {date_text(v[0])}"
-    if heard:
-        line += (f", on {heard} of the last {SEASON_WINDOW_DAYS} days"
-                 f" ({n:,} visits in all).")
+    if heard == SEASON_WINDOW_DAYS:
+        line += ", and every day lately."
+    elif heard:
+        line += f", on {heard} of the last {SEASON_WINDOW_DAYS} days."
     else:
-        line += f" ({n:,} visits in all), but not in the last {silent} days."
+        line += f", but not in the last {silent} days."
     fields = {"first_ts": v[0], "days_heard": heard,
               "window_days": SEASON_WINDOW_DAYS, "visits": n,
               "prior_now": prior_now, "prior_peak": peak, "ends_week": None}
+    # The model's calendar in words, its percentages kept in `fields` for
+    # the audit trail: handed "90% this week, 95% at its peak in
+    # mid-September" the note recited both (#630).
     if curve and peak < PRIOR_SEASONAL:
         line += (f" BirdNET's range model rates it no more than {pct(peak)}% "
                  "likely here in any week of the year, so your yard hears "
@@ -352,12 +375,10 @@ def phenology(visits, now, curve):
     elif curve:
         ends = season_end(curve, week)
         fields["ends_week"] = ends
-        line += (f" BirdNET's range model rates it {pct(prior_now)}% likely "
-                 f"here this week, with its peak of {pct(peak)}% in "
-                 f"{week_phrase(peak_week)}")
-        line += ("; it expects it here all year." if ends is None else
-                 f", and expects its season here to end around "
-                 f"{week_phrase(ends)}.")
+        line += (" BirdNET's range model expects it here all year."
+                 if ends is None else
+                 f" BirdNET's range model expects its season here to end "
+                 f"around {week_phrase(ends)}.")
     lt = time.localtime(now)
     return finding("season", fields, n, 0.5, line,
                    f"season:{lt.tm_year}-{lt.tm_mon:02d}")
@@ -405,8 +426,9 @@ def place(sources, places, yard=None):
     if share < PLACE_SHARE or (base is not None
                                and share - base < PLACE_LIFT):
         return None
-    line = (f"Heard mostly at {mic_name(top, places)}: {n:,} of the "
-            f"{total:,} detections from the microphones listening now.")
+    line = (f"Heard mostly at {mic_name(top, places)}: {pct(share)}% of its "
+            f"detections from the microphones listening now (evidence: "
+            f"{n:,} of {total:,}).")
     if base is not None:
         line += (f" That microphone hears only {pct(base)}% of the yard's "
                  "birds overall, so this one favours that spot.")
@@ -431,8 +453,8 @@ def night(visits, sci):
     if share < NIGHT_SHARE:
         return None
     if is_nocturnal(sci):
-        line = (f"Mostly a night voice: {pct(share)}% of its {n:,} visits "
-                "fell between 10pm and 4am.")
+        line = (f"Mostly a night voice: {pct(share)}% of its visits fell "
+                f"between 10pm and 4am (evidence: {n:,} visits).")
         return finding("night", {"share": round(share, 3), "visits": n},
                        n, share, line, f"night:{round(share, 1)}")
     line = (f"{pct(share)}% of its {n:,} visits fell between 10pm and 4am, "
@@ -544,8 +566,8 @@ def weather_sky(stats):
     # figure it was never given -- and the validator throws the draft away.
     line = (f"{when}, this bird turns up {abs(p)}% "
             f"{'MORE OFTEN' if p > 0 else 'LESS OFTEN'} than its own average "
-            f"rate, on {best['visits']:,} visits over "
-            f"{round(best['hours']):,} hours of that weather.")
+            f"rate (evidence: {best['visits']:,} visits over "
+            f"{round(best['hours']):,} hours of that weather).")
     return finding("weather_sky", {"bucket": best["bucket"], "effect": p},
                    best["visits"], min(abs(best["effect"]), 1.5), line,
                    f"sky:{best['bucket']}:{'+' if p > 0 else '-'}")
@@ -615,8 +637,8 @@ def weather_temp(rows):
     p = round(best["effect"] * 100)
     line = (f"In {best['bucket']} weather, this bird turns up {abs(p)}% "
             f"{'MORE OFTEN' if p > 0 else 'LESS OFTEN'} than is usual for it "
-            f"at the same time of year, on {best['observed']:,} visits over "
-            f"{round(best['hours']):,} hours of that weather.")
+            f"at the same time of year (evidence: {best['observed']:,} visits "
+            f"over {round(best['hours']):,} hours of that weather).")
     return finding("weather_temp", {"bucket": best["bucket"], "effect": p},
                    best["observed"], min(abs(best["effect"]), 1.5), line,
                    f"temp:{best['bucket']}:{'+' if p > 0 else '-'}")

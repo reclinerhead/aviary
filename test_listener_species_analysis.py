@@ -388,7 +388,8 @@ def answer(prompt):
         if marker in prompt:
             lede = prompt.split(marker, 1)[1].split("\n", 1)[0]
             return ("Some prose, "
-                    + ", ".join(sorted(notes_validate.figures(lede))) + ".")
+                    + ", ".join(sorted(notes_validate.given_figures(lede)))
+                    + ".")
     return "Some prose."
 
 
@@ -834,9 +835,13 @@ def test_an_entry_naming_a_place_no_fact_names_is_retried(conn):
 
 
 def test_a_thin_fact_carries_the_hedge_marker_in_the_prompt_only():
-    f = {"fact_line": "In rain, 44% MORE OFTEN.", "thin": True}
-    assert sa.prompt_line(f).endswith("Evidence: THIN -- hedge this one.")
+    f = {"fact_line": "In rain, 44% MORE OFTEN (evidence: 5 visits over 9 "
+                      "hours).", "thin": True}
+    assert sa.prompt_line(f).endswith("hours). Evidence: THIN -- hedge this one.")
+    # The plain record states the claim and drops the evidence (#630).
     assert sa.plain_line(f) == "In rain, 44% more often."
+    assert "never write its figures" in sa.RULES
+    assert "never more than two in a sentence" in sa.RULES
 
 
 def test_a_rule_breaking_entry_is_retried_then_falls_back(conn):
@@ -853,8 +858,8 @@ def test_a_rule_breaking_entry_is_retried_then_falls_back(conn):
     row = conn.execute("SELECT * FROM species_journal ORDER BY id DESC"
                        ).fetchone()
     assert row["text"].startswith("Heard here since July 18, 2026, on 12 of "
-                                  "the last 28 days (12 visits in all). "
-                                  "Heard on 12 separate days.")
+                                  "the last 28 days. Heard on 12 separate "
+                                  "days.")
     assert row["fallback"] == 1
 
 
