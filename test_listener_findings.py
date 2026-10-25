@@ -176,10 +176,46 @@ def test_lingering_past_the_models_season():
     assert f["kind"] == "lingering"
 
 
-def test_an_ordinary_regular_has_no_season_news():
+def test_an_ordinary_regular_stands_in_its_season():
+    # #626: no news, but the one note still gets a calendar sentence --
+    # heard how often lately, and what the model's year holds for it.
     now = at(2026, 10, 24, 12)
     visits = [now - i * 86400 for i in range(90)]
-    assert fd.phenology(visits, now, [0.8] * 48) is None
+    f = fd.phenology(visits, now, [0.8] * 48)
+    assert f["kind"] == "season" and f["effect"] == 0.5
+    assert f["support"] == 90 and f["fields"]["days_heard"] == 28
+    assert f["fact_line"].startswith("Heard here since July 27, 2026, on 28 "
+                                     "of the last 28 days (90 visits in all).")
+    assert "it expects it here all year" in f["fact_line"]
+    assert f["novelty_key"] == "season:2026-10"        # once a month at most
+    # A migrant the model expects to leave: the week its curve drops.
+    week = region_prior.week_at(now)
+    curve = [0.6] * 48
+    for w in range(44, 49):                             # mid-Nov onward
+        curve[w - 1] = 0.0
+    f = fd.phenology(visits, now, curve)
+    assert f["fields"]["ends_week"] == 44
+    assert "expects its season here to end around late November" \
+        in f["fact_line"]
+    assert f"rates it 60% likely here this week" in f["fact_line"]
+    assert fd.season_end(curve, week) == 44
+    assert fd.season_end([0.5] * 48, week) is None
+    # A bird the model barely expects at all: the yard out-hears the model.
+    f = fd.phenology(visits, now, [0.02] * 48)
+    assert "no more than 2% likely here in any week" in f["fact_line"]
+    # No prior (a station): own-record claims only.
+    f = fd.phenology(visits, now, None)
+    assert "BirdNET" not in f["fact_line"]
+
+
+def test_a_thin_visitor_gone_quiet_says_so():
+    # Under DEPARTED_MIN_VISITS, so never a departure: still a true fact.
+    now = at(2026, 10, 24, 12)
+    visits = [at(2026, 8, 3, 9), at(2026, 8, 5, 9), at(2026, 8, 9, 9)]
+    f = fd.phenology(visits, now, None)
+    assert f["kind"] == "season" and f["fields"]["days_heard"] == 0
+    assert f["fact_line"] == ("Heard here since August 3, 2026 (3 visits in "
+                              "all), but not in the last 76 days.")
 
 
 # --- place and night ----------------------------------------------------------

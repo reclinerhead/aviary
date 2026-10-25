@@ -70,6 +70,7 @@ import {
   portraitUrl,
   reconcileOrder,
   reconcileRail,
+  rhythmCaption,
   rhythmCellExplain,
   rhythmStrip,
   AviaryNotice,
@@ -118,8 +119,8 @@ import {
   REFRESH_HOLD_S,
   type RefreshEvent,
   type RefreshUi,
-  notesMode,
-  sketchTitle,
+  fieldNote,
+  type FieldNote,
   journalStamp,
   earlierLabel,
   type JournalEntry,
@@ -2290,24 +2291,23 @@ export function Aviary({
 
 // --- The /aviary/[species] page ---------------------------------------------
 
-/** The field-naturalist blocks (#186), set as a journal spread (#220): two
- * facing pages, each an entry with its own margin figure, dateline, and
- * signature -- notes in a book, not columns in a panel. Prose written by the
- * analysis pass on pearl and merely read here -- nothing generates at render
- * time, ever. The no-notes empty state keeps the pre-#220 panel footprint
- * exactly, so day one still can't shift the page.
+/** The field-naturalist note (#186), set as ONE page of a journal (#626;
+ * #220 set it as two facing pages, #614 made those the newest entry and a
+ * standing sketch, and read side by side the two said the same things):
+ * the prose on the left, the margin figures -- the hour strip and the
+ * weather pills -- in a column on the right. Prose written by the analysis
+ * pass on orchid and merely read here -- nothing generates at render time,
+ * ever. One skeleton in every state (no note yet, a pre-#626 block carried
+ * forward, the note), reserved figure heights, so nothing on the page moves
+ * when the payload lands.
  *
- * Since #614 the spread is a JOURNAL once the bird has an entry: Entry I
- * the newest dated entry, Entry II the standing sketch, earlier entries in
- * a closed disclosure below. A bird with no entry yet keeps the pre-#614
- * two pages (rhythm, weather) until the pass reaches it.
- *
- * Under the spread, on a box that can run it (`refreshable`, #613), one
- * line offers "write a fresh entry": it asks the server to run the pass's
- * own --refresh for this bird -- still the pass writing, never this page --
- * and swaps the new notes in when they land. The line is the page's last
- * element, so its arrival with the payload moves nothing above it, and
- * only its words change between states. */
+ * Earlier entries sit in a closed disclosure below the page. Under that,
+ * on a box that can run it (`refreshable`, #613), one line offers "write a
+ * fresh entry": it asks the server to run the pass's own --refresh for
+ * this bird -- still the pass writing, never this page -- and swaps the new
+ * note in when it lands. The line is the page's last element, so its
+ * arrival with the payload moves nothing above it, and only its words
+ * change between states. */
 function FieldNotes({
   analysis,
   sci,
@@ -2317,54 +2317,15 @@ function FieldNotes({
   sci: string;
   onNotes: (a: Analysis) => void;
 }) {
-  const mode = notesMode(analysis);
-  const refresh = analysis?.refreshable ? (
-    <RefreshLine sci={sci} onNotes={onNotes} />
-  ) : null;
-  if (mode === "empty")
-    return (
-      <>
-        <section className="panel mt-4 rounded-sm border border-line bg-panel">
-          <div className="flex items-baseline justify-between gap-3 px-4 pb-2 pt-3">
-            <h2
-              className="text-lg text-ink"
-              style={{ fontFamily: "var(--font-display)" }}
-            >
-              Field Notes
-            </h2>
-          </div>
-          <div className="grid min-h-[120px] gap-5 px-4 pb-4">
-            <div className="flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
-              <span className="stamp px-6 text-center text-xs text-inkfaint">
-                no field notes yet — they arrive with the analysis pass
-              </span>
-            </div>
-          </div>
-        </section>
-        {refresh}
-      </>
-    );
-  const stats = analysis?.stats ?? null;
-  // The plain record (#612) is the facts set down without the naturalist's
-  // voice, so the dateline names that rather than a model that didn't write
-  // it. Same stamp, same slot -- only the words change.
-  const author = analysis?.fallback ? "plain record" : analysis?.model;
-  const dateline = analysis?.generated_ts
-    ? `${dayOf(analysis.generated_ts)}${author ? ` · ${author}` : ""}`
-    : null;
+  const note = fieldNote(analysis);
   const entries = analysis?.entries ?? [];
-  const latest = entries[0];
-  const visitsStamp =
-    stats?.total_visits != null
-      ? `${stats.total_visits.toLocaleString("en-US")} visits`
-      : null;
   return (
-    // overflow-x-clip is the page-never-scrolls-sideways guard for the weather
-    // pills' hover tooltips (WeatherChipsRow): an absolutely-positioned bubble
-    // centred on a pill in the narrow right column of the md spread would
-    // otherwise extend past the viewport and add a horizontal scroll. Clipping
-    // x here contains it; the tooltip's upward (y) reveal sits deep inside the
-    // section, so it is never clipped by this.
+    // overflow-x-clip is the page-never-scrolls-sideways guard for the
+    // figures' hover tooltips: an absolutely-positioned bubble centred on a
+    // pill or an hour column in the right-hand margin would otherwise extend
+    // past the viewport and add a horizontal scroll. Clipping x here contains
+    // it; the tooltip's upward (y) reveal sits deep inside the section, so it
+    // is never clipped by this.
     <section className="mt-4 overflow-x-clip">
       <div className="flex items-baseline justify-between gap-3 pb-2">
         <h2
@@ -2374,65 +2335,119 @@ function FieldNotes({
           Field Notes
         </h2>
       </div>
-      {mode === "journal" ? (
-        // The journal (#614): Entry I is the newest dated entry -- its
-        // title made in Python from its lede, its stamp the reason it was
-        // written -- and Entry II the standing sketch. Same pages, same
-        // figures, same 52px figure boxes: only the words changed. A bird
-        // whose sketch landed before its first entry shows Entry I as the
-        // page's own "not written yet" -- same skeleton, nothing shifts
-        // when the entry arrives.
-        <div className="grid items-stretch gap-5 md:grid-cols-2">
-          <JournalPage
-            numeral="I"
-            title={latest?.title ?? "the latest entry"}
-            text={latest?.text ?? null}
-            stamp={latest ? journalStamp(latest.trigger) : null}
-            figure={<RhythmStrip stats={stats} />}
-            dateline={
-              latest
-                ? `${dayOf(latest.entry_ts)}${
-                    entryAuthor(latest) ? ` · ${entryAuthor(latest)}` : ""
-                  }`
-                : null
-            }
-          />
-          <JournalPage
-            numeral="II"
-            title={sketchTitle(analysis?.prompt_version)}
-            text={analysis?.rhythm ?? null}
-            stamp={visitsStamp}
-            figure={<WeatherChipsRow stats={stats} />}
-            dateline={dateline}
-          />
+      <NotePage note={note} stats={analysis?.stats ?? null} />
+      {!note?.legacy && <EarlierEntries entries={entries.slice(1)} />}
+      {analysis?.refreshable && <RefreshLine sci={sci} onNotes={onNotes} />}
+    </section>
+  );
+}
+
+/** The one page (#626): a heading over a ruled line (the entry's title,
+ * made in Python from its lede, and a stamp saying why it was written),
+ * then two columns on md+ -- the prose at two thirds, with the drop cap,
+ * and the margin at one third behind a hairline rule, holding the hour
+ * strip and the weather pills under stamped labels -- and a dateline
+ * footer signed by the house voice. Below md the prose comes first and the
+ * figures follow: on a phone the reading is the point and the figures are
+ * a glance. The footer spans both columns so the page closes on one rule
+ * whichever column ran longer. */
+function NotePage({
+  note,
+  stats,
+}: {
+  note: FieldNote | null;
+  stats: AnalysisStats | null;
+}) {
+  const dateline =
+    note?.ts != null
+      ? `${dayOf(note.ts)}${note.author ? ` · ${note.author}` : ""}`
+      : (note?.author ?? null);
+  const visits =
+    stats?.total_visits != null
+      ? `${stats.total_visits.toLocaleString("en-US")} visits`
+      : null;
+  return (
+    <article className="panel grid min-w-0 gap-x-6 rounded-sm border border-line bg-panel px-5 pb-3 pt-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <header className="flex items-baseline justify-between gap-3 border-b border-line pb-2 md:col-span-2">
+        <h3
+          className="min-w-0 truncate text-base text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {note?.title ?? "the latest entry"}
+        </h3>
+        {note && (
+          <span className="stamp shrink-0 text-[9px] text-inkfaint">
+            {note.stamp}
+          </span>
+        )}
+      </header>
+      {note ? (
+        <div className="mt-3 min-w-0 space-y-3 text-[15px] leading-relaxed text-inkdim">
+          {note.text.split(/\n+/).map((para, i) => (
+            <p
+              key={i}
+              className={
+                i === 0
+                  ? "first-letter:float-left first-letter:mr-1.5 first-letter:text-[38px] first-letter:leading-[0.8] first-letter:text-ink first-letter:[font-family:var(--font-display)]"
+                  : undefined
+              }
+            >
+              {para}
+            </p>
+          ))}
         </div>
       ) : (
-        <div className="grid items-stretch gap-5 md:grid-cols-2">
-          <JournalPage
-            numeral="I"
-            title="the rhythm"
-            text={analysis?.rhythm ?? null}
-            stamp={visitsStamp}
-            figure={<RhythmStrip stats={stats} />}
-            dateline={dateline}
-          />
-          <JournalPage
-            numeral="II"
-            title="weather & timing"
-            text={analysis?.weather ?? null}
-            stamp={
-              stats?.weather?.visits_matched != null
-                ? `${stats.weather.visits_matched.toLocaleString("en-US")} matched`
-                : null
-            }
-            figure={<WeatherChipsRow stats={stats} />}
-            dateline={dateline}
-          />
+        <div className="mt-3 flex min-h-[120px] items-center justify-center rounded-sm border border-line bg-panel2">
+          <span className="stamp px-6 text-center text-xs text-inkfaint">
+            no field notes yet — they arrive with the analysis pass
+          </span>
         </div>
       )}
-      {mode === "journal" && <EarlierEntries entries={entries.slice(1)} />}
-      {refresh}
-    </section>
+      <aside className="mt-4 min-w-0 md:mt-3 md:border-l md:border-line md:pl-6">
+        <MarginFigure label="by the hour" aside={rhythmCaption(stats)}>
+          <RhythmStrip stats={stats} />
+        </MarginFigure>
+        <MarginFigure label="in the weather" aside={visits} className="mt-4">
+          <WeatherChipsRow stats={stats} />
+        </MarginFigure>
+      </aside>
+      <footer className="mt-4 flex items-baseline justify-between gap-3 border-t border-line pt-2 md:col-span-2">
+        <span className="stamp text-[9px] text-inkfaint">
+          {dateline ?? "—"}
+        </span>
+        <span
+          className="text-xs italic text-inkfaint"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          — Earl
+        </span>
+      </footer>
+    </article>
+  );
+}
+
+/** One margin figure: a stamped label on the left, a caption on the right
+ * (the busiest hours; the visit total), the figure beneath. The caption
+ * slot is reserved even when empty so the figures' tops line up. */
+function MarginFigure({
+  label,
+  aside,
+  className,
+  children,
+}: {
+  label: string;
+  aside: string | null;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <figure className={className}>
+      <figcaption className="stamp flex h-4 items-baseline justify-between gap-3 text-[9px] text-inkfaint">
+        <span>{label}</span>
+        <span className="truncate text-inkdim">{aside ?? ""}</span>
+      </figcaption>
+      <div className="mt-1.5">{children}</div>
+    </figure>
   );
 }
 
@@ -2640,35 +2655,42 @@ function JournalPage({
   );
 }
 
-/** The rhythm page's margin figure (#220): the stored 24-hour histogram as
- * a strip in three shades of --wing (#558) -- the peak window lit, the
- * second-busiest hours outside it at a middle opacity, the rest dim; one
- * hue throughout, since hue carries identity on this page and a second hue
- * would read as a second bird. STATS_JSON VERBATIM -- the same numbers the
- * prose beside it was written from, server-local hours and all (the
- * deliberate split: the chart above speaks viewer-local, the figures speak
- * the prose's clock). Each hour is a full-height column so the hover target
- * is the column, not a two-pixel bar; the bubble is the weather pills'
- * (desktop-only, out of flow -- see WeatherChipsRow for why). Reserved
- * height in every state. */
+/** The hour figure (#220, a real figure since #626): the stored 24-hour
+ * histogram as bars in three shades of --wing (#558) -- the peak window
+ * lit, the second-busiest hours outside it at a middle opacity, the rest
+ * dim; one hue throughout, since hue carries identity on this page and a
+ * second hue would read as a second bird. STATS_JSON VERBATIM -- the same
+ * numbers the prose beside it was written from, server-local hours and all
+ * (the deliberate split: the chart above speaks viewer-local, the figures
+ * speak the prose's clock). The bars stand on a baseline with a dashed
+ * half-height rule behind them, so an hour reads against its neighbours
+ * and against "half the busiest hour" without a y-axis the margin has no
+ * room for; the busiest hour is named in the figure's caption, every hour
+ * on hover. Each hour is a full-height column so the hover target is the
+ * column, not the bar; the bubble is the weather pills' (desktop-only, out
+ * of flow -- see WeatherChipsRow for why). Reserved height in every state. */
 const RHYTHM_TIER_OPACITY = { peak: 1, second: 0.6, rest: 0.3 } as const;
 
 function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
   const cells = rhythmStrip(stats);
   return (
-    <div className="h-[52px]">
+    <div className="h-[148px]">
       {cells ? (
         <>
-          <div className="flex h-8 items-end gap-px">
+          <div className="relative flex h-[128px] items-end gap-px border-b border-line">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-dashed border-line opacity-60"
+            />
             {cells.map((c, h) => (
               <div
                 key={h}
                 className="group relative flex h-full min-w-0 flex-1 items-end"
               >
                 <div
-                  className="w-full rounded-[1px] transition-opacity duration-150 group-hover:opacity-100"
+                  className="w-full rounded-t-[1px] transition-opacity duration-150 group-hover:opacity-100"
                   style={{
-                    height: `${Math.max(6, Math.round(c.frac * 100))}%`,
+                    height: `${Math.max(2, Math.round(c.frac * 100))}%`,
                     background: "var(--wing)",
                     opacity: RHYTHM_TIER_OPACITY[c.tier],
                   }}
@@ -2701,28 +2723,24 @@ function RhythmStrip({ stats }: { stats: AnalysisStats | null }) {
   );
 }
 
-/** The weather page's margin figure: the pass's exposure-normalised effects
- * as one horizontal row of pills, strongest first (#276 -- was a vertical
- * stack of full-width rows since #257, which grew far taller than the facing
- * rhythm strip and left the two journal pages' prose starting on different
- * lines). The row is a fixed h-[52px] box matching RhythmStrip exactly, so
- * the figure heights agree and the paragraphs beneath both pages align. A
- * thin finding keeps its hedge in pixels -- dashed and dimmed -- and moves
- * its "· thin" words into the tooltip (weatherChipExplain), which decodes
- * each effect on hover; the paragraph beneath carries the interpretation the
- * tooltip deliberately doesn't. Each pill is nowrap so a label never wraps.
- * Only rendered at all when the pass judged the sample sufficient; a confident
- * row over hedged prose would be the figure contradicting the writing. */
+/** The weather figure: the pass's exposure-normalised effects as pills,
+ * strongest first, in a two-column grid (#626 -- #276's single row faced
+ * the hour strip across a two-page spread and had to match its height to
+ * the pixel; in the margin the pills stack two to a row, and the box
+ * reserves two rows so a bird with one pill and a bird with four take the
+ * same room). A thin finding keeps its hedge in pixels -- dashed and
+ * dimmed -- and moves its "· thin" words into the tooltip
+ * (weatherChipExplain), which decodes each effect on hover; the prose
+ * beside carries the interpretation the tooltip deliberately doesn't. Each
+ * pill is nowrap so a label never wraps. Only rendered at all when the pass
+ * judged the sample sufficient; a confident row over hedged prose would be
+ * the figure contradicting the writing. */
 function WeatherChipsRow({ stats }: { stats: AnalysisStats | null }) {
   const chips = weatherChips(stats);
   return (
-    <div className="min-h-[52px] md:h-[52px]">
+    <div className="min-h-[66px]">
       {chips.length > 0 ? (
-        // One fixed-height row on the md+ spread (where it faces the rhythm
-        // strip and the two pages' prose must start on the same line); wraps
-        // on mobile, where the pages stack and a 4-pill row would otherwise
-        // push the page into a horizontal scroll.
-        <div className="flex min-h-[52px] w-full flex-wrap items-center gap-1.5 md:h-full md:flex-nowrap">
+        <div className="grid grid-cols-2 gap-1.5">
           {chips.map((c) => (
             <span
               key={c.label}
@@ -2754,7 +2772,7 @@ function WeatherChipsRow({ stats }: { stats: AnalysisStats | null }) {
           ))}
         </div>
       ) : (
-        <div className="flex min-h-[52px] w-full items-center justify-center rounded-sm border border-line bg-panel2 md:h-full">
+        <div className="flex h-[66px] w-full items-center justify-center rounded-sm border border-line bg-panel2">
           <span className="stamp px-4 text-center text-xs text-inkfaint">
             no confident weather figures yet
           </span>

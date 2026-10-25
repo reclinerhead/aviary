@@ -2494,6 +2494,16 @@ function rhythmHourLabel(h: number): string {
   return `${hour}${h < 12 ? "am" : "pm"}`;
 }
 
+/** The hour figure's caption (#626): the stored peak window in the prose's
+ * clock -- "busiest 6am–9am" -- read verbatim from stats_json, never
+ * recomputed from the histogram (the end hour is exclusive, as
+ * species_analysis.peak_window stores it). Null without a window. */
+export function rhythmCaption(stats: AnalysisStats | null): string | null {
+  const peak = stats?.peak_window;
+  if (!peak || !Array.isArray(stats?.hours)) return null;
+  return `busiest ${rhythmHourLabel(peak.start_hour)}–${rhythmHourLabel(peak.end_hour)}`;
+}
+
 /** The rhythm strip's hover bubble, one line: the hour's span in the
  * prose's clock and its visit count -- "6am–7am · 312 visits". Singular at
  * one, "no visits" at zero, thousands separated past 999 (the house rule). */
@@ -2711,28 +2721,52 @@ export type JournalEntry = {
   fallback: boolean;
 };
 
-/** Which spread the field notes render: the journal once a bird has an
- * entry OR its standing sketch (prompt version 4+), the pre-#614 two-block
- * notes until then, nothing without either. The sketch alone counts: on
- * the first deploy a sketch landed before its bird's first entry, and the
- * old layout put it under "the rhythm" beside an empty "weather & timing";
- * the journal layout shows it as Entry II with Entry I honestly unwritten. */
-export function notesMode(a: {
+export type FieldNote = {
+  title: string;
+  text: string;
+  /** The small stamp beside the heading: why the note was written. */
+  stamp: string;
+  ts: number | null;
+  /** Who set it down: the model, or "plain record" (#612). */
+  author: string | null;
+  /** A pre-#626 sketch or rhythm block carried forward on the stats row,
+   * shown until the bird's first entry lands. */
+  legacy: boolean;
+};
+
+/** The ONE note a bird's page shows (#626): its newest dated entry, else
+ * the prose a pre-#626 row still carries (the standing sketch from version
+ * 4, the rhythm and weather blocks below it -- joined, since the page has
+ * one place for prose now), else nothing. The stats row never erases that
+ * old prose, so a deploy can't blank a page whose first entry is still
+ * queued. */
+export function fieldNote(a: {
   entries?: JournalEntry[] | null;
   rhythm?: string | null;
   weather?: string | null;
-  prompt_version?: number | null;
-} | null): "journal" | "legacy" | "empty" {
-  if (a?.entries && a.entries.length > 0) return "journal";
-  if (a?.rhythm && (a.prompt_version ?? 0) >= 4) return "journal";
-  if (a?.rhythm || a?.weather) return "legacy";
-  return "empty";
-}
-
-/** The standing sketch began at PROMPT_VERSION 4; below that `rhythm` is
- * still the old rhythm note, and the page names it so. */
-export function sketchTitle(promptVersion: number | null | undefined): string {
-  return (promptVersion ?? 0) >= 4 ? "the sketch" : "the rhythm";
+  generated_ts?: number | null;
+  model?: string | null;
+  fallback?: boolean | null;
+} | null): FieldNote | null {
+  const e = a?.entries?.[0];
+  if (e)
+    return {
+      title: e.title,
+      text: e.text,
+      stamp: journalStamp(e.trigger),
+      ts: e.entry_ts,
+      author: e.fallback ? "plain record" : e.model,
+      legacy: false,
+    };
+  if (!a?.rhythm && !a?.weather) return null;
+  return {
+    title: a.weather ? "the rhythm" : "the sketch",
+    text: [a.rhythm, a.weather].filter((t): t is string => !!t).join("\n"),
+    stamp: "standing",
+    ts: a.generated_ts ?? null,
+    author: a.fallback ? "plain record" : (a.model ?? null),
+    legacy: true,
+  };
 }
 
 const TRIGGER_STAMPS: Record<string, string> = {

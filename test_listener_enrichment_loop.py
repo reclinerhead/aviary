@@ -158,8 +158,10 @@ def test_a_lifer_gets_profile_then_notes_in_one_tick(store, monkeypatch,
     row = store.execute("SELECT * FROM species_analysis").fetchone()
     assert row is not None
     assert row["host"] == "fakehost:11434"            # provenance
-    assert row["model"] == "gemma3:12b"
+    assert row["model"] is None                       # no model wrote it (#626)
     assert row["prompt_version"] == species_analysis.PROMPT_VERSION
+    entry = store.execute("SELECT * FROM species_journal").fetchone()
+    assert entry["model"] == "gemma3:12b"
     # The tick's whole point: the description written moments earlier rode
     # the very first note's prompt.
     assert any("A very red bird." in p for p in fake_llm[0].prompts)
@@ -215,17 +217,16 @@ def test_the_cap_bounds_generations_per_tick(store, monkeypatch, fake_llm):
 
     results = loop.tick(now=NOW)
 
-    # Three first entries and three sketches (#614) share the one cap. The
-    # FIRST ENTRY goes first: a page becomes a journal only once its bird
-    # has an entry, and the deploy that ran sketches first left their pages
-    # in the old layout with an empty facing page. Five wait -- honestly
-    # counted, logged.
+    # Three stats rows and three first entries. The stats cost no model
+    # (#626) and all land first, outside the cap; the cap then allows ONE
+    # entry, and the other two wait -- honestly counted, logged.
     assert store.execute("SELECT COUNT(*) c FROM species_journal"
-                         ).fetchone()["c"] == 1       # one generation, not six
+                         ).fetchone()["c"] == 1       # one generation, not three
     assert store.execute("SELECT COUNT(*) c FROM species_analysis"
-                         ).fetchone()["c"] == 0       # the sketches wait
+                         ).fetchone()["c"] == 3       # the figures are free
     assert results["analysis"]["written"] == 1
-    assert results["analysis"]["deferred"] == 5
+    assert results["analysis"]["stats written"] == 3
+    assert results["analysis"]["deferred"] == 2
 
 
 def test_a_cap_of_zero_skips_the_host_entirely(store, monkeypatch, fake_llm):

@@ -22,6 +22,10 @@
 #
 #   arrival / departure / lingering   against the regional prior (BirdNET's
 #                                     48-week range model, region_prior.py)
+#   season                            where a present bird stands in its
+#                                     season when none of the above is news
+#                                     (#626): days heard lately, and the
+#                                     model's calendar for it
 #   dawn / dusk                       against computed sunrise/sunset
 #                                     (solar.py), never the clock
 #   place                             by the feeds registry's place phrases
@@ -59,6 +63,8 @@ DEPARTED_MIN_VISITS = 10
 # The prior below this means "the model's season here is over".
 PRIOR_GONE = 0.03
 PRIOR_SEASONAL = 0.10
+# The season finding's "on N of the last M days" window (#626).
+SEASON_WINDOW_DAYS = 28
 # Place: one microphone's share, on at least this many detections.
 PLACE_SHARE = 0.65
 PLACE_MIN = 20
@@ -244,10 +250,24 @@ def season_start(visits):
     return start
 
 
+def season_end(curve, week):
+    """The first week after `week` (wrapping the 48-week year) in which the
+    model rates the species as gone, or None when it never does -- the
+    "expects it here all year" case."""
+    for step in range(1, len(curve)):
+        w = (week - 1 + step) % len(curve) + 1
+        if curve[w - 1] < PRIOR_GONE:
+            return w
+    return None
+
+
 def phenology(visits, now, curve):
     """Arrival, departure or lingering -- the season's news -- measured
     against BirdNET's own range model where the prior exists (`curve`,
-    48 weekly scores), else against this yard's record alone."""
+    48 weekly scores), else against this yard's record alone. When none
+    of those is news, the bird's standing in its season (#626): the one
+    note's calendar sentence, so every present bird can say how often it
+    has been heard lately and what the model's calendar holds for it."""
     if not visits:
         return None
     v = sorted(visits)
@@ -310,7 +330,37 @@ def phenology(visits, now, curve):
         return finding("lingering", {"prior_now": prior_now,
                                      "prior_peak": peak},
                        n, 0.8, line, f"lingering:{week}")
-    return None
+
+    # Nothing newsier: where the bird stands in its season. Novelty is the
+    # calendar month, so a quiet bird gets at most one season-led entry a
+    # month, and the fact is still there to support any other lede.
+    heard = len({local_date(t) for t in v
+                 if t > now - SEASON_WINDOW_DAYS * 86400})
+    line = f"Heard here since {date_text(v[0])}"
+    if heard:
+        line += (f", on {heard} of the last {SEASON_WINDOW_DAYS} days"
+                 f" ({n:,} visits in all).")
+    else:
+        line += f" ({n:,} visits in all), but not in the last {silent} days."
+    fields = {"first_ts": v[0], "days_heard": heard,
+              "window_days": SEASON_WINDOW_DAYS, "visits": n,
+              "prior_now": prior_now, "prior_peak": peak, "ends_week": None}
+    if curve and peak < PRIOR_SEASONAL:
+        line += (f" BirdNET's range model rates it no more than {pct(peak)}% "
+                 "likely here in any week of the year, so your yard hears "
+                 "more of it than the model expects.")
+    elif curve:
+        ends = season_end(curve, week)
+        fields["ends_week"] = ends
+        line += (f" BirdNET's range model rates it {pct(prior_now)}% likely "
+                 f"here this week, with its peak of {pct(peak)}% in "
+                 f"{week_phrase(peak_week)}")
+        line += ("; it expects it here all year." if ends is None else
+                 f", and expects its season here to end around "
+                 f"{week_phrase(ends)}.")
+    lt = time.localtime(now)
+    return finding("season", fields, n, 0.5, line,
+                   f"season:{lt.tm_year}-{lt.tm_mon:02d}")
 
 
 # --- where, and when in the night --------------------------------------------

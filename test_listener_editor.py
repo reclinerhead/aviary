@@ -38,9 +38,36 @@ def test_pick_leads_with_the_best_and_never_repeats_a_kind():
           f("weather_sky", 0.4), f("weather_temp", 0.6), f("trend", 0.2)]
     lede, rest = ed.pick(fs)
     assert lede["kind"] == "dawn"
-    assert len(rest) == 3 and lede not in rest
-    assert len({x["kind"] for x in [lede, *rest]}) == 4
+    assert len(rest) == 5 and lede not in rest          # #626: five beside it
+    assert len({x["kind"] for x in [lede, *rest]}) == 6
+    # Theme first: temperature (the stronger weather fact) and place and
+    # record each cover a theme before sky, the second weather fact.
+    assert [x["kind"] for x in rest] == \
+        ["weather_temp", "place", "record", "weather_sky", "trend"]
     assert ed.pick([]) == (None, [])
+
+
+def test_pick_covers_every_theme_before_doubling_up():
+    # #626: a weak season fact beats a second strong timing fact, so the
+    # one note always says where the bird stands in the season.
+    fs = [f("dawn", 1.0), f("dusk", 1.0), f("night", 0.7),
+          f("weather_sky", 0.9), f("record", 0.95), f("trend", 0.3),
+          f("season", 0.5), f("place", 0.2)]
+    lede, rest = ed.pick(fs)
+    assert lede["kind"] == "dawn"
+    assert [x["kind"] for x in rest] == \
+        ["weather_sky", "record", "season", "place", "dusk"]
+    assert ed.pick(fs, n=3)[1] == rest[:2]
+
+
+def test_supporting_facts_repeat_what_was_said_lately():
+    # The LEDE rotates away from what the last entries said; the character
+    # beside it does not -- the one note is all the page says (#626).
+    said = {"dawn:x", "place:x"}
+    lede, rest = ed.pick([f("dawn", 1.0), f("place", 0.9), f("record", 0.3)],
+                         said)
+    assert lede["kind"] == "record"
+    assert [x["kind"] for x in rest] == ["dawn", "place"]
 
 
 def test_an_anomaly_outranks_a_departure_outranks_the_habits():
@@ -123,3 +150,5 @@ def test_titles_are_made_from_the_lede():
     assert ed.title(f("record", current=0, days=4)) == "heard on 4 days"
     assert ed.title(f("weather_sky", bucket="rain")) == "a rain bird"
     assert ed.title(f("anomaly")) == "heard at an odd hour"
+    assert ed.title(f("season", days_heard=20)) == "the season so far"
+    assert ed.title(f("season", days_heard=0)) == "not heard lately"
