@@ -1132,6 +1132,35 @@ describe("rosterOrder", () => {
       "A sci",
     ]);
   });
+  // #643: the 7-day key ranks the trailing week, not the lifetime total --
+  // the yard regular with the biggest record sinks when it's been quiet.
+  const weekly = [
+    entry("R sci", "American Robin", 900, 0, 2),
+    entry("J sci", "Blue Jay", 40, 0, 11),
+    entry("W sci", "Carolina Wren", 300, 0, 0),
+    entry("F sci", "Fox Sparrow", 5, 0, 0),
+    entry("T sci", "Tufted Titmouse", 120, 0, 2),
+  ];
+  it("sorts by the week tally, not all-time visits", () => {
+    expect(rosterOrder(weekly, "week", "desc")).toEqual([
+      "J sci",
+      "R sci",
+      "T sci",
+      "W sci",
+      "F sci",
+    ]);
+    // ...where all-time puts the robin first and the jay fourth.
+    expect(rosterOrder(weekly, "visits", "desc")[0]).toBe("R sci");
+  });
+  it("breaks week ties (the zero tail too) by name ascending in BOTH directions", () => {
+    expect(rosterOrder(weekly, "week", "asc")).toEqual([
+      "W sci",
+      "F sci",
+      "R sci",
+      "T sci",
+      "J sci",
+    ]);
+  });
 });
 
 describe("todayVisitors", () => {
