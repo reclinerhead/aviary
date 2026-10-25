@@ -201,9 +201,12 @@ def quote_found(quote, article):
     return bool(pieces) and all(normalize(p) in hay for p in pieces)
 
 
-def check_fact(fact, quote, article):
+def check_fact(fact, quote, article, name=""):
     """[violation, ...] -- empty means the fact may enter the pool. English,
-    like notes_validate, because the run prints them for the reviewer."""
+    like notes_validate, because the run prints them for the reviewer.
+    `name` is the bird's common name: its words are never absolutes (the
+    first pool run dropped six good facts about the Least Sandpiper and the
+    Least Flycatcher for saying "least")."""
     out = []
     if not quote_found(quote, article):
         out.append("its quote is not in the article")
@@ -212,7 +215,8 @@ def check_fact(fact, quote, article):
     unfounded = sorted(figures(fact) - figures(quote))
     if unfounded:
         out.append(f"figures its quote doesn't hold: {', '.join(unfounded)}")
-    quote_words = set(_WORDS.findall(normalize(quote)))
+    quote_words = (set(_WORDS.findall(normalize(quote)))
+                   | set(_WORDS.findall(normalize(name))))
     added = [w for w in ABSOLUTES
              if w in set(_WORDS.findall(normalize(fact)))
              and w not in quote_words]
@@ -240,13 +244,13 @@ def near_duplicate(a, b, threshold=NEAR_DUPLICATE):
     return len(va & vb) / len(va | vb) >= threshold
 
 
-def select_facts(pairs, article):
+def select_facts(pairs, article, name=""):
     """Check every (fact, quote); keep the first MAX_FACTS that pass and
     aren't a near-duplicate of one already kept. Returns (kept, rejected):
     kept as pool facts, rejected as (fact, [reasons]) for the run's log."""
     kept, rejected = [], []
     for fact, quote in pairs:
-        reasons = check_fact(fact, quote, article)
+        reasons = check_fact(fact, quote, article, name)
         if not reasons and any(near_duplicate(fact, k["text"]) for k in kept):
             reasons = ["repeats an earlier fact"]
         if not reasons and len(kept) >= MAX_FACTS:
@@ -326,7 +330,7 @@ def facts_for(sci, common, writer, *, fetch_json=species_profile.get_json,
         print(f"[facts] {common or sci}: the answer wasn't the JSON asked "
               "for -- recorded with no facts", flush=True)
         pairs = []
-    kept, rejected = select_facts(pairs, article)
+    kept, rejected = select_facts(pairs, article, common or title or "")
     return ({"species_sci": sci, "species_common": common or title or sci,
              "article": title, "fetched": stamp,
              "model": getattr(writer, "model", None), "facts": kept},
