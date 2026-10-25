@@ -129,6 +129,22 @@ def figures(text):
     return out
 
 
+# A fact line's evidence parenthesis (#630, findings.py): the sample size
+# and the spread, for the model to weigh and never to write. Its figures
+# are not "given".
+_EVIDENCE = re.compile(r"\s*\(evidence:[^)]*\)", re.I)
+
+
+def strip_evidence(text):
+    return _EVIDENCE.sub("", text or "")
+
+
+def given_figures(inputs):
+    """The figures the prose may state: every figure in `inputs` outside
+    an (evidence: ...) parenthesis."""
+    return figures(strip_evidence(inputs))
+
+
 def first_sentence(text):
     text = (text or "").strip()
     return _SENTENCE_END.split(text, maxsplit=1)[0] if text else ""
@@ -167,12 +183,19 @@ def validate(text, inputs, allow_driveway=False, lede=None, place_terms=None,
     text = text or ""
     problems = []
 
-    invented = sorted(figures(text) - figures(inputs),
-                      key=lambda s: (len(s), s))
+    given = given_figures(inputs)
+    stated = figures(text) - given
+    evidence = sorted(stated & figures(inputs), key=lambda s: (len(s), s))
+    invented = sorted(stated - set(evidence), key=lambda s: (len(s), s))
     if invented:
         problems.append(
             "it states figures that were not given: " + ", ".join(invented)
             + " -- use only the figures given, written exactly as given")
+    if evidence:
+        problems.append(
+            "it states figures from an (evidence: ...) parenthesis: "
+            + ", ".join(evidence) + " -- the evidence is for you to weigh, "
+            "never to write; say how solid the finding is in words")
 
     # Months are figures too (#614): "visiting your yard since January" for
     # a swift first heard on July 18 escaped every numeric check.
@@ -183,7 +206,7 @@ def validate(text, inputs, allow_driveway=False, lede=None, place_terms=None,
                         + ", ".join(m.capitalize() for m in months)
                         + " -- use only the dates given")
 
-    lede_figures = figures(lede)
+    lede_figures = given_figures(lede)
     if text and lede_figures and not (figures(first_sentence(text))
                                       & lede_figures):
         problems.append("its first sentence is not about the fact it was "
