@@ -74,6 +74,14 @@ def store(tmp_path, monkeypatch):
     monkeypatch.delenv("MERLE_OLLAMA", raising=False)
     monkeypatch.delenv("MERLE_ENRICH_CAP", raising=False)
     monkeypatch.delenv("MERLE_MODEL_RANK", raising=False)
+    # The writer chain (#617) and the gateway writer (#632): the desk's own
+    # env must not pick the writer for a test.
+    monkeypatch.delenv("MERLE_LLM_CHAIN", raising=False)
+    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("MERLE_GATEWAY_MODEL", raising=False)
+    monkeypatch.delenv("MERLE_GATEWAY_DAILY_CAP", raising=False)
+    monkeypatch.setattr(loop, "_gateway_warned", False)
+    monkeypatch.setattr(loop, "_chain_warned", None)
     # No Home and no BirdNET venv: the regional prior (#614) stays quiet
     # unless a test asks for it.
     monkeypatch.delenv("MERLE_LATLON", raising=False)
@@ -167,12 +175,12 @@ def test_a_lifer_gets_profile_then_notes_in_one_tick(store, monkeypatch,
     assert any("A very red bird." in p for p in fake_llm[0].prompts)
 
 
-def test_a_tick_never_builds_the_cloud_writer(store, monkeypatch, fake_llm):
-    """THE billing guarantee (#632): with the gateway key in the unit's
-    environment and a Gateway that explodes on construction, a tick still
-    writes its entries -- through Ollama. The loop constructs Ollama and
-    nothing else; any future wiring of the cloud writer into a tick trips
-    this test."""
+def test_a_tick_builds_the_cloud_writer_only_when_the_chain_names_it(
+        store, monkeypatch, fake_llm):
+    """THE billing guarantee (#632, pinned to the chain by #617): on the
+    default chain, the gateway key in the unit's environment and a Gateway
+    that explodes on construction, a tick still writes its entries --
+    through Ollama. A box that has not opted in can never spend a cent."""
     from narration import gateway
 
     def boom(*a, **k):
@@ -192,6 +200,102 @@ def test_a_tick_never_builds_the_cloud_writer(store, monkeypatch, fake_llm):
     entry = store.execute("SELECT model, host FROM species_journal").fetchone()
     assert entry["model"] == "gemma3:12b"
     assert entry["host"] == "fakehost:11434"
+
+
+class FakeGateway:
+    """The gateway writer's shape, answering like the loop's FakeOllama."""
+    host = "ai-gateway.vercel.sh"
+    made = []
+
+    def __init__(self, key, model):
+        self.key, self.model = key, model
+        self.prompts = []
+        FakeGateway.made.append(self)
+
+    def complete(self, system, prompt, **kw):
+        self.prompts.append(prompt)
+        return "Prose."
+
+
+def test_a_gateway_chain_writes_through_the_gateway_and_never_probes(
+        store, monkeypatch, capsys):
+    from narration import gateway
+    monkeypatch.setattr(gateway, "Gateway", FakeGateway)
+    FakeGateway.made.clear()
+    monkeypatch.setenv("MERLE_LLM_CHAIN", "gateway")
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "sk-test")
+    monkeypatch.setenv("MERLE_GATEWAY_MODEL", "anthropic/claude-sonnet-5.5")
+    monkeypatch.setenv("MERLE_OLLAMA", "fakehost")        # must not be asked
+    monkeypatch.setattr(loop, "probe",
+                        lambda h, p, timeout=None: pytest.fail("probed Ollama"))
+    seed(store, "Cardinalis cardinalis", "Northern Cardinal",
+         [at(2026, 7, d, 7) for d in range(1, 13)])
+    fake_enrich, _ = profile_writer()
+    monkeypatch.setattr(loop.species_profile, "enrich_species", fake_enrich)
+
+    results = loop.tick(now=NOW)
+
+    assert len(FakeGateway.made) == 1 and FakeGateway.made[0].key == "sk-test"
+    entry = store.execute("SELECT model, host FROM species_journal").fetchone()
+    assert entry["model"] == "anthropic/claude-sonnet-5.5"
+    assert entry["host"] == "ai-gateway.vercel.sh"
+    assert results["analysis"]["written"] == 1
+    assert "via ai-gateway.vercel.sh" in capsys.readouterr().out
+
+
+def test_over_the_daily_cap_the_chain_falls_through(store, monkeypatch,
+                                                      fake_llm, capsys):
+    from narration import gateway
+    monkeypatch.setattr(gateway, "Gateway", FakeGateway)
+    FakeGateway.made.clear()
+    monkeypatch.setenv("MERLE_LLM_CHAIN", "gateway,ollama")
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "sk-test")
+    monkeypatch.setenv("MERLE_GATEWAY_DAILY_CAP", "2")
+    monkeypatch.setenv("MERLE_OLLAMA", "fakehost")
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: ["gemma3:12b"])
+    seed(store, "Cardinalis cardinalis", "Northern Cardinal",
+         [at(2026, 7, d, 7) for d in range(1, 13)])
+    for i in range(2):                                    # today's two
+        store.execute(
+            "INSERT INTO species_journal (species_sci, entry_ts, trigger,"
+            " lede_kind, title, text, findings_json, model, host,"
+            " prompt_version) VALUES ('Other sci',?,'routine','dawn','t','x',"
+            "'[]','m',?,3)", (NOW - 60 - i, FakeGateway.host))
+    store.commit()
+    fake_enrich, _ = profile_writer()
+    monkeypatch.setattr(loop.species_profile, "enrich_species", fake_enrich)
+
+    loop.tick(now=NOW)
+
+    assert FakeGateway.made == []                         # not even built
+    out = capsys.readouterr().out
+    assert "wrote 2 entries today, cap 2" in out
+    entry = store.execute("SELECT model FROM species_journal"
+                          " WHERE species_sci = 'Cardinalis cardinalis'"
+                          ).fetchone()
+    assert entry["model"] == "gemma3:12b"                 # Ollama's slice
+
+
+def test_a_gateway_chain_without_a_key_is_quiet_after_one_line(
+        store, monkeypatch, capsys):
+    monkeypatch.setenv("MERLE_LLM_CHAIN", "gateway")
+    monkeypatch.setattr(loop, "probe",
+                        lambda h, p, timeout=None: pytest.fail("probed Ollama"))
+    seed(store, "Cardinalis cardinalis", "Northern Cardinal",
+         [at(2026, 7, d, 7) for d in range(1, 13)])
+    fake_enrich, _ = profile_writer()
+    monkeypatch.setattr(loop.species_profile, "enrich_species", fake_enrich)
+    loop.tick(now=NOW)
+    loop.tick(now=NOW + 900)
+    out = capsys.readouterr().out
+    assert out.count("AI_GATEWAY_API_KEY is not set") == 1
+    assert store.execute("SELECT COUNT(*) c FROM species_journal"
+                         ).fetchone()["c"] == 0
+    # A typo'd chain is one loud line, then nothing, never a guess.
+    monkeypatch.setenv("MERLE_LLM_CHAIN", "gateway,claude")
+    loop.tick(now=NOW + 1800)
+    loop.tick(now=NOW + 2700)
+    assert capsys.readouterr().out.count("unknown writer") == 1
 
 
 def test_profiles_still_run_when_no_host_answers(store, monkeypatch, capsys):
