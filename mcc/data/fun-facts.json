@@ -615,14 +615,29 @@
       "model": "anthropic/claude-sonnet-5.5",
       "facts": [
         {
-          "id": "dbe01b0e4d",
-          "text": "While migrating through Delaware Bay, least sandpipers eat worms, detritus, and horseshoe crab eggs.",
+          "id": "fa246a4e98",
+          "text": "Least sandpiper moms may leave before the chicks can fly, and sometimes even before the eggs hatch.",
+          "quote": "Both parents incubate; the female leaves before the young birds fledge and sometimes before the eggs hatch."
+        },
+        {
+          "id": "789579ddd4",
+          "text": "Young least sandpipers feed themselves and can fly within two weeks of birth.",
+          "quote": "The young birds feed themselves and are able to fly within two weeks of birth."
+        },
+        {
+          "id": "2b6e1136bf",
+          "text": "Passing through Delaware Bay, least sandpipers eat the eggs of horseshoe crabs.",
           "quote": "While migrating through the Delaware Bay, least sandpipers eat worms, detritus, and the eggs of horseshoe crabs."
         },
         {
-          "id": "1029aeb257",
-          "text": "The name minutilla is Medieval Latin for \"very small\".",
-          "quote": "The specific minutilla is Medieval Latin for \"very small\"."
+          "id": "667edbeee8",
+          "text": "Least sandpipers nest on the ground, laying four eggs in a shallow scrape lined with grass and moss.",
+          "quote": "They nest on the ground near water. The female lays four eggs in a shallow scrape lined with grass and moss."
+        },
+        {
+          "id": "f0eef12a83",
+          "text": "Tiny shorebirds like the least sandpiper are known collectively as \"peeps\" or \"stints\".",
+          "quote": "This bird can be difficult to distinguish from other similar tiny shorebirds; these are known collectively as \"peeps\" or \"stints\"."
         }
       ]
     },
@@ -1478,9 +1493,24 @@
       "model": "anthropic/claude-sonnet-5.5",
       "facts": [
         {
-          "id": "d26f2142c7",
-          "text": "The least flycatcher's nickname, chebec, comes from the sound the bird makes.",
+          "id": "925997c6fe",
+          "text": "The least flycatcher's nickname, chebec, comes from the sound it makes.",
           "quote": "The least flycatcher (Empidonax minimus) (also called chebec, or chebecker, after the sound it makes) is a small insect-eating bird."
+        },
+        {
+          "id": "02403a18d6",
+          "text": "In the morning, a male least flycatcher sings his che-bec about 60 times per minute.",
+          "quote": "From there, he sings the Che-bec repeatedly and rapidly during the morning (about 60 times per minute), losing some speed and regularity throughout the day."
+        },
+        {
+          "id": "9bb5f2a606",
+          "text": "The female weaves a tidy cup nest from grass, bark, lichen, spider webs and feathers in about five days.",
+          "quote": "The female builds the nest by weaving fine pieces of grass, strips of bark, twigs, lichen, spider and caterpillar webs, animal hairs and feathers, and other plant-derived materials together to form a tidy cup, a process that takes her about five days."
+        },
+        {
+          "id": "fdcc22d39e",
+          "text": "Least flycatchers seem to care more about having close neighbors than about habitat quality when picking a nest site.",
+          "quote": "The proximity of neighbors even appears to be more important than habitat quality when the bird is selecting its breeding site."
         }
       ]
     },
