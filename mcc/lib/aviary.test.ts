@@ -3092,38 +3092,18 @@ describe("refreshUrl", () => {
     );
     expect(refreshUrl("A/b?c")).toBe("/aviary/analysis/A%2Fb%3Fc/refresh");
   });
-  it("names the cloud writer on the query (#632)", () => {
-    expect(refreshUrl("A b", "gateway")).toBe(
-      "/aviary/analysis/A%20b/refresh?writer=gateway",
-    );
-    expect(refreshUrl("A b", "ollama")).toBe("/aviary/analysis/A%20b/refresh");
-  });
 });
 
 describe("refreshStep", () => {
   const idle: RefreshUi = { kind: "idle" };
-  const writing: RefreshUi = { kind: "writing", since: 1000, writer: "ollama" };
-  const click: RefreshEvent = { type: "click", writer: "ollama" };
+  const writing: RefreshUi = { kind: "writing", since: 1000 };
+  const click: RefreshEvent = { type: "click" };
 
   it("starts writing on a click, and only from idle", () => {
     expect(refreshStep(idle, click, 1000)).toEqual(writing);
     expect(refreshStep(writing, click, 1005)).toBe(writing);
-    const failed: RefreshUi = {
-      kind: "failed",
-      reason: "busy",
-      at: 1,
-      writer: "ollama",
-    };
+    const failed: RefreshUi = { kind: "failed", reason: "busy", at: 1 };
     expect(refreshStep(failed, click, 2)).toBe(failed);
-  });
-
-  it("remembers which writer was asked, through writing and failure (#632)", () => {
-    const cloud = refreshStep(idle, { type: "click", writer: "gateway" }, 1000);
-    expect(cloud).toEqual({ kind: "writing", since: 1000, writer: "gateway" });
-    expect(refreshStep(cloud, { type: "status", state: "failed" }, 1040))
-      .toEqual({ kind: "failed", reason: "model", at: 1040, writer: "gateway" });
-    expect(refreshStep(cloud, { type: "status", state: "done" }, 1040))
-      .toEqual(idle);
   });
 
   it("returns to idle when the server says the note landed", () => {
@@ -3141,11 +3121,11 @@ describe("refreshStep", () => {
 
   it("fails on a refusal, a failed job, or the deadline", () => {
     expect(refreshStep(writing, { type: "refused", busy: true }, 1001))
-      .toEqual({ kind: "failed", reason: "busy", at: 1001, writer: "ollama" });
+      .toEqual({ kind: "failed", reason: "busy", at: 1001 });
     expect(refreshStep(writing, { type: "refused", busy: false }, 1001))
-      .toEqual({ kind: "failed", reason: "model", at: 1001, writer: "ollama" });
+      .toEqual({ kind: "failed", reason: "model", at: 1001 });
     expect(refreshStep(writing, { type: "status", state: "failed" }, 1040))
-      .toEqual({ kind: "failed", reason: "model", at: 1040, writer: "ollama" });
+      .toEqual({ kind: "failed", reason: "model", at: 1040 });
     expect(
       refreshStep(writing, { type: "tick" }, 1000 + REFRESH_DEADLINE_S),
     ).toBe(writing);
@@ -3155,17 +3135,11 @@ describe("refreshStep", () => {
       kind: "failed",
       reason: "model",
       at: 1001 + REFRESH_DEADLINE_S,
-      writer: "ollama",
     });
   });
 
   it("offers the control again after the hold", () => {
-    const failed: RefreshUi = {
-      kind: "failed",
-      reason: "model",
-      at: 2000,
-      writer: "ollama",
-    };
+    const failed: RefreshUi = { kind: "failed", reason: "model", at: 2000 };
     expect(refreshStep(failed, { type: "tick" }, 2000 + REFRESH_HOLD_S - 1))
       .toBe(failed);
     expect(refreshStep(failed, { type: "tick" }, 2000 + REFRESH_HOLD_S))
@@ -3183,40 +3157,15 @@ describe("refreshStep", () => {
 describe("refreshLabel", () => {
   it("says what the one reserved line should say", () => {
     expect(refreshLabel({ kind: "idle" })).toBe("write a fresh entry");
-    expect(refreshLabel({ kind: "writing", since: 0, writer: "ollama" })).toBe(
+    expect(refreshLabel({ kind: "writing", since: 0 })).toBe(
       "writing… (this can take a minute)",
     );
-    expect(
-      refreshLabel({ kind: "failed", reason: "busy", at: 0, writer: "ollama" }),
-    ).toBe("another entry is being written, try again shortly");
-    expect(
-      refreshLabel({ kind: "failed", reason: "model", at: 0, writer: "ollama" }),
-    ).toBe("couldn't reach a model");
-  });
-
-  it("gives the cloud control its own words, and leaves the other its offer (#632)", () => {
-    expect(refreshLabel({ kind: "idle" }, "gateway")).toBe(
-      "write a fresh entry (claude)",
+    expect(refreshLabel({ kind: "failed", reason: "busy", at: 0 })).toBe(
+      "another entry is being written, try again shortly",
     );
-    const cloud: RefreshUi = { kind: "writing", since: 0, writer: "gateway" };
-    expect(refreshLabel(cloud, "gateway")).toBe(
-      "writing with claude… (this can take a minute)",
+    expect(refreshLabel({ kind: "failed", reason: "model", at: 0 })).toBe(
+      "couldn't reach a model",
     );
-    expect(refreshLabel(cloud, "ollama")).toBe("write a fresh entry");
-    const house: RefreshUi = { kind: "writing", since: 0, writer: "ollama" };
-    expect(refreshLabel(house, "gateway")).toBe("write a fresh entry (claude)");
-    expect(
-      refreshLabel(
-        { kind: "failed", reason: "model", at: 0, writer: "gateway" },
-        "gateway",
-      ),
-    ).toBe("the cloud model didn't answer");
-    expect(
-      refreshLabel(
-        { kind: "failed", reason: "busy", at: 0, writer: "gateway" },
-        "ollama",
-      ),
-    ).toBe("write a fresh entry");
   });
 });
 

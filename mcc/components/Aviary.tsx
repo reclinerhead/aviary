@@ -119,7 +119,6 @@ import {
   REFRESH_HOLD_S,
   type RefreshEvent,
   type RefreshUi,
-  type RefreshWriter,
   fieldNote,
   type FieldNote,
   journalStamp,
@@ -2338,13 +2337,7 @@ function FieldNotes({
       </div>
       <NotePage note={note} stats={analysis?.stats ?? null} />
       {!note?.legacy && <EarlierEntries entries={entries.slice(1)} />}
-      {analysis?.refreshable && (
-        <RefreshLine
-          sci={sci}
-          cloud={analysis.refreshable_cloud}
-          onNotes={onNotes}
-        />
-      )}
+      {analysis?.refreshable && <RefreshLine sci={sci} onNotes={onNotes} />}
     </section>
   );
 }
@@ -2509,22 +2502,15 @@ function EarlierEntries({ entries }: { entries: JournalEntry[] }) {
  * its words change, so no state moves anything. The state machine is
  * `refreshStep` in lib/aviary.ts; this component only wires it to the
  * route: POST to start, poll the job every 3 s while writing, refetch the
- * notes on "done", tick for the deadline and the failure hold.
- *
- * With `cloud` (#632: the unit carries the gateway key) a second control
- * sits beside it, "write a fresh entry (claude)": the same route with
- * `?writer=gateway`, the same job, the same poll. One state machine serves
- * both -- the box runs one refresh at a time -- so while either writes, the
- * other is offered but disabled, and only the pressed one changes its
- * words. The row's height never changes; a box without the key renders
- * the one control exactly as before. */
+ * notes on "done", tick for the deadline and the failure hold. Who writes
+ * is the unit's MERLE_LLM_CHAIN (#617); the page never names a writer
+ * (#632's second, cloud-only control was retired once the chain made this
+ * one do its job -- a model change is a config change). */
 function RefreshLine({
   sci,
-  cloud,
   onNotes,
 }: {
   sci: string;
-  cloud: boolean;
   onNotes: (a: Analysis) => void;
 }) {
   const [ui, setUi] = useState<RefreshUi>({ kind: "idle" });
@@ -2534,9 +2520,9 @@ function RefreshLine({
     [],
   );
 
-  const start = (writer: RefreshWriter) => {
-    step({ type: "click", writer });
-    fetch(refreshUrl(sci, writer), { method: "POST" })
+  const start = () => {
+    step({ type: "click" });
+    fetch(refreshUrl(sci), { method: "POST" })
       .then((r) => {
         if (r.status !== 202) step({ type: "refused", busy: r.status === 409 });
       })
@@ -2587,22 +2573,17 @@ function RefreshLine({
     return () => clearTimeout(timer);
   }, [failedAt, step]);
 
-  const control = (writer: RefreshWriter) => (
-    <button
-      key={writer}
-      type="button"
-      disabled={ui.kind !== "idle"}
-      onClick={() => start(writer)}
-      aria-live="polite"
-      className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:hover:border-line disabled:hover:text-inkfaint"
-    >
-      {refreshLabel(ui, writer)}
-    </button>
-  );
   return (
-    <div className="mt-2 flex h-8 items-center justify-end gap-2">
-      {control("ollama")}
-      {cloud && control("gateway")}
+    <div className="mt-2 flex h-8 items-center justify-end">
+      <button
+        type="button"
+        disabled={ui.kind !== "idle"}
+        onClick={start}
+        aria-live="polite"
+        className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:hover:border-line disabled:hover:text-inkfaint"
+      >
+        {refreshLabel(ui)}
+      </button>
     </div>
   );
 }
@@ -2933,8 +2914,6 @@ type Analysis = {
   fallback: boolean;
   /** #613: this box can run the on-demand refresh (the route says why). */
   refreshable: boolean;
-  /** #632: and may also ask the cloud writer for a second opinion. */
-  refreshable_cloud: boolean;
   /** #614: 4+ means `rhythm` is the standing sketch (`weather` null). */
   prompt_version: number | null;
   /** #614: the field journal's dated entries, newest first. */
