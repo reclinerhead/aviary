@@ -26,15 +26,32 @@
 # WHAT (pick): interest = kind weight x min(effect, 1.5) x support factor,
 # thin findings and recently-said ones heavily discounted; the season's
 # news and an anomaly carry a bonus that only applies while unsaid, so they
-# lead once and then step aside.
+# lead once and then step aside. The LEDE rotates that way; the SUPPORTING
+# facts do not (#626): since the one note is all the page says about the
+# bird, its character -- when in the day, where it stands in the season,
+# what weather suits it, where in the yard, how steadily -- repeats in every
+# note on purpose, chosen theme first so no theme is crowded out by two
+# facts of another.
 # =============================================================================
 
 # Per-kind weight on the base score. Sun-relative timing is the field
-# naturalist's own frame (#614's review), so it edges out a raw share.
+# naturalist's own frame (#614's review), so it edges out a raw share; the
+# season's standing (a calendar sentence, not a surprise) sits below it.
 KIND_WEIGHT = {"dawn": 1.2, "dusk": 1.0, "night": 1.2, "place": 1.0,
                "record": 0.9, "trend": 1.0, "weather_sky": 1.0,
                "weather_temp": 1.0, "lingering": 1.0, "arrival": 1.0,
-               "departure": 1.0, "anomaly": 1.0}
+               "departure": 1.0, "anomaly": 1.0, "season": 0.8}
+# The themes one note covers (#626): the supporting facts take the best of
+# each theme first, then fill by interest. A kind outside every theme is
+# its own.
+THEMES = {"timing": ("dawn", "dusk", "night"),
+          "season": ("arrival", "departure", "lingering", "season"),
+          "weather": ("weather_sky", "weather_temp"),
+          "place": ("place",),
+          "steadiness": ("record", "trend")}
+THEME_OF = {kind: theme for theme, kinds in THEMES.items() for kind in kinds}
+# Supporting facts a note may carry beside its lede.
+SUPPORTING = 5
 # Unsaid news leads: added on top of the base score.
 NEWS_BONUS = {"anomaly": 30.0, "arrival": 20.0, "departure": 20.0,
               "lingering": 5.0}
@@ -66,21 +83,35 @@ ANOMALY_SUPPORT = frozenset(("departure", "arrival", "lingering", "record",
                              "place"))
 
 
-def pick(findings, said=frozenset(), n=4):
-    """-> (lede, [supporting...]) or (None, []). Never two of one kind."""
+def pick(findings, said=frozenset(), n=SUPPORTING + 1):
+    """-> (lede, [supporting...]) or (None, []). The lede is the most
+    interesting finding given what was said lately; the supporting facts
+    (up to n - 1) are ranked WITHOUT that discount, the best of each theme
+    the lede doesn't cover first, then by interest. Never two of one kind."""
     ranked = sorted(findings, key=lambda f: (-interest(f, said), f["kind"]))
     if not ranked:
         return None, []
-    lede, kinds, rest = ranked[0], {ranked[0]["kind"]}, []
-    for f in ranked[1:]:
+    lede = ranked[0]
+    pool = sorted(ranked[1:], key=lambda f: (-interest(f), f["kind"]))
+    if lede["kind"] == "anomaly":
+        pool = [f for f in pool if f["kind"] in ANOMALY_SUPPORT]
+    kinds, themes, rest = {lede["kind"]}, {THEME_OF.get(lede["kind"])}, []
+
+    def take(f):
+        kinds.add(f["kind"])
+        themes.add(THEME_OF.get(f["kind"]))
+        rest.append(f)
+
+    for f in pool:                       # one per theme first
         if len(rest) >= n - 1:
             break
-        if f["kind"] in kinds:
-            continue
-        if lede["kind"] == "anomaly" and f["kind"] not in ANOMALY_SUPPORT:
-            continue
-        kinds.add(f["kind"])
-        rest.append(f)
+        if f["kind"] not in kinds and THEME_OF.get(f["kind"]) not in themes:
+            take(f)
+    for f in pool:                       # then the rest, by interest
+        if len(rest) >= n - 1:
+            break
+        if f["kind"] not in kinds:
+            take(f)
     return lede, rest
 
 
@@ -163,4 +194,7 @@ def title(lede, places=None):
                     fields["bucket"], "the weather")
     if k == "weather_temp":
         return f"in {fields['bucket']} weather"
+    if k == "season":
+        return ("not heard lately" if fields.get("days_heard") == 0
+                else "the season so far")
     return TITLES.get(k, "the latest")

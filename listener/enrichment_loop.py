@@ -47,14 +47,14 @@
 #      (region_prior.py, a subprocess like the showcase encoder). Then
 #      probe the MERLE_OLLAMA candidates in preference order via /api/tags
 #      (liveness + which models the host holds, one cheap call); the first
-#      that answers gets this tick's slice: news entries first (anomaly,
-#      arrival, departure, record), then each bird's first entry, then the
-#      standing sketches the #217 worklist + fingerprint gate let through,
-#      then weekly and refresh entries -- one MERLE_ENRICH_CAP across all.
-#      (A page is a journal only once its bird has an entry, so a sketch
-#      written ahead of the first entry would sit in the old layout.)
-# The order is load-bearing, not cosmetic: the sketch and entry prompts
-# feed the model the profile's description, so profile-before-notes means
+#      that answers gets this tick's slice: the stats rows the #217
+#      worklist + fingerprint gate let through (free -- no model, so they
+#      never count against the cap, and a page's figures are there when
+#      its first entry lands, #626), then news entries (anomaly, arrival,
+#      departure, record), then each bird's first entry, then weekly and
+#      refresh entries -- one MERLE_ENRICH_CAP across the entries.
+# The order is load-bearing, not cosmetic: the entry prompt feeds the
+# model the profile's description, so profile-before-notes means
 # a brand-new bird has its background before its first note is written --
 # same tick; and
 # clips-before-notes keeps audible evidence from waiting behind an LLM that
@@ -130,8 +130,8 @@ def parse_tags(d):
 def pick_model(available, rank=None):
     """The best-ranked model this host holds (species_analysis.MODEL_RANK
     order). A host holding only unranked models offers its first tag --
-    usable, and outranks() guarantees an unknown model can never claw back
-    a ranked row. An empty host offers nothing."""
+    usable; since #626 nothing is ever re-narrated, so the rank is a
+    preference, not a guard. An empty host offers nothing."""
     if not available:
         return None
     order = species_analysis.model_rank_list() if rank is None else list(rank)
@@ -420,25 +420,29 @@ def drain_analysis(host, port, model, cap, now=None):
         ctx = species_analysis.journal_context(
             conn, species_analysis.weather_db_path(), now)
         entries = species_analysis.journal_worklist(conn, ctx)
-        ahead = species_analysis.AHEAD_OF_SKETCHES
-        queue = ([("entry", e) for e in entries if e[2][0] in ahead]
-                 + [("sketch", s) for s in
-                    species_analysis.worklist(conn, model=model)]
+        ahead = species_analysis.AHEAD_OF_WEEKLY
+        # The stats rows go first and cost nothing (#626: no model), so the
+        # cap counts entries alone -- a tick that re-stores a hundred rows
+        # on a version bump still writes its full slice of entries.
+        queue = ([("stats", s) for s in species_analysis.worklist(conn)]
+                 + [("entry", e) for e in entries if e[2][0] in ahead]
                  + [("entry", e) for e in entries if e[2][0] not in ahead])
         written = 0
         for i, (what, item) in enumerate(queue):
-            if written >= cap:
+            if what == "entry" and written >= cap:
                 counts["deferred"] = len(queue) - i
                 print(f"[enrich] notes: cap ({cap}) reached, "
                       f"{len(queue) - i} deferred to a later tick", flush=True)
                 break
             sci, common = item[0], item[1]
             try:
-                if what == "sketch":
+                if what == "stats":
                     status, _ = species_analysis.analyze_species(
                         conn, sci, common, ollama=ollama, weather_path=None,
                         now=now, host=where, ctx=ctx)
-                    label = "sketch"
+                    counts[f"stats {status}"] = \
+                        counts.get(f"stats {status}", 0) + 1
+                    continue
                 else:
                     status, trigger = species_analysis.write_entry(
                         conn, sci, common, ollama=ollama, ctx=ctx,

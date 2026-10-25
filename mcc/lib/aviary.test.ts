@@ -117,8 +117,8 @@ import {
   REFRESH_DEADLINE_S,
   REFRESH_HOLD_S,
   type RefreshUi,
-  notesMode,
-  sketchTitle,
+  fieldNote,
+  rhythmCaption,
   journalStamp,
   earlierLabel,
 } from "./aviary";
@@ -3170,47 +3170,83 @@ describe("refreshLabel", () => {
 
 // --- the field journal (#614) -------------------------------------------------
 
-describe("notesMode", () => {
+describe("fieldNote (#626)", () => {
   const entry = {
     id: 1,
-    entry_ts: 1,
-    trigger: "first",
+    entry_ts: 1_700_000_000,
+    trigger: "weekly",
     title: "up before the sun",
     text: "x",
     model: "m",
     fallback: false,
   };
-  it("prefers the journal, falls back to the old notes, else empty", () => {
-    expect(notesMode({ entries: [entry], rhythm: "r" })).toBe("journal");
-    expect(notesMode({ entries: [], rhythm: "r", weather: null })).toBe(
-      "legacy",
-    );
-    expect(notesMode({ entries: [], rhythm: null, weather: "w" })).toBe(
-      "legacy",
-    );
-    expect(notesMode({ entries: [] })).toBe("empty");
-    // A sketch (v4) with no entry yet is already the journal: Entry I
-    // waits, rather than the sketch sitting under "the rhythm" beside an
-    // empty "weather & timing" (the first deploy's state).
+  it("is the newest entry, stamped with why it was written", () => {
     expect(
-      notesMode({ entries: [], rhythm: "s", weather: null, prompt_version: 4 }),
-    ).toBe("journal");
-    expect(
-      notesMode({ entries: [], rhythm: "r", weather: "w", prompt_version: 3 }),
-    ).toBe("legacy");
-    expect(notesMode({ entries: [], rhythm: null, prompt_version: 4 })).toBe(
-      "empty",
+      fieldNote({ entries: [entry, { ...entry, id: 0, text: "older" }] }),
+    ).toEqual({
+      title: "up before the sun",
+      text: "x",
+      stamp: "this week",
+      ts: 1_700_000_000,
+      author: "m",
+      legacy: false,
+    });
+    expect(fieldNote({ entries: [{ ...entry, fallback: true }] })?.author).toBe(
+      "plain record",
     );
-    expect(notesMode(null)).toBe("empty");
+  });
+  it("falls back to the prose a pre-#626 row still carries", () => {
+    // The standing sketch (v4: rhythm alone)...
+    expect(
+      fieldNote({
+        entries: [],
+        rhythm: "s",
+        weather: null,
+        generated_ts: 5,
+        model: "m",
+        fallback: false,
+      }),
+    ).toEqual({
+      title: "the sketch",
+      text: "s",
+      stamp: "standing",
+      ts: 5,
+      author: "m",
+      legacy: true,
+    });
+    // ...and the two blocks below it, joined -- one place for prose now.
+    const old = fieldNote({ entries: [], rhythm: "r", weather: "w" });
+    expect(old?.title).toBe("the rhythm");
+    expect(old?.text).toBe("r\nw");
+    expect(old?.ts).toBeNull();
+    expect(fieldNote({ entries: [], weather: "w", fallback: true })?.author).toBe(
+      "plain record",
+    );
+  });
+  it("is null without any prose", () => {
+    expect(fieldNote({ entries: [] })).toBeNull();
+    expect(fieldNote({ entries: [], rhythm: null, weather: null })).toBeNull();
+    expect(fieldNote(null)).toBeNull();
   });
 });
 
-describe("sketchTitle", () => {
-  it("names the standing sketch from version 4, the old note below it", () => {
-    expect(sketchTitle(4)).toBe("the sketch");
-    expect(sketchTitle(5)).toBe("the sketch");
-    expect(sketchTitle(3)).toBe("the rhythm");
-    expect(sketchTitle(null)).toBe("the rhythm");
+describe("rhythmCaption (#626)", () => {
+  it("names the stored peak window in the prose's clock", () => {
+    const hours = Array(24).fill(1);
+    expect(
+      rhythmCaption({ hours, peak_window: { start_hour: 6, end_hour: 9 } }),
+    ).toBe("busiest 6am–9am");
+    expect(
+      rhythmCaption({ hours, peak_window: { start_hour: 23, end_hour: 2 } }),
+    ).toBe("busiest 11pm–2am");
+    expect(
+      rhythmCaption({ hours, peak_window: { start_hour: 0, end_hour: 3 } }),
+    ).toBe("busiest 12am–3am");
+  });
+  it("is null without a window or a histogram", () => {
+    expect(rhythmCaption({ hours: Array(24).fill(0), peak_window: null })).toBeNull();
+    expect(rhythmCaption({ peak_window: { start_hour: 6, end_hour: 9 } })).toBeNull();
+    expect(rhythmCaption(null)).toBeNull();
   });
 });
 

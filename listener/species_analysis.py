@@ -2,18 +2,25 @@
 # project-squirrel -- listener/species_analysis.py
 #
 # The field journal (epic #182 Phase 4 / #186, rebuilt as epic #611 Phase A,
-# issue #614): what the yard's own record says about a species, computed in
-# Python and written up by the LLM, as two things --
+# issue #614, one note per bird since #626): what the yard's own record says
+# about a species, computed in Python and written up by the LLM --
 #
-#   THE STANDING SKETCH (species_analysis.rhythm_text): the bird's slow-
-#     changing character -- when in the day against the sun, where, in what
-#     weather -- two to four sentences, regenerated through the #217 gates.
+#   THE STATS (species_analysis.stats_json): the margin figures' numbers --
+#     the 24-hour histogram, the peak window, the exposure-normalised
+#     weather effects -- stored through the #217 fingerprint gate. No prose:
+#     the standing sketch this row once carried retired in #626 (it said
+#     what the entry beside it said), and an old rhythm_text is carried
+#     forward untouched, never erased, as the page's fallback until the
+#     bird's first entry lands.
 #   DATED ENTRIES (species_journal): written when something HAPPENED -- an
 #     arrival, a departure, a record, a suspect pattern, a week's news --
-#     each led by the finding listener/editor.py ranks first, from the
-#     facts listener/findings.py computes. A journal: never re-narrated.
+#     each led by the finding listener/editor.py ranks first and carrying
+#     the bird's character beside it (when in the day, the season, the
+#     weather, the place, how steadily), from the facts listener/findings.py
+#     computes. The newest entry IS the bird's field note; a journal is
+#     never re-narrated.
 #
-#   python -m listener.species_analysis              (sketches + due entries)
+#   python -m listener.species_analysis              (stats + due entries)
 #   python -m listener.species_analysis --refresh "Cardinalis cardinalis"
 #   python -m listener.species_analysis --dry-run    (findings + picks, no LLM)
 #   python -m listener.species_analysis --audit      (validator over the store)
@@ -58,8 +65,8 @@
 #     rather than dropped -- a bird heard twice is still worth reading about
 #     as long as the page says that's all we have.
 #
-# HYGIENE (issue #612), the 2026-10-24 review's fixes, which every block
-# -- sketch and entry -- still passes through:
+# HYGIENE (issue #612), the 2026-10-24 review's fixes, which every entry
+# still passes through:
 #   - NOTHING IS STORED UNCHECKED. listener/notes_validate.py checks the
 #     prose (figures must appear in the prompt; no annotation labels, no
 #     `unknown`, no "our microphone", no "driveway" unless a place phrase
@@ -142,27 +149,31 @@ WATERMARK_SHARE = 0.10
 # holds at least TREND_MIN visits and the two differ by TREND_MOVED of it.
 TREND_MIN = 5
 TREND_MOVED = 0.30
-# Two short paragraphs; the cap is a backstop for a model ignoring the rules.
-NUM_PREDICT = 320
+# Up to 220 words in three short paragraphs (#626); the cap is a backstop
+# for a model ignoring the rules.
+NUM_PREDICT = 448
 # Analysis is a long, patient job (one call per species, ~30-90s on CPU), not
 # a live show like the narrator's 30s pacing gate.
 ANALYSIS_TIMEOUT_S = 300
 
-# Bumped BY HAND whenever the prompts or the stats shape change (issue #217).
-# A stored row whose prompt_version differs is due for regeneration on the
-# next tick a model is up -- which is how a prompt edit re-narrates the whole
-# archive with no migration and no manual pass.
-PROMPT_VERSION = 4
-# The dated entries' prompt (#614). Entries are a journal -- history is
-# never re-narrated -- so this version only tells --audit which prompt an
-# entry was written from; a bump re-writes nothing.
-JOURNAL_VERSION = 1
+# Bumped BY HAND whenever the stats shape changes (issue #217). A stored row
+# whose prompt_version differs is re-stored on the next tick -- which is how
+# a shape change refreshes the whole archive with no migration and no manual
+# pass. 5 is the stats-only row (#626): the bump re-stores every row once,
+# cheaply, and spends no generation.
+PROMPT_VERSION = 5
+# The dated entries' prompt. Entries are a journal -- history is never
+# re-narrated -- so this version only tells --audit which prompt an entry
+# was written from; a bump re-writes nothing. 2 is the one-note prompt
+# (#626): a note that stands alone, up to 220 words.
+JOURNAL_VERSION = 2
 
-# Model preference, best first (issue #217). Two hosts running different
-# models would otherwise thrash -- the basement box narrates everything on a
-# big model, a tick lands on bluejay, and every row "mismatches" back down to
-# gemma3:12b, endlessly. So regeneration only ever triggers UPWARD: a model
-# regenerates a row only when it OUTRANKS the stored one (see outranks()).
+# Model preference, best first (issue #217): what the enrichment loop picks
+# from the models a host holds (enrichment_loop.pick_model). Until #626 it
+# also gated the sketch's regeneration -- a model re-narrated a row only when
+# it OUTRANKED the stored one, so two hosts with different models settled
+# instead of thrashing; the stats row has no prose to improve, and entries
+# are never re-narrated, so outranks() now serves the host choice alone.
 # Unknown models sort last. Override without a deploy via MERLE_MODEL_RANK
 # (comma-separated, best first).
 #
@@ -286,13 +297,13 @@ def outranks(candidate, stored, rank=None):
 
 
 def stats_fingerprint(stats, description, context=""):
-    """The identity of one species' PROMPT INPUTS (issue #217): the full
-    stats package plus the exact description snippet sketch_prompt() feeds
-    the model. Identical fingerprint + matching prompt version + a model
-    that doesn't outrank means a regeneration would only rephrase the same
-    facts at temperature 0.7 -- so it doesn't happen. The description rides
-    the hash because it is a real input the stats can't see: the profile
-    pass landing a Wikipedia background later must read as changed inputs.
+    """The identity of one species' INPUTS (issue #217): the full stats
+    package plus the exact description snippet the entry prompt feeds the
+    model. Identical fingerprint + matching prompt version means nothing
+    about the bird's figures or background has changed -- so the row is
+    left alone. The description rides the hash because it is a real input
+    the stats can't see: the profile pass landing a Wikipedia background
+    later must read as changed inputs.
     `context` is the same idea for the registry's place phrases (#612,
     places_key()): renaming where a microphone listens is a changed input."""
     snippet = description.strip()[:900] if description else ""
@@ -706,8 +717,8 @@ RULES = (
     "- Open with the first fact given, in your own words. Do not open by "
     "saying a microphone heard or picked up the bird, and never write \"a "
     "good number of\".\n"
-    "- Two short paragraphs at most. No preamble, no sign-off, no restating "
-    "the bird's name as a heading."
+    "- Three short paragraphs at most. No preamble, no sign-off, no "
+    "restating the bird's name as a heading."
 )
 
 
@@ -725,62 +736,23 @@ def plain_line(f):
             .replace("LESS OFTEN", "less often"))
 
 
-# The standing sketch's subjects (#614): the slow-changing character of the
-# bird -- when in the day, where, in what weather, how steadily. News
-# (arrivals, departures, a suspect pattern, a week's trend) belongs to the
-# dated entries, never to the sketch.
-SKETCH_KINDS = frozenset(("dawn", "dusk", "night", "place", "weather_sky",
-                          "weather_temp", "record", "lingering"))
-SKETCH_MAX = 4
-
-
-def sketch_findings(found):
-    """The sketch's facts, strongest first (the editor's own ranking). A
-    bird whose record is suspect gets the suspicion and nothing else: its
-    "habits" are the false detections' (the #614 desk run sketched the
-    night-heavy "swallow" as singing 265 minutes before sunrise)."""
-    anomaly = [f for f in found if f["kind"] == "anomaly"]
-    if anomaly:
-        return anomaly
-    pool = [f for f in found if f["kind"] in SKETCH_KINDS]
-    return sorted(pool, key=lambda f: -editor.interest(f))[:SKETCH_MAX]
-
-
 def fact_lines(found):
     """The facts exactly as a prompt lists them -- also what the validator
     checks a named place against."""
     return "\n".join(f"- {prompt_line(f)}" for f in found)
 
 
-# The prompts carry NO list of the yard's listening posts (#614): handed
+# The prompt carries NO list of the yard's listening posts (#614): handed
 # one, the model put birds at microphones that never heard them. Where a
 # bird is heard is a fact (findings.place) like any other, and the
 # validator rejects a place no fact names.
 
-def sketch_prompt(common, description, sketch):
-    caution = (" Its record here is suspect: say so plainly, and describe no "
-               "habits." if sketch and sketch[0]["kind"] == "anomaly" else "")
-    return (
-        f"The bird: {common}.\n"
-        + (f"Background: {description.strip()[:900]}\n" if description else "")
-        + "\nWhat your reader's microphones have found about this bird, "
-          "strongest first:\n"
-        + (fact_lines(sketch) or
-           "- Too little yet to say anything about its habits here.")
-        + "\n\nWrite a standing sketch of this bird's character in your "
-          "reader's yard: when in the day it is heard, and in what weather "
-          "-- the things that will still be true next month. Two to four "
-          "sentences. Open with the first fact given. No news, no dates."
-        + caution + "\n\n" + RULES
-    )
-
-
-def plain_sketch(sketch):
-    return " ".join(plain_line(f) for f in sketch) or \
-        "Too little has been heard yet to say anything about its habits here."
-
-
 def entry_prompt(common, description, lede, rest, now, first=False):
+    """The one note (#626): the newest entry is all the page says about the
+    bird, so it must stand on its own -- the lede first, then the bird's
+    character (the editor hands over the best fact of each theme) in two
+    or three short paragraphs. Until #626 an entry assumed its reader had
+    the standing sketch beside it and the earlier entries behind it."""
     caution = (
         "\nThis entry is a caution, not a portrait: say plainly that these "
         "detections may not be this bird at all, and invite your reader to "
@@ -789,17 +761,21 @@ def entry_prompt(common, description, lede, rest, now, first=False):
     return (
         f"The bird: {common}.\n"
         + (f"Background: {description.strip()[:900]}\n" if description else "")
-        + f"\nToday is {findings.date_text(now)}. You are writing the next "
-          "entry in a running field journal about this bird in your "
-          "reader's yard"
-        + ("; it is the first entry." if first else
-           "; your reader has read the earlier entries, so do not introduce "
-           "the bird again.")
-        + "\n\nOpen the entry with this fact:\n" + prompt_line(lede)
-        + ("\n\nOther facts you may use, if they help the story:\n"
-           + fact_lines(rest) if rest else "")
+        + f"\nToday is {findings.date_text(now)}. You are writing the "
+          "field notes for this bird in your reader's yard: one dated entry "
+          "in a running journal, read on its own -- it is all the page "
+          "says about the bird"
+        + (", and it is the first entry." if first else
+           ". Earlier entries are kept behind it, but assume they were not "
+           "read.")
+        + "\n\nOpen the note with this fact:\n" + prompt_line(lede)
+        + ("\n\nThe other facts, which the note should cover where they "
+           "help -- when in the day the bird is heard, where it stands in "
+           "the season, what weather suits it, where in the yard, how "
+           "steadily:\n" + fact_lines(rest) if rest else "")
         + "\n" + caution
-        + "\nWrite one entry of 80 to 160 words.\n\n" + RULES
+        + "\nWrite one note of 120 to 220 words in two or three short "
+          "paragraphs.\n\n" + RULES
     )
 
 
@@ -819,34 +795,34 @@ def profile_fetch_times(conn):
         return {}
 
 
-def worklist(conn, step=WATERMARK_STEP, model=None,
-             min_visits=MIN_VISITS_FOR_ANALYSIS):
-    """Species needing an analysis. The watermark is a visit COUNT rather
-    than an age -- a bird nobody has heard since June has nothing new to say
-    about itself, and regenerating it would just burn a paragraph.
+def worklist(conn, step=WATERMARK_STEP, min_visits=MIN_VISITS_FOR_ANALYSIS):
+    """Species whose stats row needs a look. The watermark is a visit COUNT
+    rather than an age -- a bird nobody has heard since June has nothing new
+    to say about itself.
 
     This is the CHEAP pre-filter of #217's two-stage gate, so its arms are
     deliberately over-inclusive -- anything it lets through still has to get
-    past the stats fingerprint in analyze_species() before an LLM call is
-    spent. The arms (only considered once `visits >= min_visits`, #407):
+    past the stats fingerprint in analyze_species() before a row is
+    re-stored. The arms (only considered once `visits >= min_visits`, #407):
       (0) visit floor -- fewer than MIN_VISITS_FOR_ANALYSIS grouped visits
           means not a candidate at all (one-off false positives must not
-          spin Ollama; --refresh / force still analyzes by hand)
+          spin the pass; --refresh / force still analyzes by hand)
       (1) never written
       (2) grown by due_step(visits, step) since the last write (the
           original arm; the step grows with the record since #612)
       (3) stored prompt_version differs from PROMPT_VERSION (includes the
-          honest-NULL rows a pre-#217 store carries -- they regenerate once)
-      (4) the model this run would use OUTRANKS the stored one (never the
-          reverse -- see outranks())
-      (5) the profile pass touched this species after the note was last
+          honest-NULL rows a pre-#217 store carries -- they re-store once)
+      (4) the profile pass touched this species after the row was last
           written OR gate-checked -- a description may have landed; the
           fingerprint decides. checked_ts is what keeps a dimensions-only
           profile touch from parking the species here forever.
+    The model-rank arm (#217) left with the sketch (#626): a stats row has
+    no prose a better model could improve, and outranks() against the NULL
+    model the row now carries would re-queue every bird every tick.
     """
     rows = conn.execute(
         "SELECT l.species_sci, l.species_common, a.visits_watermark,"
-        "       a.prompt_version, a.model, a.generated_ts, a.checked_ts"
+        "       a.prompt_version, a.generated_ts, a.checked_ts"
         " FROM life_list l"
         " LEFT JOIN species_analysis a ON a.species_sci = l.species_sci"
         " ORDER BY l.species_common").fetchall()
@@ -867,7 +843,6 @@ def worklist(conn, step=WATERMARK_STEP, model=None,
         due = (mark is None
                or visits - mark >= due_step(visits, step)
                or r["prompt_version"] != PROMPT_VERSION
-               or (model is not None and outranks(model, r["model"]))
                or profile_ts.get(r["species_sci"], 0) > settled_ts)
         if due:
             out.append((r["species_sci"], r["species_common"], visits))
@@ -1041,82 +1016,70 @@ def description_of(conn, sci):
         return None
 
 
-# --- The standing sketch (Entry II) ------------------------------------------
+# --- The stats (the margin figures) ------------------------------------------
 
 def analyze_species(conn, sci, common, *, ollama, weather_path,
                     now=None, dry_run=False, force=False, host=None,
                     places=None, ctx=None):
-    """One species' STANDING SKETCH, end to end (#614: the slow-changing
-    character -- dawn, place, weather, steadiness -- in two to four
-    sentences, stored as `rhythm_text` with `weather_text` NULL; rows from
-    before PROMPT_VERSION 4 still hold the old two blocks and re-narrate
-    once through the version arm). Returns a status word:
+    """One species' STATS ROW, end to end (#626): the margin figures'
+    numbers (build_stats), stored through the #217 fingerprint gate, and
+    NO prose -- the model is never called here. The standing sketch this
+    row carried until #626 is gone; an old `rhythm_text` / `weather_text`
+    is carried forward untouched, so a bird whose first entry has not
+    landed still shows something, and a page never loses a note to a
+    deploy. Returns a status word:
       'no-visits'  -- nothing on record yet; nothing written
-      'stats-only' -- --dry-run, or no LLM configured
-      'current'    -- the fingerprint gate: inputs, prompt version and model
-                      rank unchanged, so no LLM call is made
-      'llm-down'   -- generation failed; any existing row LEFT UNTOUCHED
-      'written'    -- the sketch (or, after two rule-breaking drafts, the
-                      plain record -- `fallback` 1) and the stats stored
+      'stats-only' -- --dry-run, or no LLM configured: stats land only
+                      where notes do (a station with no model keeps its
+                      honest empty state until #620)
+      'current'    -- the fingerprint gate: inputs and version unchanged,
+                      so the row is left alone (checked_ts bookkeeping)
+      'written'    -- the stats stored (and the row's prose, if any, kept)
 
-    The #217 gates are unchanged: `force` (--refresh) pushes past the
-    fingerprint, `host` is provenance, `ctx` (journal_context) is shared
-    across a run and built here when omitted."""
+    `force` (--refresh) pushes past the fingerprint, `host` is provenance,
+    `ctx` (journal_context) is shared across a run and built here when
+    omitted. `common` is unused since #626 but kept so every caller reads
+    the same as write_entry's."""
     now = now or time.time()
     ctx = ctx or journal_context(conn, weather_path, now, places)
     places = ctx["places"]
-    stats, found, visits = species_findings(conn, sci, ctx)
+    stats, _found, visits = species_findings(conn, sci, ctx)
     if not visits:
         return "no-visits", None
     if dry_run or ollama is None:
         return "stats-only", stats
 
-    description = description_of(conn, sci)
-    sketch = sketch_findings(found)
-    # The sketch's facts ride the stored stats (`sketch`), so --audit can
-    # rebuild the exact prompt a stored sketch was written from; the
-    # margin figures read only the keys they know.
-    stats = dict(stats, sketch=sketch)
-    # The fingerprint gate (issue #217): identical inputs, same prompt
-    # version, a model that doesn't outrank the stored one -- regeneration
-    # would only rephrase. The skip is bookkeeping (checked_ts), never a
-    # freshness claim (generated_ts untouched).
-    fingerprint = stats_fingerprint(stats, description, places_key(places))
-    if not force:
-        row = conn.execute(
-            "SELECT stats_fingerprint, prompt_version, model"
-            " FROM species_analysis WHERE species_sci = ?", (sci,)).fetchone()
-        if (row is not None
-                and row["stats_fingerprint"] == fingerprint
-                and row["prompt_version"] == PROMPT_VERSION
-                and not outranks(ollama.model, row["model"])):
-            conn.execute(
-                "UPDATE species_analysis SET checked_ts = ?"
-                " WHERE species_sci = ?", (int(now), sci))
-            conn.commit()
-            return "current", stats
+    # The description and the places still ride the fingerprint: they are
+    # inputs to the entries written from this row's findings, and a change
+    # in either is a reason to re-store (and re-date) the figures.
+    fingerprint = stats_fingerprint(stats, description_of(conn, sci),
+                                    places_key(places))
+    row = conn.execute(
+        "SELECT stats_fingerprint, prompt_version, rhythm_text, weather_text,"
+        " model, fallback FROM species_analysis WHERE species_sci = ?",
+        (sci,)).fetchone()
+    if (not force and row is not None
+            and row["stats_fingerprint"] == fingerprint
+            and row["prompt_version"] == PROMPT_VERSION):
+        conn.execute("UPDATE species_analysis SET checked_ts = ?"
+                     " WHERE species_sci = ?", (int(now), sci))
+        conn.commit()
+        return "current", stats
 
-    text, fell_back = write_block(
-        ollama, sketch_prompt(common, description, sketch),
-        lambda: plain_sketch(sketch), allow_drive=allow_driveway(places),
-        label=f"{common} sketch", terms=place_terms(places),
-        facts=fact_lines(sketch))
-    # A dead or slow model leaves the existing row exactly as it was.
-    if text is None:
-        return "llm-down", stats
-
+    kept = (row["rhythm_text"], row["weather_text"], row["model"],
+            row["fallback"]) if row is not None else (None, None, None, 0)
     conn.execute(
         "INSERT OR REPLACE INTO species_analysis (species_sci, rhythm_text,"
         " weather_text, stats_json, visits_watermark, model, generated_ts,"
         " stats_fingerprint, prompt_version, host, fallback)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (sci, text, None, json.dumps(stats), len(visits), ollama.model,
-         int(now), fingerprint, PROMPT_VERSION, host, int(fell_back)))
+        (sci, kept[0], kept[1], json.dumps(stats), len(visits), kept[2],
+         int(now), fingerprint, PROMPT_VERSION, host, kept[3] or 0))
     conn.commit()
     return "written", stats
 
 
-# --- The dated entries (Entry I) ---------------------------------------------
+# --- The dated entries (the note) --------------------------------------------
 
 def load_entries(conn, sci):
     """This bird's entries, newest first, findings parsed -- the editor's
@@ -1183,14 +1146,12 @@ def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
     return "written", trigger
 
 
-# The queue (enrichment_loop.drain_analysis): news entries, then every
-# bird's FIRST entry, then the sketches, then weekly and refresh entries.
-# First entries go ahead of the sketches because a page renders as a
-# journal only once the bird has an entry: deployed the other way round,
-# the first tick wrote sketches for birds with no entry, and their pages
-# showed the sketch under "the rhythm" beside an empty "weather & timing".
+# The queue (enrichment_loop.drain_analysis): the stats rows first (free --
+# no model, so they never count against the tick's cap, and the page's
+# figures are there when its first entry lands), then news entries, then
+# every bird's FIRST entry, then weekly and refresh entries.
 NEWS_TRIGGERS = ("anomaly", "arrival", "departure", "record")
-AHEAD_OF_SKETCHES = NEWS_TRIGGERS + ("first",)
+AHEAD_OF_WEEKLY = NEWS_TRIGGERS + ("first",)
 
 
 def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
@@ -1213,33 +1174,18 @@ def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
 # --- Audit --------------------------------------------------------------------
 
 def audit(conn, places=None):
-    """Every stored sketch and entry checked by the validator against the
-    prompt it was written from -- rebuilt from what was STORED (the sketch's
-    facts in stats_json, an entry's in findings_json) plus today's
-    background and places. Rows from an older prompt version are skipped:
-    they are due to be rewritten anyway. -> [(species_sci, block, [...])]."""
+    """Every stored entry at the current JOURNAL_VERSION checked by the
+    validator against the prompt it was written from -- rebuilt from what
+    was STORED (findings_json) plus today's background and places. Older
+    entries are skipped: they were written to an older prompt, and a
+    journal is never re-narrated. A stats row carries no prose of its own
+    since #626 (an old sketch carried forward is a fallback, not a claim
+    this version made), so nothing there is audited.
+    -> [(species_sci, block, [...])]."""
     places = load_places() if places is None else places
     allow = allow_driveway(places)
     terms = place_terms(places)
     out = []
-    for r in conn.execute(
-            "SELECT a.species_sci, a.rhythm_text, a.stats_json,"
-            " COALESCE(l.species_common, a.species_sci) common"
-            " FROM species_analysis a LEFT JOIN life_list l"
-            " ON l.species_sci = a.species_sci"
-            " WHERE a.prompt_version = ? GROUP BY a.species_sci",
-            (PROMPT_VERSION,)):
-        try:
-            sketch = json.loads(r["stats_json"] or "")["sketch"]
-        except (ValueError, KeyError, TypeError):
-            out.append((r["species_sci"], "sketch", ["stats_json unreadable"]))
-            continue
-        prompt = sketch_prompt(r["common"],
-                               description_of(conn, r["species_sci"]), sketch)
-        problems = notes_validate.validate(r["rhythm_text"], prompt, allow,
-                                           None, terms, fact_lines(sketch))
-        if problems:
-            out.append((r["species_sci"], "sketch", problems))
     try:
         rows = conn.execute(
             "SELECT j.id, j.species_sci, j.entry_ts, j.text, j.findings_json,"
@@ -1272,17 +1218,18 @@ def audit(conn, places=None):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Write the Aviary's field journal: standing sketches and "
-                    "dated entries (issues #186, #614)")
+        description="Write the Aviary's field journal: the margin figures' "
+                    "stats and dated entries (issues #186, #614, #626)")
     ap.add_argument("--refresh", metavar="SPECIES_SCI",
-                    help="write one species' sketch and a new entry now, past "
-                         "every gate (the species page's link, #613)")
+                    help="store one species' stats and write it a new entry "
+                         "now, past every gate (the species page's link, "
+                         "#613)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print each species' findings and the editor's "
                          "pick; no LLM, no writes")
     ap.add_argument("--audit", action="store_true",
-                    help="check every stored sketch and entry against the "
-                         "validator; no LLM, no writes (#612)")
+                    help="check every stored entry against the validator; "
+                         "no LLM, no writes (#612)")
     args = ap.parse_args()
 
     path = db_path()
@@ -1340,22 +1287,20 @@ def main():
                                         ollama=ollama, weather_path=None,
                                         now=now, force=True, host=host,
                                         ctx=ctx)
-            print(f"[analysis] {common} sketch: {status}", flush=True)
-            if status == "llm-down":
-                return
+            print(f"[analysis] {common} stats: {status}", flush=True)
             status, trigger = write_entry(conn, args.refresh, common,
                                           ollama=ollama, ctx=ctx, force=True,
                                           host=host)
             print(f"[analysis] {common} entry: {status}", flush=True)
             return
         counts = {}
-        for sci, common, _ in worklist(
-                conn, model=ollama.model if ollama else None):
+        for sci, common, _ in worklist(conn):
             status, _ = analyze_species(conn, sci, common, ollama=ollama,
                                         weather_path=None, now=now,
                                         host=host, ctx=ctx)
-            counts[f"sketch {status}"] = counts.get(f"sketch {status}", 0) + 1
-            print(f"[analysis] {common} sketch: {status}", flush=True)
+            counts[f"stats {status}"] = counts.get(f"stats {status}", 0) + 1
+            if status == "written":
+                print(f"[analysis] {common} stats: written", flush=True)
         for sci, common, due in journal_worklist(conn, ctx):
             status, trigger = write_entry(conn, sci, common, ollama=ollama,
                                           ctx=ctx, host=host, due=due)

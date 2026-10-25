@@ -404,7 +404,8 @@ class FakeOllama:
         return answer(prompt) if self.reply is ANSWER else self.reply
 
 
-def test_analyze_species_stores_the_sketch_and_the_audit_trail(conn):
+def test_the_stats_stage_stores_the_figures_and_no_prose(conn):
+    # #626: the sketch retired; this row is the margin figures' numbers.
     base = at(2026, 7, 1, 7)
     visits = [base + d * 86400 for d in range(12)]
     seed(conn, "A sci", "Robin", visits)
@@ -412,33 +413,37 @@ def test_analyze_species_stores_the_sketch_and_the_audit_trail(conn):
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                                    weather_path=None, now=base + 20 * 86400)
     assert status == "written"
-    assert len(llm.calls) == 1                       # one sketch (#614)
+    assert llm.calls == []                           # never the model
     row = conn.execute("SELECT * FROM species_analysis").fetchone()
-    assert row["rhythm_text"].startswith("Some prose")
-    assert row["weather_text"] is None              # retired by #614
-    assert row["fallback"] == 0
+    assert row["rhythm_text"] is None and row["weather_text"] is None
+    assert row["fallback"] == 0 and row["model"] is None
     assert row["visits_watermark"] == 12
-    assert row["model"] == "gemma3:12b"
-    # stats_json is the auditable record the prose was written from.
+    assert row["prompt_version"] == 5
     import json
-    assert json.loads(row["stats_json"])["total_visits"] == 12
+    stored = json.loads(row["stats_json"])
+    assert stored["total_visits"] == 12              # the margin figures' keys
+    assert "sketch" not in stored
 
 
-def test_a_dead_model_leaves_existing_text_standing(conn):
+def test_the_stats_stage_carries_old_prose_forward(conn):
+    # A pre-#626 row's sketch is the page's fallback until the first entry
+    # lands: re-storing the figures neither erases nor re-dates it as prose.
     seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
     conn.execute(
         "INSERT INTO species_analysis (species_sci, rhythm_text,"
-        " weather_text, stats_json, visits_watermark, model, generated_ts)"
-        " VALUES (?,?,?,?,?,?,?)",
-        ("A sci", "the good prose", "and its weather", "{}", 1, "m", 99))
+        " weather_text, stats_json, visits_watermark, model, generated_ts,"
+        " prompt_version, fallback) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("A sci", "the good prose", "and its weather", "{}", 1, "m", 99, 4, 1))
     conn.commit()
     status, _ = sa.analyze_species(conn, "A sci", "Robin",
                                    ollama=FakeOllama(reply=None),
-                                   weather_path=None)
-    assert status == "llm-down"
+                                   weather_path=None, now=500)
+    assert status == "written"                       # the version arm
     row = conn.execute("SELECT * FROM species_analysis").fetchone()
     assert row["rhythm_text"] == "the good prose"    # untouched
-    assert row["generated_ts"] == 99
+    assert row["weather_text"] == "and its weather"
+    assert row["model"] == "m" and row["fallback"] == 1
+    assert row["generated_ts"] == 500 and row["prompt_version"] == 5
 
 
 # --- the #217 gates: model rank, fingerprint, worklist arms -------------------
@@ -527,16 +532,13 @@ def test_worklist_flags_a_prompt_version_mismatch(conn):
     assert [w[0] for w in sa.worklist(conn)] == ["A sci"]
 
 
-def test_worklist_flags_only_an_outranking_model(conn, monkeypatch):
-    monkeypatch.setenv("MERLE_MODEL_RANK", "big,small")
+def test_worklist_has_no_model_arm(conn):
+    # #626: a stats row carries no prose a better model could improve, and
+    # the NULL model it stores would re-queue every bird every tick.
     seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
-    note(conn, "A sci", watermark=3, model="small")
-    assert [w[0] for w in sa.worklist(conn, model="big")] == ["A sci"]
-    # Same model: settled. Lower-ranked host: settled (the no-thrash rule).
-    assert sa.worklist(conn, model="small") == []
-    note(conn, "A sci", watermark=3, model="big")
-    assert sa.worklist(conn, model="small") == []
-    # No model in play (dry-run / no LLM) disables the arm entirely.
+    note(conn, "A sci", watermark=3, model=None)
+    assert sa.worklist(conn) == []
+    note(conn, "A sci", watermark=3, model="gemma3:27b")
     assert sa.worklist(conn) == []
 
 
@@ -563,29 +565,29 @@ def test_worklist_leaves_a_settled_species_alone(conn):
     # The negative case: every arm quiet (and above the visit floor).
     seed(conn, "A sci", "Robin", spaced_visits(sa.MIN_VISITS_FOR_ANALYSIS))
     note(conn, "A sci", watermark=3)
-    assert sa.worklist(conn, model="gemma3:12b") == []
+    assert sa.worklist(conn) == []
 
 
-def test_the_gate_skips_generation_when_nothing_changed(conn):
+def test_the_gate_skips_the_write_when_nothing_changed(conn):
     base = at(2026, 7, 1, 7)
     now = at(2026, 7, 20, 12)
     seed(conn, "A sci", "Robin", [base + d * 86400 for d in range(12)])
     llm = FakeOllama()
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                                    weather_path=None, now=now)
-    assert status == "written" and len(llm.calls) == 1
-    # Same inputs, same version, same model: verifiably NO LLM call.
+    assert status == "written"
+    # Same inputs, same version: the row is left alone.
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
-                                   weather_path=None, now=now)
+                                   weather_path=None, now=now + 60)
     assert status == "current"
-    assert len(llm.calls) == 1
+    assert llm.calls == []                            # never the model (#626)
     row = conn.execute("SELECT * FROM species_analysis").fetchone()
     # The skip is bookkeeping (checked_ts), never a freshness claim.
-    assert row["checked_ts"] == now
+    assert row["checked_ts"] == now + 60
     assert row["generated_ts"] == now    # from the WRITE, untouched by the skip
 
 
-def test_the_gate_regenerates_exactly_once_when_a_description_lands(conn):
+def test_the_gate_restores_exactly_once_when_a_description_lands(conn):
     from listener import species_profile
     conn.executescript(species_profile.SCHEMA)
     base = at(2026, 7, 1, 7)
@@ -594,20 +596,19 @@ def test_the_gate_regenerates_exactly_once_when_a_description_lands(conn):
     llm = FakeOllama()
     sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                        weather_path=None, now=now)
-    assert len(llm.calls) == 1                        # written, no background
     conn.execute(
         "INSERT INTO species_profile (species_sci, description, fetched_ts)"
         " VALUES (?,?,?)", ("A sci", "A very red bird.", now))
     conn.commit()
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
-                                   weather_path=None, now=now)
+                                   weather_path=None, now=now + 60)
     assert status == "written"                        # the description flipped it
-    assert len(llm.calls) == 2
-    assert "A very red bird." in llm.calls[1]         # and rode the prompt
     # Exactly once: the third look settles.
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
-                                   weather_path=None, now=now)
-    assert status == "current" and len(llm.calls) == 2
+                                   weather_path=None, now=now + 120)
+    assert status == "current"
+    assert conn.execute("SELECT generated_ts FROM species_analysis"
+                        ).fetchone()["generated_ts"] == now + 60
 
 
 def test_force_pushes_past_the_gate(conn):
@@ -617,35 +618,10 @@ def test_force_pushes_past_the_gate(conn):
     sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                        weather_path=None, now=now)
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
-                                   weather_path=None, now=now, force=True)
+                                   weather_path=None, now=now + 60, force=True)
     assert status == "written"                        # --refresh's contract
-    assert len(llm.calls) == 2
-
-
-def test_the_gate_defers_to_a_higher_ranked_stored_model(conn, monkeypatch):
-    monkeypatch.setenv("MERLE_MODEL_RANK", "huge,big,small")
-    now = at(2026, 7, 20, 12)
-    seed(conn, "A sci", "Robin", [at(2026, 7, 18, 7)])
-    big = FakeOllama()
-    big.model = "big"
-    sa.analyze_species(conn, "A sci", "Robin", ollama=big,
-                       weather_path=None, now=now)
-    # A lower-ranked host with identical inputs: skip, never a downgrade.
-    small = FakeOllama()
-    small.model = "small"
-    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=small,
-                                   weather_path=None, now=now)
-    assert status == "current" and small.calls == []
-    assert conn.execute("SELECT model FROM species_analysis"
-                        ).fetchone()["model"] == "big"
-    # A higher-ranked one sweeps it upward.
-    huge = FakeOllama()
-    huge.model = "huge"
-    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=huge,
-                                   weather_path=None, now=now)
-    assert status == "written"
-    assert conn.execute("SELECT model FROM species_analysis"
-                        ).fetchone()["model"] == "huge"
+    assert conn.execute("SELECT generated_ts FROM species_analysis"
+                        ).fetchone()["generated_ts"] == now + 60
 
 
 def test_a_written_row_carries_its_provenance(conn):
@@ -657,6 +633,7 @@ def test_a_written_row_carries_its_provenance(conn):
     assert row["host"] == "bluejay:11434"
     assert row["prompt_version"] == sa.PROMPT_VERSION
     assert row["stats_fingerprint"]
+    assert row["model"] is None                       # no model wrote it (#626)
 
 
 def test_a_pre217_row_regenerates_once_then_settles(conn):
@@ -674,7 +651,7 @@ def test_a_pre217_row_regenerates_once_then_settles(conn):
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                                    weather_path=None, now=now)
     assert status == "written"                # once, to fill the new columns
-    assert sa.worklist(conn, model="gemma3:12b") == []      # then settles
+    assert sa.worklist(conn) == []                           # then settles
     status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
                                    weather_path=None, now=now)
     assert status == "current"
@@ -734,13 +711,12 @@ LEAK = "'Evidence: solid' -- they love mornings."
 
 def test_a_model_dying_mid_retry_is_llm_down_and_touches_nothing(conn):
     seed(conn, "A sci", "Robin", spaced_visits(12))
-    note(conn, "A sci", watermark=3, version=1)
+    ctx = ctx_for(conn, at(2026, 8, 1, 12))
     llm = ScriptedOllama(LEAK, None)
-    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
-                                   weather_path=None, places=HOUSE, force=True)
-    assert status == "llm-down"
-    assert conn.execute("SELECT rhythm_text FROM species_analysis"
-                        ).fetchone()["rhythm_text"] == "r"
+    status, _ = sa.write_entry(conn, "A sci", "Robin", ollama=llm, ctx=ctx)
+    assert status == "llm-down" and len(llm.calls) == 2
+    assert conn.execute("SELECT COUNT(*) c FROM species_journal"
+                        ).fetchone()["c"] == 0
 
 
 def test_renaming_a_place_is_a_changed_input(conn):
@@ -809,7 +785,7 @@ def test_connect_upgrades_a_pre217_file(tmp_path):
     c.close()
 
 
-# --- #614: the standing sketch and the dated entries --------------------------
+# --- #614 / #626: the dated entries -- the one note -------------------------
 
 from listener import editor, notes_validate  # noqa: E402
 
@@ -818,27 +794,30 @@ def ctx_for(conn, now, places=HOUSE):
     return sa.journal_context(conn, None, now, places=places)
 
 
-def test_the_sketch_prompt_speaks_in_the_yards_voice():
-    sketch = [{"kind": "dawn", "fact_line": "First heard at dawn, 97 mornings.",
-               "thin": False}]
-    prompt = sa.sketch_prompt("Northern Cardinal", "A red bird.", sketch)
+def test_the_note_prompt_speaks_in_the_yards_voice_and_stands_alone():
+    lede = {"kind": "dawn", "fact_line": "First heard at dawn, 97 mornings.",
+            "thin": False}
+    rest = [{"kind": "season", "fact_line": "Heard on 28 of the last 28 days.",
+             "thin": False}]
+    prompt = sa.entry_prompt("Northern Cardinal", "A red bird.", lede, rest,
+                             at(2026, 10, 25, 12))
     # No listening posts (#614): handed them, the model invented places.
     assert "listens from" not in prompt and "back of the house" not in prompt
     assert "Say where in the yard the bird was heard ONLY when a fact" in prompt
-    assert "- First heard at dawn, 97 mornings." in prompt
+    assert "Open the note with this fact:\nFirst heard at dawn, 97 mornings." \
+        in prompt
+    assert "- Heard on 28 of the last 28 days." in prompt
+    # #626: one note, read on its own, covering the bird's character.
+    assert "read on its own" in prompt
+    assert "when in the day the bird is heard, where it stands in the season" \
+        in prompt
+    assert "120 to 220 words" in prompt and "do not introduce" not in prompt
+    assert "Three short paragraphs at most" in prompt
     assert "Use ONLY the figures given" in prompt
     assert 'Address the reader as "you"' in prompt
     assert "driveway" not in sa.VOICE and "driveway" not in sa.RULES
-    assert sa.PROMPT_VERSION == 4      # the sketch re-narrates the archive once
-
-
-def test_a_suspect_birds_sketch_is_the_caution_alone():
-    f = lambda kind: {"kind": kind, "effect": 1.0, "support": 60,
-                      "thin": False, "novelty_key": kind,
-                      "fact_line": f"{kind} line."}
-    sketch = sa.sketch_findings([f("dawn"), f("anomaly"), f("weather_sky")])
-    assert [x["kind"] for x in sketch] == ["anomaly"]
-    assert "describe no habits" in sa.sketch_prompt("Swallow", None, sketch)
+    assert sa.PROMPT_VERSION == 5      # the stats-only row re-stores once
+    assert sa.JOURNAL_VERSION == 2     # the one-note prompt
 
 
 def test_an_entry_naming_a_place_no_fact_names_is_retried(conn):
@@ -854,52 +833,28 @@ def test_an_entry_naming_a_place_no_fact_names_is_retried(conn):
     assert row["fallback"] == 0 and "garage" not in row["text"]
 
 
-def test_sketch_findings_keep_character_and_drop_news():
-    f = lambda kind, effect: {"kind": kind, "effect": effect, "support": 60,
-                              "thin": False, "novelty_key": kind}
-    found = [f("departure", 1.0), f("dawn", 0.9), f("place", 0.2),
-             f("trend", 1.0), f("weather_sky", 0.6), f("record", 0.3),
-             f("dusk", 0.5)]
-    kinds = [x["kind"] for x in sa.sketch_findings(found)]
-    assert kinds == ["dawn", "weather_sky", "dusk", "record"]
-
-
 def test_a_thin_fact_carries_the_hedge_marker_in_the_prompt_only():
     f = {"fact_line": "In rain, 44% MORE OFTEN.", "thin": True}
     assert sa.prompt_line(f).endswith("Evidence: THIN -- hedge this one.")
     assert sa.plain_line(f) == "In rain, 44% more often."
 
 
-def test_the_sketch_is_one_call_and_rides_the_stats(conn):
-    import json
+def test_a_rule_breaking_entry_is_retried_then_falls_back(conn):
     seed(conn, "A sci", "Robin", spaced_visits(12))
-    llm = FakeOllama()
-    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=llm,
-                                   weather_path=None, places=HOUSE,
-                                   now=at(2026, 8, 1, 12))
-    assert status == "written" and len(llm.calls) == 1
-    assert "Write a standing sketch" in llm.calls[0]
-    row = conn.execute("SELECT * FROM species_analysis").fetchone()
-    assert row["weather_text"] is None and row["prompt_version"] == 4
-    stored = json.loads(row["stats_json"])
-    assert stored["total_visits"] == 12          # the margin figures' keys
-    assert [f["kind"] for f in stored["sketch"]] == ["record"]
-
-
-def test_a_rule_breaking_sketch_is_retried_then_falls_back(conn):
-    seed(conn, "A sci", "Robin", spaced_visits(12))
-    llm = ScriptedOllama(LEAK, "Mornings suit it.")
-    sa.analyze_species(conn, "A sci", "Robin", ollama=llm, weather_path=None,
-                       places=HOUSE, now=at(2026, 8, 1, 12))
+    ctx = ctx_for(conn, at(2026, 8, 1, 12))
+    llm = ScriptedOllama(LEAK, ANSWER)
+    sa.write_entry(conn, "A sci", "Robin", ollama=llm, ctx=ctx)
     assert len(llm.calls) == 2
     assert "Your previous draft broke these rules" in llm.calls[1]
-    row = conn.execute("SELECT * FROM species_analysis").fetchone()
-    assert row["rhythm_text"] == "Mornings suit it." and row["fallback"] == 0
+    row = conn.execute("SELECT * FROM species_journal").fetchone()
+    assert row["text"].startswith("Some prose") and row["fallback"] == 0
     llm = ScriptedOllama(LEAK, LEAK)
-    sa.analyze_species(conn, "A sci", "Robin", ollama=llm, weather_path=None,
-                       places=HOUSE, now=at(2026, 8, 1, 12), force=True)
-    row = conn.execute("SELECT * FROM species_analysis").fetchone()
-    assert row["rhythm_text"].startswith("Heard on 12 separate days.")
+    sa.write_entry(conn, "A sci", "Robin", ollama=llm, ctx=ctx, force=True)
+    row = conn.execute("SELECT * FROM species_journal ORDER BY id DESC"
+                       ).fetchone()
+    assert row["text"].startswith("Heard here since July 18, 2026, on 12 of "
+                                  "the last 28 days (12 visits in all). "
+                                  "Heard on 12 separate days.")
     assert row["fallback"] == 1
 
 
@@ -915,12 +870,13 @@ def test_the_first_entry_is_written_once_then_waits_for_news(conn):
     assert "it is the first entry" in llm.calls[0]
     assert "Today is August 1, 2026." in llm.calls[0]
     row = conn.execute("SELECT * FROM species_journal").fetchone()
-    assert row["trigger"] == "first" and row["lede_kind"] == "record"
-    assert row["title"] == "heard on 12 days"
+    # #626: a bird with no stronger story leads with its season standing.
+    assert row["trigger"] == "first" and row["lede_kind"] == "season"
+    assert row["title"] == "the season so far"
     assert row["text"].startswith("Some prose, ")
     assert row["host"] == "h:1" and row["prompt_version"] == sa.JOURNAL_VERSION
     stored = json.loads(row["findings_json"])
-    assert stored[0]["kind"] == "record"         # the lede rides first
+    assert [f["kind"] for f in stored] == ["season", "record"]  # lede first
     # Nothing has happened since: not due, no call.
     assert sa.write_entry(conn, "A sci", "Robin", ollama=llm,
                           ctx=ctx) == ("not-due", None)
@@ -929,7 +885,9 @@ def test_the_first_entry_is_written_once_then_waits_for_news(conn):
     status, trigger = sa.write_entry(conn, "A sci", "Robin", ollama=llm,
                                      ctx=ctx, force=True)
     assert (status, trigger) == ("written", "refresh")
-    assert "do not introduce the bird again" in llm.calls[1]
+    # #626: every note stands alone -- the earlier entries are behind it.
+    assert "assume they were not read" in llm.calls[1]
+    assert "it is the first entry" not in llm.calls[1]
 
 
 def test_a_dead_model_writes_no_entry(conn):
@@ -992,16 +950,12 @@ def test_the_plain_records_pass_their_own_validator(conn):
     ctx = ctx_for(conn, at(2026, 8, 1, 12))
     _, found, _ = sa.species_findings(conn, "A sci", ctx)
     lede, rest = editor.pick(found)
-    sketch = sa.sketch_findings(found)
     e_prompt = sa.entry_prompt("Robin", None, lede, rest, ctx["now"])
-    s_prompt = sa.sketch_prompt("Robin", None, sketch)
     assert notes_validate.validate(sa.plain_entry(lede, rest), e_prompt, True,
                                    lede["fact_line"]) == []
-    assert notes_validate.validate(sa.plain_sketch(sketch), s_prompt,
-                                   True) == []
 
 
-def test_audit_reports_stored_sketch_and_entry_violations(conn):
+def test_audit_reports_stored_entry_violations(conn):
     import json
     seed(conn, "A sci", "Robin", spaced_visits(12))
     ctx = ctx_for(conn, at(2026, 8, 1, 12))
@@ -1009,18 +963,17 @@ def test_audit_reports_stored_sketch_and_entry_violations(conn):
                        weather_path=None, ctx=ctx)
     sa.write_entry(conn, "A sci", "Robin", ollama=FakeOllama(), ctx=ctx)
     assert sa.audit(conn, places=HOUSE) == []                 # clean store
+    conn.execute("UPDATE species_journal SET text = 'It is THIN here.'")
+    # An old sketch carried forward on the stats row is a fallback, not a
+    # claim this version made: never audited (#626).
     conn.execute("UPDATE species_analysis SET rhythm_text ="
                  " 'Our microphone heard it 99 times.'")
-    conn.execute("UPDATE species_journal SET text = 'It is THIN here.'")
     conn.commit()
     found = sa.audit(conn, places=HOUSE)
-    blocks = sorted(b for _, b, _ in found)
-    assert blocks[0].startswith("entry ") and blocks[1] == "sketch"
-    sketch_problems = next(p for _, b, p in found if b == "sketch")
-    assert any("99" in p for p in sketch_problems)
-    # An older-version sketch is due to be rewritten anyway: not audited.
-    conn.execute("UPDATE species_analysis SET prompt_version = 3")
+    assert [b for _, b, _ in found] == ["entry 1"]
+    # An older-version entry was written to an older prompt: not audited.
+    conn.execute("UPDATE species_journal SET prompt_version = 1")
     conn.commit()
-    assert all(b != "sketch" for _, b, _ in sa.audit(conn, places=HOUSE))
+    assert sa.audit(conn, places=HOUSE) == []
     assert json.loads(conn.execute("SELECT findings_json FROM species_journal"
                                    ).fetchone()[0])

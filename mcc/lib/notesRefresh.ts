@@ -93,9 +93,10 @@ export function onLifeList(db: string, sci: string): boolean {
   );
 }
 
-/** The newest write the pass has made for this bird: its sketch's
+/** The newest write the pass has made for this bird: its stats row's
  * generated_ts or its latest journal entry (#614), whichever is later. A
- * refresh writes both; either moving is "a note landed". */
+ * refresh writes both (#626: the stats, then the entry); either moving is
+ * "a note landed". */
 function generatedTs(db: string, sci: string): number | null {
   const sketch = readOne<{ generated_ts: number }>(
     db,
