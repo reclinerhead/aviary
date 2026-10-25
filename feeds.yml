@@ -106,3 +106,13 @@ feeds:
 # 2026, and carried the Barred Owl almost alone; garage-rear replaced it.
 retired_sources:
   Warbler32: the back of the garage
+
+# The yard, in the owner's words (issue #636): what the field notes may tie
+# a bird's habits to. It describes the place, never the microphones (the
+# `place:` phrases above are those, and reach a note only as facts), and it
+# carries no figures -- anything here counts as "given" to the notes'
+# validator.
+yard: >-
+  A city lot in Kalamazoo, Michigan. The back of the house looks out over a
+  large wooded area that falls away to a creek and a small valley, and
+  several bird feeders hang in the back yard.

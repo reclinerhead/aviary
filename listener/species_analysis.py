@@ -161,9 +161,10 @@ WATERMARK_SHARE = 0.10
 # holds at least TREND_MIN visits and the two differ by TREND_MOVED of it.
 TREND_MIN = 5
 TREND_MOVED = 0.30
-# Up to 220 words in three short paragraphs (#626); the cap is a backstop
-# for a model ignoring the rules.
-NUM_PREDICT = 448
+# Up to 280 words in four short paragraphs (#636); the cap is a backstop
+# for a model ignoring the rules (Ollama only -- the cloud writer's
+# ceiling is its own, narration/gateway.py).
+NUM_PREDICT = 560
 # Analysis is a long, patient job (one call per species, ~30-90s on CPU), not
 # a live show like the narrator's 30s pacing gate.
 ANALYSIS_TIMEOUT_S = 300
@@ -177,8 +178,10 @@ PROMPT_VERSION = 5
 # The dated entries' prompt. Entries are a journal -- history is never
 # re-narrated -- so this version only tells --audit which prompt an entry
 # was written from; a bump re-writes nothing. 2 is the one-note prompt
-# (#626): a note that stands alone, up to 220 words.
-JOURNAL_VERSION = 2
+# (#626): a note that stands alone, up to 220 words; 3 (#636) adds the
+# yard line, the no-stock-phrases rule, American spelling and a 150-280
+# word budget.
+JOURNAL_VERSION = 3
 
 # Model preference, best first (issue #217): what the enrichment loop picks
 # from the models a host holds (enrichment_loop.pick_model). Until #626 it
@@ -338,6 +341,14 @@ def load_places():
         print(f"[analysis] feeds registry unreadable for place names ({e}) "
               "-- naming microphones by label", flush=True)
         return {}
+
+
+def prompt_context(places, yard=None):
+    """What rides the stats fingerprint beside the figures and the
+    background: the place phrases (#612) and the yard blurb (#636) -- both
+    are prompt inputs the figures can't see, so editing either re-stores
+    the row."""
+    return places_key(places) + "\x00" + (yard or "")
 
 
 def places_key(places):
@@ -700,7 +711,8 @@ VOICE = (
     "You are a field naturalist writing a short note for a backyard "
     "birdwatching page. Your reader listens to their own yard through a few "
     "microphones and loves birds; they are not a scientist. Be warm, "
-    "specific and a little wry. Plain prose, no lists, no headings, no emoji."
+    "specific and a little wry. Plain prose in American English, no lists, "
+    "no headings, no emoji."
 )
 
 RULES = (
@@ -737,7 +749,15 @@ RULES = (
     "- Open with the first fact given, in your own words. Do not open by "
     "saying a microphone heard or picked up the bird, and never write \"a "
     "good number of\".\n"
-    "- Three short paragraphs at most. No preamble, no sign-off, no "
+    "- A line marked \"The yard:\" says what your reader's yard is like. You "
+    "may tie a habit to what the yard offers, as your one guess; you may "
+    "NEVER say where in the yard a bird was heard unless a fact says so -- "
+    "the facts say where the microphones heard it, the yard line does not.\n"
+    "- Write each note as if it were the only one you will ever write: no "
+    "phrase you would reach for on every bird (\"hold that one loosely\", "
+    "\"a neighbour rather than a guest\"). Say the hedge, and the bird's "
+    "standing, in words this bird earns.\n"
+    "- Four short paragraphs at most. No preamble, no sign-off, no "
     "restating the bird's name as a heading."
 )
 
@@ -770,12 +790,15 @@ def fact_lines(found):
 # bird is heard is a fact (findings.place) like any other, and the
 # validator rejects a place no fact names.
 
-def entry_prompt(common, description, lede, rest, now, first=False):
+def entry_prompt(common, description, lede, rest, now, first=False,
+                 yard=None):
     """The one note (#626): the newest entry is all the page says about the
     bird, so it must stand on its own -- the lede first, then the bird's
     character (the editor hands over the best fact of each theme) in two
-    or three short paragraphs. Until #626 an entry assumed its reader had
-    the standing sketch beside it and the earlier entries behind it."""
+    to four short paragraphs. Until #626 an entry assumed its reader had
+    the standing sketch beside it and the earlier entries behind it. `yard`
+    (#636) is the registry's blurb of what the yard is, the one thing that
+    lets a note belong to this yard and not a generic one."""
     caution = (
         "\nThis entry is a caution, not a portrait: say plainly that these "
         "detections may not be this bird at all, and invite your reader to "
@@ -784,6 +807,7 @@ def entry_prompt(common, description, lede, rest, now, first=False):
     return (
         f"The bird: {common}.\n"
         + (f"Background: {description.strip()[:900]}\n" if description else "")
+        + (f"The yard: {yard.strip()}\n" if yard else "")
         + f"\nToday is {findings.date_text(now)}. You are writing the "
           "field notes for this bird in your reader's yard: one dated entry "
           "in a running journal, read on its own -- it is all the page "
@@ -797,7 +821,7 @@ def entry_prompt(common, description, lede, rest, now, first=False):
            "the season, what weather suits it, where in the yard, how "
            "steadily:\n" + fact_lines(rest) if rest else "")
         + "\n" + caution
-        + "\nWrite one note of 120 to 220 words in two or three short "
+        + "\nWrite one note of 150 to 280 words in two to four short "
           "paragraphs.\n\n" + RULES
     )
 
@@ -971,23 +995,26 @@ def write_block(ollama, prompt, plain, *, allow_drive, label, lede=None,
 
 # --- The journal's inputs (#614) ---------------------------------------------
 
-def journal_context(conn, weather_path, now, places=None):
+def journal_context(conn, weather_path, now, places=None, yard=None):
     """What every species' findings share, gathered ONCE per run: the
-    registry's places, Home (for the sun), the microphones fair to compare
-    week on week, the yard's detections per microphone (for place), and the
-    weather archive. A tick that looks at a hundred birds reads the archive
-    once, not a hundred times."""
-    spans, yard = {}, {}
+    registry's places and its yard blurb (#636), Home (for the sun), the
+    microphones fair to compare week on week, the yard's detections per
+    microphone (for place), and the weather archive. A tick that looks at
+    a hundred birds reads the archive once, not a hundred times. `yard`
+    None reads the registry; a registry without the key is a None blurb,
+    and the prompt simply carries no yard line."""
+    spans, counts = {}, {}
     for r in conn.execute("SELECT source, MIN(ts) a, MAX(ts) b, COUNT(*) n"
                           " FROM sightings GROUP BY source"):
         spans[r["source"]] = (r["a"], r["b"])
-        yard[r["source"]] = r["n"]
+        counts[r["source"]] = r["n"]
     observations = load_observations(weather_path, 0, now)
     return {"now": now,
             "places": load_places() if places is None else places,
+            "yard": feeds.yard() if yard is None else yard,
             "latlon": region_prior.home(conn),
             "fair": findings.fair_sources(spans, now),
-            "yard": yard,
+            "counts": counts,
             "observations": observations,
             "obs_ts": [o["ts"] for o in observations]}
 
@@ -1024,7 +1051,7 @@ def species_findings(conn, sci, ctx):
         sci=sci, visits=visits, visit_rows=rows, sources=sources,
         stats=stats, observations=obs, now=ctx["now"],
         latlon=ctx["latlon"], curve=region_prior.prior_curve(conn, sci),
-        places=ctx["places"], fair=ctx["fair"], yard=ctx["yard"])
+        places=ctx["places"], fair=ctx["fair"], yard=ctx["counts"])
     return stats, found, visits
 
 
@@ -1076,7 +1103,7 @@ def analyze_species(conn, sci, common, *, ollama, weather_path,
     # inputs to the entries written from this row's findings, and a change
     # in either is a reason to re-store (and re-date) the figures.
     fingerprint = stats_fingerprint(stats, description_of(conn, sci),
-                                    places_key(places))
+                                    prompt_context(places, ctx.get("yard")))
     row = conn.execute(
         "SELECT stats_fingerprint, prompt_version, rhythm_text, weather_text,"
         " model, fallback FROM species_analysis WHERE species_sci = ?",
@@ -1164,7 +1191,7 @@ def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
     text, fell_back = write_block(
         ollama,
         entry_prompt(common, description_of(conn, sci), lede, rest, now,
-                     first=not entries),
+                     first=not entries, yard=ctx.get("yard")),
         lambda: plain_entry(lede, rest), allow_drive=allow_driveway(places),
         label=f"{common} entry ({trigger})", lede=lede["fact_line"],
         terms=place_terms(places), facts=fact_lines([lede, *rest]))
@@ -1226,16 +1253,17 @@ def cloud_writer(environ=None):
 
 # --- Audit --------------------------------------------------------------------
 
-def audit(conn, places=None):
+def audit(conn, places=None, yard=None):
     """Every stored entry at the current JOURNAL_VERSION checked by the
     validator against the prompt it was written from -- rebuilt from what
-    was STORED (findings_json) plus today's background and places. Older
-    entries are skipped: they were written to an older prompt, and a
+    was STORED (findings_json) plus today's background, places and yard.
+    Older entries are skipped: they were written to an older prompt, and a
     journal is never re-narrated. A stats row carries no prose of its own
     since #626 (an old sketch carried forward is a fallback, not a claim
     this version made), so nothing there is audited.
     -> [(species_sci, block, [...])]."""
     places = load_places() if places is None else places
+    yard = feeds.yard() if yard is None else yard
     allow = allow_driveway(places)
     terms = place_terms(places)
     out = []
@@ -1258,7 +1286,7 @@ def audit(conn, places=None):
             continue
         prompt = entry_prompt(r["common"],
                               description_of(conn, r["species_sci"]),
-                              lede, rest, r["entry_ts"])
+                              lede, rest, r["entry_ts"], yard=yard)
         problems = notes_validate.validate(r["text"], prompt, allow,
                                            lede["fact_line"], terms,
                                            fact_lines([lede, *rest]))

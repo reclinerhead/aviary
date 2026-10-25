@@ -27,6 +27,15 @@
 # blank phrase, a non-string one, or a retired label that is also a live
 # feed is a config bug and raises like everything else here.
 #
+# THE YARD (issue #636): the file may carry a top-level `yard:` -- a
+# sentence or two, in the owner's words, of what the yard is (the city
+# edge, the woods, the creek, the feeders), which the field notes hand the
+# model so a note can tie a bird's habits to this yard and not a generic
+# one. Descriptive only, no consumer dispatches on it, and it never says
+# where a microphone is -- the `place:` phrases do that, as facts, only
+# when a microphone heard the bird. Absent is fine (a station whose owner
+# has not written one); a non-string or blank one raises.
+#
 # Import cost: yaml only. `yaml` sits on every venv in the fleet including
 # the Pi's two-package one (test_import_boundary.py's PI_DEPS) -- the one
 # venv that needs a deploy step is Earl's separate py3.11 venv on pearl
@@ -203,6 +212,21 @@ def places(path=None):
                              f"non-empty phrase, got {phrase!r}")
         out[label] = Place(phrase=phrase.strip(), current=False)
     return out
+
+
+def yard(path=None):
+    """The registry's `yard:` blurb (issue #636), stripped, or None when
+    the file carries none. Blank or non-string raises: a yard line that
+    reads as nothing is a config bug, not a yard."""
+    path = Path(path) if path is not None else registry_path()
+    data = _read(path)
+    if "yard" not in data:
+        return None
+    text = data["yard"]
+    if not isinstance(text, str) or not text.strip():
+        raise FeedsError(f"{path}: 'yard' must be a sentence or two about "
+                         f"the yard, got {text!r}")
+    return " ".join(text.split())
 
 
 def feed(name, path=None):
