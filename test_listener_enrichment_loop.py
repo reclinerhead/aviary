@@ -167,6 +167,33 @@ def test_a_lifer_gets_profile_then_notes_in_one_tick(store, monkeypatch,
     assert any("A very red bird." in p for p in fake_llm[0].prompts)
 
 
+def test_a_tick_never_builds_the_cloud_writer(store, monkeypatch, fake_llm):
+    """THE billing guarantee (#632): with the gateway key in the unit's
+    environment and a Gateway that explodes on construction, a tick still
+    writes its entries -- through Ollama. The loop constructs Ollama and
+    nothing else; any future wiring of the cloud writer into a tick trips
+    this test."""
+    from narration import gateway
+
+    def boom(*a, **k):
+        raise AssertionError("the loop built the cloud writer")
+
+    monkeypatch.setattr(gateway.Gateway, "__init__", boom)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "sk-not-for-the-loop")
+    seed(store, "Cardinalis cardinalis", "Northern Cardinal",
+         [at(2026, 7, d, 7) for d in range(1, 13)])
+    fake_enrich, _ = profile_writer()
+    monkeypatch.setattr(loop.species_profile, "enrich_species", fake_enrich)
+    monkeypatch.setenv("MERLE_OLLAMA", "fakehost")
+    monkeypatch.setattr(loop, "probe", lambda h, p, timeout=None: ["gemma3:12b"])
+
+    loop.tick(now=NOW)
+
+    entry = store.execute("SELECT model, host FROM species_journal").fetchone()
+    assert entry["model"] == "gemma3:12b"
+    assert entry["host"] == "fakehost:11434"
+
+
 def test_profiles_still_run_when_no_host_answers(store, monkeypatch, capsys):
     seed(store, "Cardinalis cardinalis", "Northern Cardinal",
          [at(2026, 7, 18, 7)])

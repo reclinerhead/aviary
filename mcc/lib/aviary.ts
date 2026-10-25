@@ -2642,9 +2642,16 @@ export function stationBrandingFromEnv(): {
 
 // --- The on-demand field-notes refresh (#613) --------------------------------
 
-/** The refresh route for one species (scientific name, URL-encoded). */
-export function refreshUrl(sci: string): string {
-  return `/aviary/analysis/${encodeURIComponent(sci)}/refresh`;
+/** Who writes a refreshed entry (#632): the house model, or -- on demand
+ * only, never from the loop -- a Claude model behind the Vercel AI Gateway,
+ * writing a second opinion from the newest entry's own facts. */
+export type RefreshWriter = "ollama" | "gateway";
+
+/** The refresh route for one species (scientific name, URL-encoded); the
+ * cloud writer rides a query param the route checks against its config. */
+export function refreshUrl(sci: string, writer: RefreshWriter = "ollama"): string {
+  const base = `/aviary/analysis/${encodeURIComponent(sci)}/refresh`;
+  return writer === "gateway" ? `${base}?writer=gateway` : base;
 }
 
 /** Past this the page stops waiting: the server kills the pass at five
@@ -2655,11 +2662,11 @@ export const REFRESH_HOLD_S = 8;
 
 export type RefreshUi =
   | { kind: "idle" }
-  | { kind: "writing"; since: number }
-  | { kind: "failed"; reason: "busy" | "model"; at: number };
+  | { kind: "writing"; since: number; writer: RefreshWriter }
+  | { kind: "failed"; reason: "busy" | "model"; at: number; writer: RefreshWriter };
 
 export type RefreshEvent =
-  | { type: "click" }
+  | { type: "click"; writer: RefreshWriter }
   | { type: "refused"; busy: boolean }
   | { type: "status"; state: "idle" | "running" | "done" | "failed" }
   | { type: "tick" };
@@ -2669,7 +2676,10 @@ export type RefreshEvent =
  * refetches the notes on exactly that transition); writing → failed when
  * the POST is refused, the server says failed, or the deadline passes;
  * failed → idle after the hold. A server status of "idle" while writing
- * (the MCC restarted mid-run) changes nothing -- the deadline settles it. */
+ * (the MCC restarted mid-run) changes nothing -- the deadline settles it.
+ * One machine serves both writers' controls (#632): the box runs one
+ * refresh at a time, so the state remembers which control was pressed and
+ * the other stays offered-but-disabled until it settles. */
 export function refreshStep(
   s: RefreshUi,
   e: RefreshEvent,
@@ -2677,34 +2687,47 @@ export function refreshStep(
 ): RefreshUi {
   switch (e.type) {
     case "click":
-      return s.kind === "idle" ? { kind: "writing", since: now } : s;
+      return s.kind === "idle"
+        ? { kind: "writing", since: now, writer: e.writer }
+        : s;
     case "refused":
       return s.kind === "writing"
-        ? { kind: "failed", reason: e.busy ? "busy" : "model", at: now }
+        ? { kind: "failed", reason: e.busy ? "busy" : "model", at: now,
+            writer: s.writer }
         : s;
     case "status":
       if (s.kind !== "writing") return s;
       if (e.state === "done") return { kind: "idle" };
       if (e.state === "failed")
-        return { kind: "failed", reason: "model", at: now };
+        return { kind: "failed", reason: "model", at: now, writer: s.writer };
       return s;
     case "tick":
       if (s.kind === "writing" && now - s.since > REFRESH_DEADLINE_S)
-        return { kind: "failed", reason: "model", at: now };
+        return { kind: "failed", reason: "model", at: now, writer: s.writer };
       if (s.kind === "failed" && now - s.at >= REFRESH_HOLD_S)
         return { kind: "idle" };
       return s;
   }
 }
 
-/** The words in the control's one reserved line, per state. */
-export function refreshLabel(s: RefreshUi): string {
-  if (s.kind === "writing") return "writing… (this can take a minute)";
-  if (s.kind === "failed")
-    return s.reason === "busy"
-      ? "another entry is being written, try again shortly"
+/** The words on one control, per state: the control whose writer is at
+ * work (or just failed) carries the news; the other keeps its offer. */
+export function refreshLabel(
+  s: RefreshUi,
+  button: RefreshWriter = "ollama",
+): string {
+  const offer =
+    button === "gateway" ? "write a fresh entry (claude)" : "write a fresh entry";
+  if (s.kind === "idle" || s.writer !== button) return offer;
+  if (s.kind === "writing")
+    return button === "gateway"
+      ? "writing with claude… (this can take a minute)"
+      : "writing… (this can take a minute)";
+  return s.reason === "busy"
+    ? "another entry is being written, try again shortly"
+    : button === "gateway"
+      ? "the cloud model didn't answer"
       : "couldn't reach a model";
-  return "write a fresh entry";
 }
 
 
@@ -2777,6 +2800,7 @@ const TRIGGER_STAMPS: Record<string, string> = {
   record: "a record",
   anomaly: "a caution",
   refresh: "on request",
+  compare: "second opinion",
 };
 
 /** The small stamp on an entry's heading: why it was written. */

@@ -22,6 +22,12 @@
 #
 #   python -m listener.species_analysis              (stats + due entries)
 #   python -m listener.species_analysis --refresh "Cardinalis cardinalis"
+#   python -m listener.species_analysis --refresh "..." --writer gateway --compare
+#                                                    (a second opinion from a
+#                                                     Claude model behind the
+#                                                     Vercel AI Gateway, #632:
+#                                                     ON DEMAND ONLY -- the
+#                                                     loop never builds it)
 #   python -m listener.species_analysis --dry-run    (findings + picks, no LLM)
 #   python -m listener.species_analysis --audit      (validator over the store)
 #
@@ -91,6 +97,10 @@
 #   MERLE_OLLAMA_MODEL  model name (default: the narrator's) -- CLI only;
 #                       the loop picks by MODEL_RANK from what a host holds
 #   MERLE_MODEL_RANK    override MODEL_RANK (comma-separated, best first)
+#   AI_GATEWAY_API_KEY  the cloud writer's key (narration/gateway.py), read
+#   MERLE_GATEWAY_MODEL   ONLY under --refresh --writer gateway; the loop's
+#                       ticks construct Ollama and nothing else, whatever the
+#                       unit's environment holds (#632: no surprise bills)
 # =============================================================================
 
 import argparse
@@ -107,6 +117,8 @@ from listener import editor, findings, gate, notes_validate, region_prior
 # The narrator owns the Ollama plumbing (endpoint config, the blocking
 # non-streaming client, the model default); this borrows it rather than
 # growing a second copy that could drift -- the weather post's precedent.
+# The cloud writer (#632) has the same shape and lives beside it.
+from narration import gateway
 from narration.narrator import OLLAMA_DEFAULT_MODEL, Ollama, ollama_address
 
 DEFAULT_DB_PATH = "earl.db"
@@ -1125,17 +1137,29 @@ def entry_due(conn, sci, ctx, force=False):
 
 
 def write_entry(conn, sci, common, *, ollama, ctx, force=False, host=None,
-                due=None):
+                due=None, compare=False):
     """Write this bird's next dated entry if one is due (or `force`, the
     species page's refresh). Returns (status, trigger): status 'not-due',
     'stats-only' (no LLM), 'llm-down' (nothing written) or 'written'.
-    `due` is entry_due()'s answer when the caller already has it."""
-    trigger, found, entries, said = due or entry_due(conn, sci, ctx, force)
+    `due` is entry_due()'s answer when the caller already has it.
+
+    `compare` (#632, the cloud writer's default): the entry is written from
+    the NEWEST entry's stored findings -- lede and supporting facts verbatim,
+    trigger `compare` -- so two writers' texts differ only by writer. Two
+    ordinary refreshes are not the same prompt: the editor discounts what
+    the last entries said, and the lede moves. With no entry yet to compare
+    against it picks fresh, as a refresh would."""
+    trigger, found, entries, said = \
+        due or entry_due(conn, sci, ctx, force or compare)
     if trigger is None:
         return "not-due", None
     if ollama is None:
         return "stats-only", trigger
-    lede, rest = editor.pick(found, said)
+    if compare and entries and entries[0]["findings"]:
+        lede, *rest = entries[0]["findings"]
+        trigger = "compare"
+    else:
+        lede, rest = editor.pick(found, said)
     places, now = ctx["places"], ctx["now"]
     text, fell_back = write_block(
         ollama,
@@ -1180,6 +1204,24 @@ def journal_worklist(conn, ctx, min_visits=MIN_VISITS_FOR_ANALYSIS):
             out.append((r["species_sci"], r["species_common"], due))
     return sorted(out, key=lambda x: (x[2][0] not in NEWS_TRIGGERS,
                                       x[2][0] != "first"))
+
+
+# --- The cloud writer (#632) --------------------------------------------------
+
+def cloud_writer(environ=None):
+    """(client, host) for the on-demand Claude writer, or (None, None) with
+    the reason printed. Called from ONE place -- main(), under --refresh
+    --writer gateway -- and never from the loop: a tick must not be able to
+    spend money, whatever environment the unit carries."""
+    cfg = gateway.gateway_config(environ)
+    if cfg is None:
+        print("[analysis] AI_GATEWAY_API_KEY not set -- no cloud writer, "
+              "nothing written", flush=True)
+        return None, None
+    key, model = cfg
+    print(f"[analysis] writing on demand with {model} via "
+          f"{gateway.GATEWAY_HOST}", flush=True)
+    return gateway.Gateway(key, model), gateway.GATEWAY_HOST
 
 
 # --- Audit --------------------------------------------------------------------
@@ -1241,7 +1283,21 @@ def main():
     ap.add_argument("--audit", action="store_true",
                     help="check every stored entry against the validator; "
                          "no LLM, no writes (#612)")
+    ap.add_argument("--writer", choices=("ollama", "gateway"),
+                    default="ollama",
+                    help="who writes a --refresh entry: ollama (MERLE_OLLAMA, "
+                         "the default) or gateway -- a Claude model behind "
+                         "the Vercel AI Gateway (AI_GATEWAY_API_KEY), on "
+                         "demand only (#632)")
+    ap.add_argument("--compare", action="store_true",
+                    help="with --refresh: write the entry from the newest "
+                         "entry's own facts, so the texts differ only by "
+                         "writer (#632)")
     args = ap.parse_args()
+    if args.writer == "gateway" and not args.refresh:
+        ap.error("--writer gateway is on demand only: use it with --refresh")
+    if args.compare and not args.refresh:
+        ap.error("--compare needs --refresh")
 
     path = db_path()
     conn = connect(path)
@@ -1294,15 +1350,27 @@ def main():
                 "SELECT species_common FROM life_list WHERE species_sci = ?",
                 (args.refresh,)).fetchone()
             common = row["species_common"] if row else args.refresh
+            # The writer: Ollama as configured, or -- the one place in the
+            # codebase that builds it -- the cloud writer (#632). The stats
+            # row is written by whichever is present (no model is called
+            # for it), with that writer's host as provenance.
+            writer, writer_host = ollama, host
+            if args.writer == "gateway":
+                writer, writer_host = cloud_writer()
+                if writer is None:
+                    return
             status, _ = analyze_species(conn, args.refresh, common,
-                                        ollama=ollama, weather_path=None,
-                                        now=now, force=True, host=host,
+                                        ollama=ollama or writer,
+                                        weather_path=None, now=now,
+                                        force=True, host=host or writer_host,
                                         ctx=ctx)
             print(f"[analysis] {common} stats: {status}", flush=True)
             status, trigger = write_entry(conn, args.refresh, common,
-                                          ollama=ollama, ctx=ctx, force=True,
-                                          host=host)
-            print(f"[analysis] {common} entry: {status}", flush=True)
+                                          ollama=writer, ctx=ctx, force=True,
+                                          host=writer_host,
+                                          compare=args.compare)
+            print(f"[analysis] {common} entry ({trigger}): {status}",
+                  flush=True)
             return
         counts = {}
         for sci, common, _ in worklist(conn):

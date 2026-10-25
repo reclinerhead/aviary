@@ -59,6 +59,9 @@ type Body = {
   generated_ts: number | null;
   fallback: boolean;
   refreshable: boolean;
+  /** #632: this box may also write a second opinion with the cloud writer
+   * (its unit carries AI_GATEWAY_API_KEY); never true without `refreshable`. */
+  refreshable_cloud: boolean;
   /** #614: which prompt wrote `rhythm` -- 4 and up is the standing sketch
    * (and `weather` is null); below that, the old two-block notes. */
   prompt_version: number | null;
@@ -74,6 +77,7 @@ const EMPTY: Body = {
   generated_ts: null,
   fallback: false,
   refreshable: false,
+  refreshable_cloud: false,
   prompt_version: null,
   entries: [],
 };
@@ -129,7 +133,9 @@ export async function GET(
   } catch {
     return body(EMPTY);
   }
-  const refreshable = refreshConfig() !== null;
+  const refreshCfg = refreshConfig();
+  const refreshable = refreshCfg !== null;
+  const refreshable_cloud = refreshCfg?.cloud ?? false;
   const sci = decodeURIComponent(species);
   try {
     const entries = readEntries(db, sci);
@@ -152,7 +158,8 @@ export async function GET(
       // quiet empty, not an error at a viewer.
       row = undefined;
     }
-    if (!row) return body({ ...EMPTY, refreshable, entries });
+    if (!row)
+      return body({ ...EMPTY, refreshable, refreshable_cloud, entries });
     return body({
       rhythm: row.rhythm_text,
       weather: row.weather_text,
@@ -162,6 +169,7 @@ export async function GET(
       generated_ts: row.generated_ts,
       fallback: row.fallback === 1,
       refreshable,
+      refreshable_cloud,
       prompt_version: row.prompt_version ?? null,
       entries,
     });

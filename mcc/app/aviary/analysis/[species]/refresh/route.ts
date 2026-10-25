@@ -3,11 +3,13 @@
 // pass's own --refresh CLI as a subprocess (lib/notesRefresh.ts says why
 // and how) and reports on it.
 //
-// POST /aviary/analysis/<species_sci>/refresh
+// POST /aviary/analysis/<species_sci>/refresh[?writer=gateway]
 //   202 {started: true}       the pass is running
 //   409 {busy: true}          a refresh is already running on this box
 //   404                       this box can't refresh (no model / no venv /
-//                             no store), or the bird isn't in the record
+//                             no store), the bird isn't in the record, or
+//                             the cloud writer was asked for on a box whose
+//                             unit carries no AI_GATEWAY_API_KEY (#632)
 // GET  /aviary/analysis/<species_sci>/refresh
 //   -> {state: idle|running|done|failed, reason, finished_ts}
 //
@@ -24,7 +26,7 @@ import {
 } from "@/lib/notesRefresh";
 
 export async function POST(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ species: string }> },
 ) {
   const cfg = refreshConfig();
@@ -37,8 +39,16 @@ export async function POST(
   const { species } = await ctx.params;
   const sci = decodeURIComponent(species);
   if (!onLifeList(cfg.db, sci)) return new Response(null, { status: 404 });
+  // The cloud writer (#632) only where this unit's env says it may be
+  // offered; anything else on the param is the house writer.
+  const writer =
+    new URL(req.url).searchParams.get("writer") === "gateway"
+      ? "gateway"
+      : "ollama";
+  if (writer === "gateway" && !cfg.cloud)
+    return new Response(null, { status: 404 });
 
-  if (startRefresh(cfg, sci) === "busy")
+  if (startRefresh(cfg, sci, writer) === "busy")
     return Response.json({ busy: true }, { status: 409 });
   return Response.json({ started: true }, { status: 202 });
 }
