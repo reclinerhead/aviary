@@ -118,17 +118,29 @@ def test_a_record_is_a_new_busiest_day_or_a_streak_milestone():
     assert ed.due([rec(115, 60)], [last], NOW, 5) == "record"
 
 
-def test_weekly_needs_a_week_a_visit_and_something_new():
+def test_routine_needs_28_days_a_visit_and_something_new(monkeypatch):
+    monkeypatch.delenv("MERLE_NOTES_ROUTINE_DAYS", raising=False)
     dawn = f("dawn", key="dawn:a dawn singer:-20")
-    last = entry(NOW - 6 * DAY, f("place", key="place:house-rear"))
-    assert ed.due([dawn], [last], NOW, 10) is None            # under a week
-    last = entry(NOW - 8 * DAY, f("place", key="place:house-rear"))
+    last = entry(NOW - 27 * DAY, f("place", key="place:house-rear"))
+    assert ed.due([dawn], [last], NOW, 10) is None            # under 28 days
+    last = entry(NOW - 29 * DAY, f("place", key="place:house-rear"))
     assert ed.due([dawn], [last], NOW, 0) is None             # not heard
-    assert ed.due([dawn], [last], NOW, 10) == "weekly"
+    assert ed.due([dawn], [last], NOW, 10) == "routine"
     # The same lede as the last entry: nothing new to say, no entry.
-    said = ed.said_recently([entry(NOW - 8 * DAY, dawn)])
-    assert ed.due([dawn], [entry(NOW - 8 * DAY, dawn)], NOW, 10,
+    said = ed.said_recently([entry(NOW - 29 * DAY, dawn)])
+    assert ed.due([dawn], [entry(NOW - 29 * DAY, dawn)], NOW, 10,
                   said) is None
+    # A week was the #614 cadence (#638): a hand-requested entry eight days
+    # old now holds the page -- and the clock runs from ANY newest entry.
+    assert ed.due([dawn], [entry(NOW - 8 * DAY, f("place"))], NOW, 10) is None
+
+
+def test_the_routine_window_is_an_env_knob():
+    assert ed.routine_s({}) == 28 * 86400
+    assert ed.routine_s({"MERLE_NOTES_ROUTINE_DAYS": "7"}) == 7 * 86400
+    assert ed.routine_s({"MERLE_NOTES_ROUTINE_DAYS": "14.5"}) == 14.5 * 86400
+    for bad in ("", "soon", "0", "-3"):
+        assert ed.routine_s({"MERLE_NOTES_ROUTINE_DAYS": bad}) == 28 * 86400
 
 
 def test_said_recently_covers_the_last_three_entries():

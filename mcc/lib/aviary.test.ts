@@ -3309,6 +3309,7 @@ describe("journalStamp", () => {
     expect(journalStamp("refresh")).toBe("on request");
     expect(journalStamp("compare")).toBe("second opinion");
     expect(journalStamp("weekly")).toBe("this week");
+    expect(journalStamp("routine")).toBe("routine");
     expect(journalStamp("mystery")).toBe("mystery");
   });
 });
