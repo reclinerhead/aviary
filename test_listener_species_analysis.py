@@ -791,8 +791,11 @@ def test_connect_upgrades_a_pre217_file(tmp_path):
 from listener import editor, notes_validate  # noqa: E402
 
 
-def ctx_for(conn, now, places=HOUSE):
-    return sa.journal_context(conn, None, now, places=places)
+YARD = "A city lot with oaks over the back of the house and a creek beyond."
+
+
+def ctx_for(conn, now, places=HOUSE, yard=YARD):
+    return sa.journal_context(conn, None, now, places=places, yard=yard)
 
 
 def test_the_note_prompt_speaks_in_the_yards_voice_and_stands_alone():
@@ -801,9 +804,10 @@ def test_the_note_prompt_speaks_in_the_yards_voice_and_stands_alone():
     rest = [{"kind": "season", "fact_line": "Heard on 28 of the last 28 days.",
              "thin": False}]
     prompt = sa.entry_prompt("Northern Cardinal", "A red bird.", lede, rest,
-                             at(2026, 10, 25, 12))
+                             at(2026, 10, 25, 12), yard=YARD)
     # No listening posts (#614): handed them, the model invented places.
-    assert "listens from" not in prompt and "back of the house" not in prompt
+    assert "listens from" not in prompt and "back of the house" not in \
+        prompt.split("The yard:")[1].split("\n", 1)[1]
     assert "Say where in the yard the bird was heard ONLY when a fact" in prompt
     assert "Open the note with this fact:\nFirst heard at dawn, 97 mornings." \
         in prompt
@@ -812,13 +816,47 @@ def test_the_note_prompt_speaks_in_the_yards_voice_and_stands_alone():
     assert "read on its own" in prompt
     assert "when in the day the bird is heard, where it stands in the season" \
         in prompt
-    assert "120 to 220 words" in prompt and "do not introduce" not in prompt
-    assert "Three short paragraphs at most" in prompt
+    assert "150 to 280 words" in prompt and "do not introduce" not in prompt
+    assert "Four short paragraphs at most" in prompt
     assert "Use ONLY the figures given" in prompt
     assert 'Address the reader as "you"' in prompt
     assert "driveway" not in sa.VOICE and "driveway" not in sa.RULES
+    # #636: the yard, in the owner's words, after the background; the rules
+    # say what it is for and what it is not; no stock phrases; American.
+    assert f"Background: A red bird.\nThe yard: {YARD}\n" in prompt
+    assert "NEVER say where in the yard a bird was heard unless a fact" \
+        in sa.RULES
+    assert "no phrase you would reach for on every bird" in sa.RULES
+    assert "American English" in sa.VOICE
+    assert "\nThe yard: " not in sa.entry_prompt("X", None, lede, rest,
+                                                 at(2026, 10, 25, 12))
     assert sa.PROMPT_VERSION == 5      # the stats-only row re-stores once
-    assert sa.JOURNAL_VERSION == 2     # the one-note prompt
+    assert sa.JOURNAL_VERSION == 3     # the yard, the budget, no stock phrases
+
+
+def test_the_yard_rides_the_fingerprint_and_the_context(conn):
+    seed(conn, "A sci", "Robin", spaced_visits(12))
+    now = at(2026, 8, 1, 12)
+    ctx = ctx_for(conn, now)
+    assert ctx["yard"] == YARD
+    sa.analyze_species(conn, "A sci", "Robin", ollama=FakeOllama(),
+                       weather_path=None, ctx=ctx)
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=FakeOllama(),
+                                   weather_path=None, ctx=ctx)
+    assert status == "current"
+    # Editing the yard is a changed input: the row re-stores once.
+    moved = ctx_for(conn, now, yard="A lakeshore lot.")
+    status, _ = sa.analyze_species(conn, "A sci", "Robin", ollama=FakeOllama(),
+                                   weather_path=None, ctx=moved)
+    assert status == "written"
+    # And the entry's prompt carries it.
+    llm = FakeOllama()
+    sa.write_entry(conn, "A sci", "Robin", ollama=llm, ctx=moved)
+    assert "The yard: A lakeshore lot.\n" in llm.calls[0]
+    # A registry without a yard: no line at all.
+    bare = ctx_for(conn, now, yard=None)
+    assert bare["yard"] == feeds.yard()           # the shipped house blurb
+    assert sa.prompt_context(HOUSE, None).endswith("\x00")
 
 
 def test_an_entry_naming_a_place_no_fact_names_is_retried(conn):

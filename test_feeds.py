@@ -219,6 +219,38 @@ def test_a_retired_source_needs_a_phrase(tmp_path):
         feeds.places(path)
 
 
+# --- the yard (issue #636) -----------------------------------------------------
+
+def test_the_yard_is_optional_and_read_whole(tmp_path):
+    assert feeds.yard(write_registry(tmp_path, SAMPLE)) is None
+    path = write_registry(tmp_path, SAMPLE + "yard: >-\n  A city lot.\n"
+                          "  Oaks over the back of the house,\n"
+                          "  a creek beyond.\n")
+    assert feeds.yard(path) == ("A city lot. Oaks over the back of the house, "
+                                "a creek beyond.")
+    assert feeds.load_feeds(path)                 # the feeds still parse
+
+
+@pytest.mark.parametrize("bad", ["''", "7", "[a, b]", "'   '"])
+def test_a_blank_or_non_string_yard_raises(tmp_path, bad):
+    path = write_registry(tmp_path, SAMPLE + f"yard: {bad}\n")
+    with pytest.raises(feeds.FeedsError, match="yard"):
+        feeds.yard(path)
+
+
+def test_the_shipped_house_yard_names_the_place_and_no_figure():
+    # The house blurb: what a note may tie a habit to. No digit in it, since
+    # anything in the prompt counts as "given" to the notes' validator; and
+    # no microphone, since the place phrases carry those as facts.
+    text = feeds.yard(feeds.DEFAULT_PATH)
+    assert "Kalamazoo" in text and "feeders" in text and "creek" in text
+    assert not any(ch.isdigit() for ch in text)
+    assert "microphone" not in text.lower()
+    # The stations' owners have not written one yet: absent, not an error.
+    assert feeds.yard(feeds.DEFAULT_PATH.parent / "feeds.station.yml") is None
+    assert feeds.yard(feeds.DEFAULT_PATH.parent / "feeds.kestrel.yml") is None
+
+
 def test_every_shipped_registry_names_every_live_ear():
     """The field notes call each microphone by its phrase; a live ear with
     no phrase would be named by its raw label ("house-rear") on the page."""
