@@ -932,7 +932,9 @@ export function shapeRoster(
 
 // --- The grid's sort control -------------------------------------------------
 
-export type SortKey = "name" | "visits";
+// "week" is the trailing-7-day tally (#220's window), the grid's default
+// since #643 -- all-time "visits" set like concrete on an established station.
+export type SortKey = "name" | "week" | "visits";
 export type SortDir = "asc" | "desc";
 
 /** The grid order as species keys. Ties (and the name sort itself) break by
@@ -955,7 +957,7 @@ export function rosterOrder(
       const cmp = byName(a, b);
       return dir === "asc" ? cmp : -cmp;
     }
-    const cmp = a.visits - b.visits;
+    const cmp = key === "week" ? a.week - b.week : a.visits - b.visits;
     if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
     return byName(a, b);
   });

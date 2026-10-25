@@ -1634,7 +1634,7 @@ export function Aviary({
   // live count updates land in place and nothing reshuffles on its own.
   const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
   const [order, setOrder] = useState<string[]>([]);
-  const [sortKey, setSortKey] = useState<SortKey>("visits");
+  const [sortKey, setSortKey] = useState<SortKey>("week");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [rail, setRail] = useState<TodayTile[]>([]);
   // The search box (#352): a filter over `order`, never a re-sort of it.
@@ -1730,8 +1730,9 @@ export function Aviary({
         const entries = Array.isArray(body.species) ? body.species : [];
         setRoster(Object.fromEntries(entries.map((e) => [e.species_sci, e])));
         // Initial order matches the sort control's initial state (most
-        // visits first) -- the literals here and in useState must agree.
-        setOrder(rosterOrder(entries, "visits", "desc"));
+        // visits in the last 7 days first, #643) -- the literals here and in
+        // useState must agree.
+        setOrder(rosterOrder(entries, "week", "desc"));
         setRail(todayVisitors(entries));
         // The new-best baseline: everything on record is old news.
         championRef.current = championPaths(entries);
@@ -2036,7 +2037,8 @@ export function Aviary({
                   </button>
                 </span>
                 {sortButton("name", "name")}
-                {sortButton("visits", "visits")}
+                {sortButton("week", "7 days")}
+                {sortButton("visits", "all time")}
                 <button
                   type="button"
                   onClick={() =>
@@ -2111,10 +2113,21 @@ export function Aviary({
                           <span className="block truncate text-[11px] italic text-inkdim">
                             {sci}
                           </span>
+                          {/* The count follows the active sort (#643), so the
+                              order reads: a 7-day grid led by a tile saying
+                              "1,234 visits" looks unsorted. Only the text
+                              swaps, only on a click -- and "in 7d" (New
+                              Arrivals' 24h/7d vocabulary), not "in 7 days":
+                              the longer form wrapped busy tiles to two lines
+                              at widths where "2,730 visits" sits on one. */}
                           <span className="block text-xs text-inkdim">
-                            {e.visits === 1
-                              ? "1 visit"
-                              : `${e.visits.toLocaleString("en-US")} visits`}
+                            {sortKey === "week"
+                              ? e.week === 0
+                                ? "none in 7d"
+                                : `${e.week.toLocaleString("en-US")} in 7d`
+                              : e.visits === 1
+                                ? "1 visit"
+                                : `${e.visits.toLocaleString("en-US")} visits`}
                             {e.today > 0 && (
                               <span className="text-led"> · {e.today} today</span>
                             )}
