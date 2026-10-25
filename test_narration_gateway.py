@@ -32,11 +32,14 @@ def test_the_payload_is_the_prompt_and_nothing_else():
     # prompt rides it verbatim -- the pass builds the prompt, this never
     # adds to it -- and nothing else is sent.
     prompt = "orchid.lan 192.168.1.148 42.26,-85.57 /home/todd/earl.db"
-    body = gw.gateway_payload("voice", prompt, "anthropic/claude-opus-5.5", 448)
-    assert body == {"model": "anthropic/claude-opus-5.5", "max_tokens": 448,
+    body = gw.gateway_payload("voice", prompt, "anthropic/claude-opus-5.5")
+    assert body == {"model": "anthropic/claude-opus-5.5", "max_tokens": 8192,
                     "system": "voice",
                     "messages": [{"role": "user", "content": prompt}]}
     assert "temperature" not in body and "thinking" not in body
+    # The ceiling is the writer's own, never the pass's 448-token backstop:
+    # Claude's thinking counts against it, and 448 bought no text at all.
+    assert gw.GATEWAY_MAX_TOKENS >= 4096
 
 
 def test_the_reply_is_the_text_blocks_or_nothing():
@@ -46,6 +49,8 @@ def test_the_reply_is_the_text_blocks_or_nothing():
              "stop_reason": "end_turn"}
     assert gw.parse_reply(reply) == "One. Two."
     assert gw.parse_reply(dict(reply, stop_reason="refusal")) is None
+    # A cut-off note is nothing written, even with a partial text block.
+    assert gw.parse_reply(dict(reply, stop_reason="max_tokens")) is None
     assert gw.parse_reply({"content": [], "stop_reason": "end_turn"}) is None
     assert gw.parse_reply({"type": "error"}) is None
     assert gw.parse_reply(["not", "a", "message"]) is None
@@ -91,10 +96,12 @@ def test_complete_posts_the_payload_and_returns_the_text(monkeypatch, capsys):
     assert seen["headers"]["authorization"] == "Bearer sk-test"
     assert seen["headers"]["anthropic-version"] == "2023-06-01"
     assert seen["body"] == gw.gateway_payload("voice", "prompt",
-                                              "anthropic/claude-opus-5.5", 448)
+                                              "anthropic/claude-opus-5.5")
+    assert seen["body"]["max_tokens"] == gw.GATEWAY_MAX_TOKENS   # not 448
     assert seen["timeout"] == 300
-    # The bill is visible in the journal.
-    assert "1500 tokens in, 900 out" in capsys.readouterr().out
+    # The bill, and why the model stopped, are visible in the journal.
+    assert "1500 tokens in, 900 out (stop_reason 'end_turn')" \
+        in capsys.readouterr().out
 
 
 def test_complete_answers_none_and_one_line_on_every_failure(monkeypatch,
@@ -129,3 +136,15 @@ def test_complete_answers_none_and_one_line_on_every_failure(monkeypatch,
     monkeypatch.setattr(gw.urllib.request, "urlopen", refused)
     assert client.complete("v", "p") is None
     assert "'refusal'" in capsys.readouterr().out
+
+    # The 2026-10-25 failure, verbatim: the budget spent on thinking.
+    def cut_off(req, timeout=None):
+        return FakeResponse(json.dumps({
+            "content": [{"type": "thinking", "thinking": ""}],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 1574, "output_tokens": 448}}).encode())
+
+    monkeypatch.setattr(gw.urllib.request, "urlopen", cut_off)
+    assert client.complete("v", "p") is None
+    out = capsys.readouterr().out
+    assert "(stop_reason 'max_tokens')" in out and "nothing written" in out
