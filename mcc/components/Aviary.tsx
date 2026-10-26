@@ -1167,6 +1167,11 @@ const NOTICE_INK_CLASSES: Record<
   },
 };
 
+/** notice-out's duration in globals.css (#648): the ✕ fades the card out,
+ * then hands the dismiss to the hook. A timer rather than animationend, so a
+ * dismiss never hangs on an animation that didn't run. */
+const NOTICE_OUT_MS = 140;
+
 function AviaryNoticeStrip({
   notice,
   onDismiss,
@@ -1176,7 +1181,22 @@ function AviaryNoticeStrip({
   onDismiss: (id: string) => void;
   player?: ClipPlayer;
 }) {
+  // The notice whose card is fading out (#648). An id, not a flag, so a
+  // notice the queue swaps in mid-fade is never born faded.
+  const [leavingId, setLeavingId] = useState<string | null>(null);
   if (!notice) return null;
+  const leaving = leavingId === notice.id;
+  const dismiss = () => {
+    if (leaving) return;
+    const id = notice.id;
+    setLeavingId(id);
+    window.setTimeout(() => {
+      // Cleared as well as dismissed: a dismiss that couldn't persist
+      // re-picks the same notice, which must come back, not sit invisible.
+      setLeavingId((cur) => (cur === id ? null : cur));
+      onDismiss(id);
+    }, NOTICE_OUT_MS);
+  };
   const ink = NOTICE_INK_CLASSES[NOTICE_KIND_INK[notice.kind] ?? "notice"];
   const kindLabel =
     notice.kind === "rare_return"
@@ -1242,34 +1262,38 @@ function AviaryNoticeStrip({
     </>
   );
   return (
-    <div
-      className={`mt-3 flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5`}
-      role="status"
-      aria-live="polite"
-    >
-      {notice.href ? (
-        <Link
-          href={notice.href}
-          className="flex min-w-0 flex-1 items-center gap-3 transition-colors hover:text-squirrel"
-        >
-          {body}
-        </Link>
-      ) : (
-        <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
-      )}
-      {notice.clip && player ? (
-        <span className="flex shrink-0 items-center">
-          <PlaySlot clip={notice.clip} player={player} />
-        </span>
-      ) : null}
-      <button
-        type="button"
-        onClick={() => onDismiss(notice.id)}
-        className={`stamp shrink-0 self-center rounded-sm border ${ink.button} px-2.5 py-2 text-xs text-inkdim transition-colors hover:text-ink`}
-        aria-label="Dismiss notice"
+    <div className="mt-3" role="status" aria-live="polite">
+      {/* Keyed per notice (#648) so every notice that appears rises in, one
+          the queue swaps in on its own included. The live region stays
+          mounted around it, so a screen reader still hears the change. */}
+      <div
+        key={notice.id}
+        className={`flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5 ${leaving ? "notice-out" : "notice-in"}`}
       >
-        ✕
-      </button>
+        {notice.href ? (
+          <Link
+            href={notice.href}
+            className="flex min-w-0 flex-1 items-center gap-3 transition-colors hover:text-squirrel"
+          >
+            {body}
+          </Link>
+        ) : (
+          <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
+        )}
+        {notice.clip && player ? (
+          <span className="flex shrink-0 items-center">
+            <PlaySlot clip={notice.clip} player={player} />
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={dismiss}
+          className={`stamp shrink-0 self-center rounded-sm border ${ink.button} px-2.5 py-2 text-xs text-inkdim transition-colors hover:text-ink`}
+          aria-label="Dismiss notice"
+        >
+          ✕
+        </button>
+      </div>
     </div>
   );
 }

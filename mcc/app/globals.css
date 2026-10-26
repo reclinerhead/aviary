@@ -278,10 +278,48 @@ body {
     event-glow 10s ease-out;
 }
 
-/* Motion-sensitive viewers get the arrival without the sustained glow. */
+/* The Aviary's notice swap (issue #648). Dismissing a notice lifts the whole
+   card away (border and wash too) and the next one in the queue rises into
+   its place: two rare visitors share the gold card, and an instant swap read
+   as no change at all. Crisp on purpose, ~340ms end to end. Opacity and
+   transform only, so the strip keeps its box and nothing under it moves --
+   house rule #1. `forwards` holds the outgoing card invisible until React
+   swaps it; `backwards` on the way in, for the .panel reason above.
+   NOTICE_OUT_MS in components/Aviary.tsx matches notice-out's duration. */
+@keyframes notice-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.notice-out {
+  animation: notice-out 140ms ease-in forwards;
+}
+.notice-in {
+  animation: notice-in 200ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* Motion-sensitive viewers get the arrival without the sustained glow, and
+   the notice swap without the drift: the fade is the signal, so it stays. */
 @media (prefers-reduced-motion: reduce) {
   .event-new {
     animation: none;
+  }
+  @keyframes notice-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes notice-in {
+    from {
+      opacity: 0;
+    }
   }
 }
 
