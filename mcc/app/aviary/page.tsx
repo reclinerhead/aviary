@@ -27,7 +27,7 @@ export const dynamic = "force-dynamic";
 export function generateMetadata(): Metadata {
   const { title } = stationBrandingFromEnv();
   return {
-    title: `${title} — Merle Control Center`,
+    title,
     description:
       "Every bird the yard has announced, and the arrivals as they happen.",
   };
