@@ -444,8 +444,8 @@ const TAP_SLOP_PX = 4;
 // its ghost bar spans that window on the strip.
 const WX_FORECAST_STEP_S = 3 * 3600;
 
-/** The circled i riding after a WxStat label (issue #63) -- drawn like
- * CloseIcon, sized to sit inside the stamp line. */
+/** The circled i riding after a WxStat label (issue #63) -- the house
+ * line-work, sized to sit inside the stamp line. */
 function InfoIcon() {
   return (
     <svg
@@ -732,23 +732,6 @@ function WxTimeAxis({
   );
 }
 
-function CloseIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="18"
-      height="18"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M6 6l12 12M18 6L6 18" />
-    </svg>
-  );
-}
-
 export function WeatherStationView({
   current,
   history,
@@ -759,7 +742,6 @@ export function WeatherStationView({
   offline,
   onAir,
   baroTrend,
-  onClose,
 }: {
   current: CurrentWeather | null;
   history: WeatherPoint[];
@@ -770,20 +752,12 @@ export function WeatherStationView({
   offline: boolean;
   onAir: boolean;
   baroTrend: "rising" | "falling" | "steady" | null;
-  onClose: () => void;
 }) {
-  // The Live Watch CSS-overlay contract: Escape closes, body scroll locks
-  // while the view is up. No requestFullscreen here -- this is a page of
-  // instruments, not a video, and it should scroll on small screens.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-    };
-  }, [onClose]);
+  // A page section under the Aviary masthead since #652. Until then this was
+  // the MCC dashboard's full-screen overlay, with the Live Watch contract
+  // (Escape closes, body scroll locks); the page scrolls now, the masthead
+  // navigates, and nothing here closes. Still no requestFullscreen -- a page
+  // of instruments, not a video, and it should scroll on small screens.
 
   // Hover scrub, the panel chart's contract: pointer x as a fraction of the
   // chart stack's width; the crosshair spans main chart and strips alike.
@@ -1023,17 +997,19 @@ export function WeatherStationView({
   const instruments = weatherInstrumentsAvailable(current);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Weather station view"
-      className="scrollpane fixed inset-0 z-50 overflow-y-auto bg-bg"
-    >
-      {/* max-w matches the main dashboard's wrapper (issue #60) -- the right
-          rail is fixed 320px, so the extra room all goes to the chart. */}
-      <div className="mx-auto w-full max-w-[1500px] px-4 pb-10 pt-5 sm:px-6">
-        {/* Masthead: the same billing as the panel, room to breathe. */}
-        <div className="flex items-center justify-between gap-3 border-b border-line pb-3">
+    <section aria-label="Weather station view">
+      {/* The frame (max-w, padding) is the Aviary page's since #652, so every
+          tab shares it; the right rail is fixed 320px, so the extra room all
+          goes to the chart (issue #60). The bare column below is the old
+          overlay's content wrapper, kept so the instruments under it keep
+          their indentation; it carries no layout of its own. */}
+      <div>
+        {/* The page heading: Willard's billing, with the lamp semantics the
+            retired panel's masthead set. The close control that rode beside
+            the lamp left with the overlay contract (#652) -- the Aviary
+            masthead above is the way anywhere -- and so did the rule under
+            this row, which would have sat one line below the tab bar's. */}
+        <div className="flex items-center justify-between gap-3">
           <h2
             className="text-2xl text-ink"
             style={{ fontFamily: "var(--font-display)" }}
@@ -1043,33 +1019,22 @@ export function WeatherStationView({
               station view
             </span>
           </h2>
-          <div className="flex items-center gap-4">
-            {offline ? (
-              <span className="flex items-center gap-1.5 text-xs">
-                <span className="inline-block h-2 w-2 rounded-full bg-inkfaint" />
-                <span className="stamp text-inkfaint">on coffee break</span>
-              </span>
-            ) : reporting ? (
-              <span className="flex items-center gap-1.5 text-xs">
-                <span className="lamp inline-block h-2 w-2 rounded-full bg-led text-led" />
-                <span className="stamp text-led">on duty</span>
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5 text-xs">
-                <span className="breathe inline-block h-2 w-2 rounded-full bg-turkey" />
-                <span className="stamp text-turkey">no fresh report</span>
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              autoFocus
-              aria-label="Close the station view"
-              className="rounded-sm border border-line p-1.5 text-inkdim transition-colors hover:border-linebright hover:text-squirrel"
-            >
-              <CloseIcon />
-            </button>
-          </div>
+          {offline ? (
+            <span className="flex items-center gap-1.5 text-xs">
+              <span className="inline-block h-2 w-2 rounded-full bg-inkfaint" />
+              <span className="stamp text-inkfaint">on coffee break</span>
+            </span>
+          ) : reporting ? (
+            <span className="flex items-center gap-1.5 text-xs">
+              <span className="lamp inline-block h-2 w-2 rounded-full bg-led text-led" />
+              <span className="stamp text-led">on duty</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-xs">
+              <span className="breathe inline-block h-2 w-2 rounded-full bg-turkey" />
+              <span className="stamp text-turkey">no fresh report</span>
+            </span>
+          )}
         </div>
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -1873,6 +1838,6 @@ export function WeatherStationView({
           </aside>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

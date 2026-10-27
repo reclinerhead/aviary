@@ -1,23 +1,10 @@
-import type { Metadata } from "next";
-import WeatherStation from "@/components/WeatherStation";
-import { stationBrandingFromEnv } from "@/lib/aviary";
+import { permanentRedirect } from "next/navigation";
 
-// A page and an API child share this segment on purpose: /weather renders
-// the station view, /weather/history stays the archive route the deep
-// charts read. Fine in the App Router; noted so nobody is surprised (#142).
-// The title bills the house the way the aviary pages do (#628 retired the
-// control center it used to name): force-dynamic + stationBrandingFromEnv,
-// because the branding is runtime env on a station (the aviary/page.tsx note).
-export const dynamic = "force-dynamic";
-
-export function generateMetadata(): Metadata {
-  const { title } = stationBrandingFromEnv();
-  return {
-    title: `Weather Post — ${title}`,
-    description: "The station's weather, writ large.",
-  };
-}
-
+// The station view lives under the Aviary masthead since #652
+// (/aviary/weather). This segment keeps the old URL honest for bookmarks
+// and the weather.lan door (a 308, per the Next 16 docs), and it still owns
+// /weather/history, the archive route the deep charts read -- the
+// page-and-API-child arrangement #142 set up, now a redirect-and-API-child.
 export default function WeatherPage() {
-  return <WeatherStation />;
+  permanentRedirect("/aviary/weather");
 }
