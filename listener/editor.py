@@ -14,7 +14,8 @@
 #   anomaly    a suspect pattern never yet flagged (a "swallow" at night)
 #   arrival    a season's first visit, not yet written up
 #   departure  a season's silence, not yet written up
-#   record     a new busiest day, or a streak crossing a 30-day mark
+#   record     a new busiest day once it is over (#650), or a streak
+#              crossing a 30-day mark
 #   routine    ROUTINE_DAYS since the newest entry (whoever wrote it) and
 #              the bird was heard in them, AND the pick says something the
 #              last entries didn't (#638: 28 days, was a week -- four
@@ -139,15 +140,22 @@ def pick(findings, said=frozenset(), n=SUPPORTING + 1):
     return lede, rest
 
 
-def record_broken(current, previous):
-    """A record worth an entry: a new busiest day, or the longest streak
-    crossing a 30-day mark. (A growing streak breaks "longest" every single
-    day; only the milestone is news.)"""
+def record_broken(current, previous, now):
+    """A record worth an entry: a new busiest day once it is OVER, or the
+    longest streak crossing a 30-day mark. (A growing streak breaks
+    "longest" every single day; only the milestone is news. A busiest day
+    still under way breaks "busiest" on every visit -- #650, thirteen
+    entries for one Rusty Blackbird afternoon -- so it waits for local
+    midnight and is written up once, with the day's final count.)"""
+    import time
     if current is None or previous is None:
         return False
     c, p = current["fields"], previous["fields"]
-    return (c["busiest"] > p["busiest"]
-            or c["longest"] // 30 > p["longest"] // 30)
+    lt = time.localtime(now)
+    today = [lt.tm_year, lt.tm_mon, lt.tm_mday]
+    busier = (c["busiest"] > p["busiest"]
+              and list(c.get("busiest_day") or ()) != today)
+    return busier or c["longest"] // 30 > p["longest"] // 30
 
 
 def by_kind(findings, kind):
@@ -169,7 +177,7 @@ def due(findings, entries, now, visits_in_window, said=frozenset()):
             return kind
     previous = next((by_kind(e["findings"], "record") for e in entries
                      if by_kind(e["findings"], "record")), None)
-    if record_broken(by_kind(findings, "record"), previous):
+    if record_broken(by_kind(findings, "record"), previous, now):
         return "record"
     if now - entries[0]["entry_ts"] >= routine_s() and visits_in_window > 0:
         lede, _ = pick(findings, said)
