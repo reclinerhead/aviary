@@ -181,7 +181,7 @@ def test_a_tick_builds_the_cloud_writer_only_when_the_chain_names_it(
     default chain, the gateway key in the unit's environment and a Gateway
     that explodes on construction, a tick still writes its entries --
     through Ollama. A box that has not opted in can never spend a cent."""
-    from narration import gateway
+    import gateway_client as gateway
 
     def boom(*a, **k):
         raise AssertionError("the loop built the cloud writer")
@@ -219,7 +219,7 @@ class FakeGateway:
 
 def test_a_gateway_chain_writes_through_the_gateway_and_never_probes(
         store, monkeypatch, capsys):
-    from narration import gateway
+    import gateway_client as gateway
     monkeypatch.setattr(gateway, "Gateway", FakeGateway)
     FakeGateway.made.clear()
     monkeypatch.setenv("MERLE_LLM_CHAIN", "gateway")
@@ -245,7 +245,7 @@ def test_a_gateway_chain_writes_through_the_gateway_and_never_probes(
 
 def test_over_the_daily_cap_the_chain_falls_through(store, monkeypatch,
                                                       fake_llm, capsys):
-    from narration import gateway
+    import gateway_client as gateway
     monkeypatch.setattr(gateway, "Gateway", FakeGateway)
     FakeGateway.made.clear()
     monkeypatch.setenv("MERLE_LLM_CHAIN", "gateway,ollama")

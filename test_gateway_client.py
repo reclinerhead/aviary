@@ -12,7 +12,7 @@ import io
 import json
 import urllib.error
 
-from narration import gateway as gw
+import gateway_client as gw
 
 
 def test_config_needs_a_key_and_takes_a_model_override():

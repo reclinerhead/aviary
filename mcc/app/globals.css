@@ -1,10 +1,11 @@
 @import "tailwindcss";
 
 /* =============================================================================
-   Merle Control Center -- "Ranger Station, Night Watch"
-   Deep pine-black field-station panel. The accent colors are the ACTUAL
-   detection-box colors the vision stack draws on the stream (BGR palette in
-   perception.py, here as RGB), so the UI and the video read as one instrument:
+   The Aviary -- "Ranger Station, Night Watch"
+   Deep pine-black field-station panel, inherited whole from the Merle Control
+   Center it grew up inside (#628 retired the dashboard, not the room). The
+   three named accents were the vision stack's detection-box colors; they
+   stay as the palette's heritage inks (the voice colors, the hover ink):
      squirrel #FF7031 · chipmunk #FF3838 · turkey #CFD231
    ========================================================================== */
 
@@ -24,9 +25,10 @@
   --ink-dim: #a3b6a4;
   --ink-faint: #7e937f;
 
-  /* The species accents are the ACTUAL box colors the vision stack draws, which
-     is what makes the dashboard and the stream read as one instrument. Never
-     pick these for decoration -- they mean "this species". */
+  /* The species accents were the vision stack's literal box colors, kept as
+     the palette's named inks now that nothing draws boxes. Never pick these
+     for decoration -- they still mean "this species", and the rule every
+     later ink follows (below) rests on that. */
   --squirrel: #ff7031;
   --chipmunk: #ff3838;
   --turkey: #cfd231;
@@ -193,7 +195,7 @@ body {
 .panel:nth-child(5) { animation-delay: 0.33s; }
 .panel:nth-child(6) { animation-delay: 0.4s; }
 
-/* The LIVE lamp. */
+/* The LIVE lamp (Earl's presence in the masthead). */
 @keyframes lamp-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 6px 1px currentColor; }
   50% { opacity: 0.45; box-shadow: 0 0 2px 0 currentColor; }
@@ -211,7 +213,9 @@ body {
   animation: breathe 3.2s ease-in-out infinite;
 }
 
-/* A fresh journal entry slides in under the masthead as it's filed. */
+/* A fresh entry slides in under its masthead as it's filed: the keyframes
+   .event-new rides (the dashboard's journal class that first wore them
+   left with #628). */
 @keyframes journal-in {
   from {
     opacity: 0;
@@ -222,43 +226,14 @@ body {
     transform: translateY(0);
   }
 }
-.journal-in {
-  animation: journal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
-}
-
-/* A fresh dispatch flares like a signal lamp -- holds the glow while it has
-   your attention, then cuts out fast. The long hold (0->78%) followed by a
-   short drop is deliberate: a slow symmetric fade never registers as "new". */
-@keyframes journal-flash {
-  0%, 78% {
-    background-color: rgba(107, 229, 133, 0.08);
-    box-shadow: inset 14px 0 16px -12px rgba(107, 229, 133, 0.55);
-  }
-  100% {
-    background-color: transparent;
-    box-shadow: none;
-  }
-}
-/* journal-in + journal-flash together (one class: `animation` is a single
-   property, so stacking two classes would just have one override the other).
-   Willard's weather segment keeps plain .journal-in -- no flash there. */
-.journal-filed {
-  animation:
-    journal-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards,
-    journal-flash 4s ease-out;
-}
-
 /* A freshly-arrived event (issue #259): a full green border glow that holds
-   long enough to catch a wandering eye, then fades out gracefully. Louder and
-   longer than journal-flash's left-edge flick -- this is the "look here,
-   something just landed" cue for the Aviary's live lists (the Latest Events
+   long enough to catch a wandering eye, then fades out gracefully: the
+   "look here, something just landed" cue for the Aviary's live lists (the Latest Events
    ticker and the live Full Record). --led is the palette's LIVE/new green.
    Pure box-shadow (a 1px ring at the border + an outer bloom), so it never
    moves layout -- house rule #1. The hold-then-fade shape (strong through
    45%, graceful to nothing by 100%) reads as "new" the way a slow symmetric
-   fade never would; ~10s total keeps it in view for a good while. Its own
-   class, NOT folded into journal-filed, which the main dashboard's Field
-   Journal shares. */
+   fade never would; ~10s total keeps it in view for a good while. */
 @keyframes event-glow {
   0%,
   45% {
@@ -359,34 +334,4 @@ body {
     -webkit-line-clamp: var(--clamp-lines);
     overflow: hidden;
   }
-}
-
-/* The journal lightbox (issue #96) -- yet-another-react-lightbox reskinned
-   as the station's own darkroom. The backdrop is near-opaque pine-black (a
-   whisper of translucency lets the topo contours ghost through, the station-
-   view treatment), the chrome inherits the ink scale, and the slide byline
-   wears the .stamp lettering in mono -- values duplicated here because the
-   caption node lives outside any .stamp scope. */
-.yarl__root {
-  --yarl__color_backdrop: color-mix(in srgb, var(--bg) 94%, transparent);
-  --yarl__color_button: var(--ink-dim);
-  --yarl__color_button_active: var(--ink);
-  --yarl__color_button_disabled: var(--ink-faint);
-  /* stock drop-shadow off: our backdrop is dark enough on its own */
-  --yarl__button_filter: none;
-  --yarl__slide_captions_container_background: transparent;
-  --yarl__slide_title_color: var(--ink-dim);
-  --yarl__slide_title_font_size: 12px;
-  --yarl__slide_title_font_weight: 400;
-}
-.yarl__slide_title {
-  font-family: var(--font-mono);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-/* The print itself sits in a hairline frame, like every panel and thumb. */
-.yarl__slide_image {
-  border: 1px solid var(--line);
-  border-radius: 2px;
-  background: var(--panel);
 }

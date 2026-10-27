@@ -112,7 +112,7 @@ from weatherpost import weather_archive
 # The narrator owns the Ollama plumbing (endpoint config, the blocking
 # non-streaming client, the model default); Willard borrows it rather than
 # growing a second copy that could drift -- same reasoning as perception.py.
-from narration.narrator import OLLAMA_DEFAULT_MODEL, Ollama, ollama_address
+from ollama_client import OLLAMA_DEFAULT_MODEL, Ollama, ollama_address
 
 STATION_INTERVAL_S = 60      # the gateway refreshes its live data every 60s
 GARNISH_INTERVAL_S = 600     # OWM sky/sun garnish; the old current cadence

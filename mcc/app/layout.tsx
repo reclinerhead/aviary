@@ -17,9 +17,9 @@ const sometypeMono = Sometype_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Merle Control Center",
+  title: "The Aviary",
   description:
-    "Field station for the driveway: live wildlife detection, counts, and controls.",
+    "Earl's birdwatch: the yard's life list, live arrivals, the recordings, and the weather station.",
 };
 
 export default function RootLayout({
