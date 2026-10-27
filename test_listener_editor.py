@@ -7,6 +7,8 @@
 # every trigger and every discount is pinned here.
 # =============================================================================
 
+import time
+
 import feeds
 from listener import editor as ed
 from listener.findings import finding
@@ -107,8 +109,14 @@ def test_an_anomaly_is_flagged_once_and_before_anything_else():
     assert ed.due([dep, anomaly], [flagged], NOW, 0) == "departure"
 
 
-def rec(busiest, longest):
-    return f("record", 0.3, busiest=busiest, longest=longest, current=0)
+def rec(busiest, longest, day=None):
+    return f("record", 0.3, busiest=busiest, longest=longest, current=0,
+             busiest_day=day)
+
+
+def local_day(ts):
+    lt = time.localtime(ts)
+    return [lt.tm_year, lt.tm_mon, lt.tm_mday]
 
 
 def test_a_record_is_a_new_busiest_day_or_a_streak_milestone():
@@ -116,6 +124,25 @@ def test_a_record_is_a_new_busiest_day_or_a_streak_milestone():
     assert ed.due([rec(116, 40)], [last], NOW, 5) == "record"
     assert ed.due([rec(115, 59)], [last], NOW, 5) is None     # same 30-band
     assert ed.due([rec(115, 60)], [last], NOW, 5) == "record"
+
+
+def test_a_busiest_day_is_news_once_it_is_over():
+    # #650: a record day still under way broke "busiest" on every visit --
+    # thirteen entries for one Rusty Blackbird afternoon. It waits for
+    # local midnight and is written up once, with the final count.
+    today = local_day(NOW)
+    last = entry(NOW - 2 * DAY, rec(5, 3))
+    for n in range(6, 20):
+        assert ed.due([rec(n, 3, today)], [last], NOW, 5) is None
+    assert ed.due([rec(19, 3, today)], [last], NOW, 5) is None
+    tomorrow = NOW + DAY
+    assert ed.due([rec(19, 3, today)], [last], tomorrow, 5) == "record"
+    written = entry(tomorrow, rec(19, 3, today))
+    assert ed.due([rec(19, 3, today)], [written, last],
+                  tomorrow + 3600, 5) is None
+    # The streak milestone does not wait for the day to end.
+    assert ed.due([rec(19, 60, today)], [entry(NOW - DAY, rec(5, 40))],
+                  NOW, 5) == "record"
 
 
 def test_routine_needs_28_days_a_visit_and_something_new(monkeypatch):
