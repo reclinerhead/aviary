@@ -2,11 +2,12 @@
 
 // The Aviary (epic #182 Phase 1, issue #183): the Earl Birdwatch GUI.
 // Everything here READS -- the page renders earl.db (via /aviary/* routes)
-// and the live bus; the listener is never touched. Two views share this
-// file the way Dashboard.tsx holds the dashboard's: `Aviary` is the /aviary
-// page (species grid + live ticker + today's visitors), `SpeciesProfile`
-// the /aviary/[species] page -- the frame Phases 2-4 fill in with real
-// portraits, prose, and the visits chart.
+// and the live bus; the listener is never touched. The pages share this
+// file: `Aviary` is the /aviary page (species grid + live ticker + today's
+// visitors), `SpeciesProfile` the /aviary/[species] page -- the frame
+// Phases 2-4 fill in with real portraits, prose, and the visits chart --
+// then `AviaryEvents` (#211), `AviaryMask` (#593) and `AviaryWeather`
+// (#652), one per masthead tab.
 //
 // Live mechanics are the Field Journal's: hydrate over HTTP, then merge
 // live audio/events on top over mqtt.js (the BROWSER build -- the hard-won
@@ -29,6 +30,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { WeatherStationView, useWeatherFeed } from "@/components/WeatherStationView";
 import {
   AUDIO_EVENTS_TOPIC,
   AUDIO_SOURCES_TOPIC,
@@ -1123,11 +1125,13 @@ function EarlLamp({
  * rename is a one-line change (#359 was exactly that). The labels are the
  * *reader's* words, deliberately not the pages' own titles: the panels still
  * read "The Life List" and "The Full Record", while the bar says what each
- * tab gets you. */
+ * tab gets you. Weather is the fourth (#652): the station view used to be
+ * the porch's other tile, and the porch is retiring. */
 const MASTHEAD_TABS = [
   { key: "aviary", label: "dashboard", href: "/aviary" },
   { key: "record", label: "all detections", href: "/aviary/events" },
   { key: "mask", label: "species mask", href: "/aviary/mask" },
+  { key: "weather", label: "weather", href: "/aviary/weather" },
 ] as const;
 
 /**
@@ -1511,8 +1515,16 @@ function AviaryMasthead({
             the jump chips beside them -- they overflowed the viewport
             outright -- and letting the chips push the rule to a second row
             would strand the active tab's underline floating above it,
-            which is the one adjacency this idiom is made of. */}
-        <span className="flex w-full items-baseline gap-8 border-b border-line">
+            which is the one adjacency this idiom is made of. Four tabs
+            (#652) need the tighter gap below sm: measured at 375px the row
+            is 343px wide and the labels' longest words alone (DASHBOARD 82,
+            DETECTIONS 91, SPECIES 64, WEATHER 64) sum to 301px, so gap-8's
+            96px could never fit a fourth and even gap-4's 48px ran 6px
+            over; gap-3's 36px fits, the longer labels wrapping inside their
+            links as they already did. A fifth tab will not fit at this width
+            by the same arithmetic and wants its own answer (shorter labels,
+            or a scrolling strip). */}
+        <span className="flex w-full items-baseline gap-3 border-b border-line sm:gap-8">
           {MASTHEAD_TABS.map((t) => (
             <Link
               key={t.key}
@@ -4787,6 +4799,55 @@ export function AviaryMask({
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * The weather tab (#652): the Weather Post station view under the Aviary
+ * masthead, the fourth tab. The view was the MCC dashboard's full-screen
+ * overlay until #628 lifted it into its own file; this page is its home
+ * now. Its own heading row stays (Willard's billing lives there) while the
+ * overlay contract -- Escape, the body scroll lock, the close control -- is
+ * gone. useWeatherFeed runs its own bus client, the self-contained idiom
+ * the panels set, and every weather topic is retained, so a fresh tab
+ * paints straight off the broker with no HTTP and no spinner-then-jump (the
+ * view's em-dash placeholders reserve the footprint, house rule #1). No
+ * lamp and no jump chips: the lamp is Earl's, and the sections the chips
+ * jump to are the main page's (the mask page's precedent).
+ */
+export function AviaryWeather({
+  stationName,
+  title,
+}: {
+  stationName?: string;
+  title?: string;
+} = {}) {
+  const {
+    current,
+    history,
+    forecast,
+    report,
+    now,
+    offline,
+    reporting,
+    onAir,
+    baroTrend,
+  } = useWeatherFeed();
+  return (
+    <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
+      <AviaryMasthead stationName={stationName} title={title} tab="weather" />
+      <WeatherStationView
+        current={current}
+        history={history}
+        forecast={forecast}
+        report={report}
+        now={now}
+        reporting={reporting}
+        offline={offline}
+        onAir={onAir}
+        baroTrend={baroTrend}
+      />
     </div>
   );
 }
