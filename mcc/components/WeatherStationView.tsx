@@ -1167,11 +1167,11 @@ export function WeatherStationView({
                       current?.solar_wm2 != null &&
                       `solar ${Math.round(current.solar_wm2).toLocaleString("en-US")} W/m²`
                     }
-                    info="The strength of the sun's ultraviolet at the
-                      station, on the standard 0–11 scale from the WH90's
-                      light sensor. 0–2 is low, 3–5 moderate, 6–7 high, 8 and
-                      up means even the turkeys should find shade. The solar
-                      wattage below is the same sunshine as raw power."
+                    // One line, like its siblings (#657): a multi-line
+                    // attribute string compiles differently for the server
+                    // and the browser, and the mismatch cost every load a
+                    // full client re-render.
+                    info="The strength of the sun's ultraviolet at the station, on the standard 0–11 scale from the WH90's light sensor. 0–2 is low, 3–5 moderate, 6–7 high, 8 and up means even the turkeys should find shade. The solar wattage below is the same sunshine as raw power."
                   />
                   <WxStat
                     label="rain today"
