@@ -1000,7 +1000,7 @@ def test_the_chain_is_named_in_order_and_fails_loud(monkeypatch):
 
 
 def test_the_gateways_daily_cap_counts_todays_rows(conn):
-    from narration import gateway
+    import gateway_client as gateway
     now = at(2026, 10, 25, 15)
     assert sa.gateway_daily_cap({}) == 40
     assert sa.gateway_daily_cap({"MERLE_GATEWAY_DAILY_CAP": "5"}) == 5
@@ -1022,7 +1022,7 @@ def test_the_gateways_daily_cap_counts_todays_rows(conn):
 
 
 def test_resolve_writer_by_name(conn, monkeypatch, capsys):
-    from narration import gateway
+    import gateway_client as gateway
     now = at(2026, 10, 25, 15)
     monkeypatch.delenv("MERLE_OLLAMA", raising=False)
     # gateway: the key, and room under the cap.

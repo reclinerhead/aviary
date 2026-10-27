@@ -92,7 +92,7 @@
 #   MERLE_LLM_CHAIN         who writes the notes, in preference order
 #                           (#617): "ollama" (default), "gateway", or
 #                           "gateway,ollama" -- the house since 10-25
-#   AI_GATEWAY_API_KEY      the gateway writer (narration/gateway.py) and
+#   AI_GATEWAY_API_KEY      the gateway writer (gateway_client.py) and
 #   MERLE_GATEWAY_MODEL     its daily cap, MERLE_GATEWAY_DAILY_CAP (40)
 # =============================================================================
 
@@ -104,8 +104,8 @@ import time
 import urllib.request
 
 from listener import species_analysis, species_profile
-from narration import gateway
-from narration.narrator import Ollama, ollama_candidates
+import gateway_client as gateway
+from ollama_client import Ollama, ollama_candidates
 
 TICK_S = 900          # a no-op tick costs one SQL query, so this is plenty
 PROBE_TIMEOUT_S = 5   # a host that can't list its models in 5s isn't "up"

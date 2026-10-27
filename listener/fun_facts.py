@@ -43,7 +43,7 @@
 # licence can't sit beside CC BY-SA text, and the pool lives in the repo.
 #
 # Config (env, the units' names):
-#   AI_GATEWAY_API_KEY, MERLE_GATEWAY_MODEL   the writer (narration/gateway.py)
+#   AI_GATEWAY_API_KEY, MERLE_GATEWAY_MODEL   the writer (gateway_client.py)
 #   MERLE_EARL_DB                             the house life list
 #   MERLE_STATIONS                            name=url pairs (#342); each
 #                                             station's roster is <url>/roster
@@ -63,7 +63,7 @@ import urllib.request
 
 from listener import species_profile
 from listener.notes_validate import figures
-from narration.gateway import Gateway, gateway_config
+from gateway_client import Gateway, gateway_config
 
 POOL_VERSION = 1
 # The shipped pool, relative to the repo root (the units' WorkingDirectory).

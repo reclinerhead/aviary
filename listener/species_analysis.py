@@ -102,7 +102,7 @@
 #                       box that has not opted in never builds the gateway
 #                       writer whatever else its environment holds
 #   AI_GATEWAY_API_KEY  the gateway writer's key and model (#632,
-#   MERLE_GATEWAY_MODEL   narration/gateway.py); MERLE_GATEWAY_DAILY_CAP
+#   MERLE_GATEWAY_MODEL   gateway_client.py); MERLE_GATEWAY_DAILY_CAP
 #                       bounds its entries per local day (default 40)
 # =============================================================================
 
@@ -121,8 +121,8 @@ from listener import editor, findings, gate, notes_validate, region_prior
 # non-streaming client, the model default); this borrows it rather than
 # growing a second copy that could drift -- the weather post's precedent.
 # The cloud writer (#632) has the same shape and lives beside it.
-from narration import gateway
-from narration.narrator import OLLAMA_DEFAULT_MODEL, Ollama, ollama_address
+import gateway_client as gateway
+from ollama_client import OLLAMA_DEFAULT_MODEL, Ollama, ollama_address
 
 DEFAULT_DB_PATH = "earl.db"
 DEFAULT_WEATHER_DB = "weather.db"
@@ -166,7 +166,7 @@ TREND_MIN = 5
 TREND_MOVED = 0.30
 # Up to 280 words in four short paragraphs (#636); the cap is a backstop
 # for a model ignoring the rules (Ollama only -- the cloud writer's
-# ceiling is its own, narration/gateway.py).
+# ceiling is its own, gateway_client.py).
 NUM_PREDICT = 560
 # Analysis is a long, patient job (one call per species, ~30-90s on CPU), not
 # a live show like the narrator's 30s pacing gate.

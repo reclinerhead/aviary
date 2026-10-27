@@ -1,8 +1,9 @@
 # =============================================================================
-# project-squirrel -- narration/gateway.py
+# project-squirrel -- gateway_client.py
 #
 # The cloud writer (issue #632): a Claude model behind the Vercel AI
-# Gateway, with the narrator's Ollama client's shape --
+# Gateway, with the shape of the Ollama client beside it (ollama_client.py,
+# one client for the narrator, Willard and the field notes) --
 # complete(system, prompt, num_predict, temperature, timeout) -> text | None
 # -- so the field-journal pass (listener/species_analysis.py) hands it the
 # same prompt, runs the same validator over the answer, and stores the
@@ -23,7 +24,7 @@
 # One POST, no SDK: the Anthropic Messages API at the gateway's base URL
 # (verified against the gateway's docs on 2026-10-25), a bearer token, a
 # JSON body -- the Ollama client's own idiom (urllib, stdlib only), so no
-# box that deploys narration/ grows a dependency. The body carries no
+# box grows a dependency. The body carries no
 # sampling settings (Claude Opus 5.5 rejects them) and no thinking settings
 # (thinking is always on at the default effort, which suits a 200-word
 # note); its usage is printed per call so the bill is visible in the MCC
