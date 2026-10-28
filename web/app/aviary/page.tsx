@@ -5,8 +5,6 @@ import { Aviary } from "@/components/Aviary";
 import pool from "@/data/fun-facts.json";
 import {
   FACT_DISMISS_COOKIE,
-  FACT_EVENT_COOKIE,
-  factsResting,
   funFactFor,
   localDayNumber,
   stationBrandingFromEnv,
@@ -56,16 +54,11 @@ function lifeListOf(path: string | undefined): Set<string> {
   }
 }
 
-/** Today's fun fact for this request (#422), or null: none while facts
- * rest after an event, none once today's was dismissed. The clock is read
- * here, outside render. */
-function todaysFunFact(
-  station: string,
-  eventCookie: string | undefined,
-  dismissedId: string | undefined,
-) {
+/** Today's fun fact for this request (#422), or null once today's was
+ * dismissed. Events don't silence it (#668): the strip queues it behind
+ * them. The clock is read here, outside render. */
+function todaysFunFact(station: string, dismissedId: string | undefined) {
   const now = new Date();
-  if (factsResting(eventCookie, Math.floor(now.getTime() / 1000))) return null;
   return funFactFor({
     pool: pool as FunFactPool,
     lifeList: lifeListOf(process.env.MERLE_EARL_DB),
@@ -83,7 +76,6 @@ export default async function AviaryPage() {
   const jar = await cookies();
   const funFact = todaysFunFact(
     stationName ?? "house",
-    jar.get(FACT_EVENT_COOKIE)?.value,
     jar.get(FACT_DISMISS_COOKIE)?.value,
   );
   return <Aviary stationName={stationName} title={title} funFact={funFact} />;

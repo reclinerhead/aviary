@@ -1340,6 +1340,29 @@ export function pickVisibleNotice(
   return best;
 }
 
+/** The most notices the strip holds at once, the one on screen included
+ * (#668): past three, clicking through stops feeling like news. */
+export const NOTICE_CHAIN_CAP = 3;
+
+/**
+ * The strip's chain (#668): the notices `isOut` doesn't name, ranked by kind
+ * (a stable sort, so queue order breaks ties -- the rarest rare visitor
+ * first), the first `cap` kept and the rest cut. The lowest rank goes first,
+ * so a busy day cuts the fun fact before any event. The hook makes a cut
+ * stick for the load; nothing is stored, so a later load offers it again.
+ */
+export function noticeChain(
+  notices: AviaryNotice[],
+  isOut: (id: string) => boolean,
+  cap: number,
+): { chain: AviaryNotice[]; cut: AviaryNotice[] } {
+  const rank = (n: AviaryNotice) => NOTICE_KIND_RANK[n.kind] ?? 99;
+  const ranked = notices
+    .filter((n) => n?.id && !isOut(n.id))
+    .sort((a, b) => rank(a) - rank(b));
+  return { chain: ranked.slice(0, cap), cut: ranked.slice(cap) };
+}
+
 /** Does this roster entry answer the search box? Case-insensitive substring
  * over the common AND scientific name -- `wood` finds every woodpecker,
  * `finc` the finches, and a Latin fragment works for whoever thinks in sci
@@ -2380,20 +2403,18 @@ export function mergeNewBestNotices(
 // eligible fact shows none, so a young station's small pool shows less
 // often, which is the right direction.
 //
-// IT BACKS OFF AROUND EVENTS. A fact never shares a load with an event
-// (the hook retires it once an event is on screen); for
-// FACT_REST_AFTER_EVENT_H after the last event a browser saw (a cookie the
-// hook stamps), the server offers none; and dismissing the fact (another
-// cookie, holding its id) ends facts for the day, because tomorrow's fact
-// is a different id by construction. Cookies, not localStorage, because the
-// server makes the pick.
+// IT WAITS BEHIND EVENTS (#668). The fact ranks below every event, so it
+// shows on a strip with nothing else to say, comes back once the events
+// above it are dismissed, and is the first notice the chain cap cuts. Until
+// the dashboard's first roster read settles, the strip holds the seeded fact
+// unseen in its box, so a fact about to lose to a rare visitor never
+// flashes. Dismissing the fact (a cookie holding its id) ends facts for the
+// day, because tomorrow's fact is a different id by construction. A cookie,
+// not localStorage, because the server makes the pick.
 
 export const FACT_CYCLE_DAYS = 91;
-export const FACT_REST_AFTER_EVENT_H = 48;
 /** Holds the id of the fact dismissed today. */
 export const FACT_DISMISS_COOKIE = "aviary_fact_dismissed";
-/** Holds the epoch second the strip last showed an event. */
-export const FACT_EVENT_COOKIE = "aviary_fact_event";
 /** Long enough to outlive the day it names; the id does the day's work. */
 export const FACT_DISMISS_MAX_AGE_S = 2 * 86_400;
 
@@ -2454,18 +2475,6 @@ export function factOfTheDay(
   due.sort((a, b) => a.order - b.order || a.fact.id.localeCompare(b.fact.id));
   const pick = due[((cycle % due.length) + due.length) % due.length];
   return { species: pick.species, fact: pick.fact };
-}
-
-/** Do facts rest? True within FACT_REST_AFTER_EVENT_H of the event cookie's
- * stamp. A malformed stamp, or one from the future (a skewed clock), does
- * not silence facts. */
-export function factsResting(
-  eventCookie: string | undefined | null,
-  nowS: number,
-): boolean {
-  if (!eventCookie || !/^\d+$/.test(eventCookie)) return false;
-  const ts = Number(eventCookie);
-  return ts <= nowS && nowS - ts < FACT_REST_AFTER_EVENT_H * 3600;
 }
 
 export function funFactNoticeId(factId: string): string {

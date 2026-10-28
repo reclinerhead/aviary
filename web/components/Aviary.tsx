@@ -90,10 +90,10 @@ import {
   writeSessionQuery,
   mastheadSub,
   pickVisibleNotice,
+  NOTICE_CHAIN_CAP,
+  noticeChain,
   FACT_DISMISS_COOKIE,
   FACT_DISMISS_MAX_AGE_S,
-  FACT_EVENT_COOKIE,
-  FACT_REST_AFTER_EVENT_H,
   factIdOf,
   isAmbientKind,
   NOTICE_KIND_INK,
@@ -1178,10 +1178,14 @@ const NOTICE_OUT_MS = 140;
 
 function AviaryNoticeStrip({
   notice,
+  held = false,
   onDismiss,
   player,
 }: {
   notice: AviaryNotice | null;
+  /** The queue hasn't settled (#668): the card keeps its box but stays
+   * unseen, so a seeded fact about to lose to an event never flashes. */
+  held?: boolean;
   onDismiss: (id: string) => void;
   player?: ClipPlayer;
 }) {
@@ -1269,10 +1273,13 @@ function AviaryNoticeStrip({
     <div className="mt-3" role="status" aria-live="polite">
       {/* Keyed per notice (#648) so every notice that appears rises in, one
           the queue swaps in on its own included. The live region stays
-          mounted around it, so a screen reader still hears the change. */}
+          mounted around it, so a screen reader still hears the change. A
+          held card (#668) is `invisible`: its box is there, nothing in it
+          can be seen, focused or announced, and it rises in when the hold
+          lifts. */}
       <div
         key={notice.id}
-        className={`flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5 ${leaving ? "notice-out" : "notice-in"}`}
+        className={`flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5 ${held ? "invisible" : leaving ? "notice-out" : "notice-in"}`}
       >
         {notice.href ? (
           <Link
@@ -1302,7 +1309,7 @@ function AviaryNoticeStrip({
   );
 }
 
-/** A cookie the dashboard's server reads (#422's two fact cookies). Path
+/** A cookie the dashboard's server reads (#422's fact-dismiss cookie). Path
  * `/` so every page sends it; Lax and not Secure, because a station's LAN
  * address serves plain http. Blocked cookies just mean nothing is
  * remembered: the fact shows again, never an error. */
@@ -1319,11 +1326,14 @@ function writeCookie(name: string, value: string, maxAgeS: number) {
  * mismatch (the server-picked fun fact, below, is the seeded exception). `queued` is the product queue; `?notice=demo|rare_return|
  * new_best|all` adds desk-check samples (demoNoticesFor) dressed on
  * `samples`, the roster the page holds, without shipping permanent chrome.
+ * `settled` is false while the page's queue is still arriving (the
+ * dashboard's first roster read); the strip is held until it turns true.
  */
 function useAviaryNoticeStrip(
   queued: AviaryNotice[] = [],
   samples: RosterEntry[] = [],
   ambient: AviaryNotice | null = null,
+  settled = true,
 ) {
   // The one exception to post-mount selection: the server's fun fact
   // (#422) is the first paint, seeded here so the strip is in the server
@@ -1331,14 +1341,25 @@ function useAviaryNoticeStrip(
   // dismissal is a cookie the server has already honoured -- and it
   // carries no `ts`, so the strip makes no locale call for it.
   const [visible, setVisible] = useState<AviaryNotice | null>(ambient);
-  // Set once an event has been on screen or the fact was dismissed: the
-  // fact never comes back this load, so trivia never backfills an event.
+  // Held until the queue settles (#668): the seeded fact keeps its box in
+  // the first paint, unseen, so a fact about to lose to a rare visitor
+  // never flashes. State, not `!settled`, because the hold must lift in the
+  // same render as the settled pick -- lifting it on `settled` alone would
+  // paint the fact for a frame before the effect below swaps in the event.
+  const [held, setHeld] = useState(!settled);
+  // Set once the fact was dismissed: it never comes back this load. An
+  // event on screen does NOT retire it (#668) -- it waits behind them.
   const ambientRetired = useRef(false);
   const queuedKey = queued.map((n) => n.id).join("|");
   // The current candidates, kept for dismiss to re-pick from (#549): closing
   // the visible notice reveals the next one the queue holds, in rank order,
-  // rather than leaving the strip empty until the queue key changes.
+  // rather than leaving the strip empty until the queue key changes. At
+  // most NOTICE_CHAIN_CAP of them (#668).
   const candidates = useRef<AviaryNotice[]>([]);
+  // Ids the cap cut this load (#668): they stay out, so clicking through
+  // the chain never pulls a fourth up behind it. Not a dismissal -- nothing
+  // is stored, and a later load offers them again while they're live.
+  const cut = useRef<Set<string>>(new Set());
   // Sample ids whose dismissal this page load has already forgotten: the
   // flag means "show me", once per load -- not once per poll tick.
   const undismissed = useRef<Set<string>>(new Set());
@@ -1365,10 +1386,14 @@ function useAviaryNoticeStrip(
       // ignore
     }
     if (ambient && !ambientRetired.current) all.push(ambient);
-    candidates.current = all;
-    const next = pickVisibleNotice(all, (id) =>
-      isNoticeDismissed(localStorage, id),
+    const { chain, cut: over } = noticeChain(
+      all,
+      (id) => cut.current.has(id) || isNoticeDismissed(localStorage, id),
+      NOTICE_CHAIN_CAP,
     );
+    for (const n of over) cut.current.add(n.id);
+    candidates.current = chain;
+    const next = chain[0] ?? null;
     // Same notice, same words: keep the state object so a caller handing
     // in a fresh array each render can't spin this effect through setState.
     setVisible((cur) =>
@@ -1380,25 +1405,10 @@ function useAviaryNoticeStrip(
         ? cur
         : next,
     );
-  }, [queued, queuedKey, samples, ambient]);
-
-  // An event on screen retires the fact for this load and rests facts for
-  // FACT_REST_AFTER_EVENT_H (#422) -- the cookie the server reads before it
-  // picks. A desk-check sample never stamps it: looking at the flag must
-  // not silence a real yard's facts for two days.
-  useEffect(() => {
-    if (!visible || isAmbientKind(visible.kind)) return;
-    ambientRetired.current = true;
-    candidates.current = candidates.current.filter(
-      (n) => !isAmbientKind(n.kind),
-    );
-    if (!visible.id.startsWith("demo:"))
-      writeCookie(
-        FACT_EVENT_COOKIE,
-        String(Math.floor(Date.now() / 1000)),
-        FACT_REST_AFTER_EVENT_H * 3600,
-      );
-  }, [visible]);
+    // Batched with the pick above, so the first unheld paint is already
+    // the settled winner.
+    if (settled) setHeld(false);
+  }, [queued, queuedKey, samples, ambient, settled]);
 
   const onDismiss = useCallback((id: string) => {
     const dismissed = candidates.current.find((n) => n.id === id);
@@ -1419,7 +1429,7 @@ function useAviaryNoticeStrip(
     );
   }, []);
 
-  return { notice: visible, onDismiss };
+  return { notice: visible, held, onDismiss };
 }
 
 /** Page masthead + the tab bar. The lamp is optional because only the
@@ -1432,6 +1442,7 @@ function AviaryMasthead({
   title,
   tab = "aviary",
   notice = null,
+  noticeHeld = false,
   onDismissNotice,
   player,
 }: {
@@ -1463,6 +1474,8 @@ function AviaryMasthead({
   tab?: (typeof MASTHEAD_TABS)[number]["key"];
   /** Announcement strip under the tabs (#447). Null = zero footprint. */
   notice?: AviaryNotice | null;
+  /** The strip's queue hasn't settled (#668); see AviaryNoticeStrip. */
+  noticeHeld?: boolean;
   onDismissNotice?: (id: string) => void;
   /** The page's clip player, for notices that carry a clip (#447). */
   player?: ClipPlayer;
@@ -1555,6 +1568,7 @@ function AviaryMasthead({
       </nav>
       <AviaryNoticeStrip
         notice={notice}
+        held={noticeHeld}
         onDismiss={onDismissNotice ?? (() => {})}
         player={player}
       />
@@ -1798,9 +1812,11 @@ export function Aviary({
   // passes (the New Arrivals clock rule), never mid-read. First paint may
   // show one: the day-keyed id plus localStorage dismiss is the whole
   // nag policy, and "come back and see it" is the point. New-best notices
-  // ride behind them; pickVisibleNotice ranks the kinds. The server's fun
-  // fact (#422) is the hook's seed, not part of this queue: it is in the
-  // first paint and yields to any of these. Memoized on the
+  // ride behind them; noticeChain ranks the kinds and caps the stack at
+  // NOTICE_CHAIN_CAP (#668). The server's fun fact (#422) is the hook's
+  // seed, not part of this queue: its box is in the first paint, held
+  // unseen until the roster read settles (`loaded`, success or failure),
+  // and it waits behind any of these. Memoized on the
   // same inputs so the strip hook sees a stable queue between events.
   // Desk-check with /aviary?notice=all (or one kind: demo, rare_return,
   // new_best) -- samples dressed on a real roster species.
@@ -1816,11 +1832,11 @@ export function Aviary({
           ).map((e) => rareReturnNotice(e, dayWithYearOf));
     return [...rare, ...newBestQueue];
   }, [rosterEntries, nowTs, newBestQueue]);
-  const { notice, onDismiss } = useAviaryNoticeStrip(
-    noticeQueue,
-    rosterEntries,
-    funFact,
-  );
+  const {
+    notice,
+    held: noticeHeld,
+    onDismiss,
+  } = useAviaryNoticeStrip(noticeQueue, rosterEntries, funFact, loaded);
 
   // Session-persist the life-list query (#410): same post-mount pattern as
   // clip gain -- sessionStorage is not available on the server render, so
@@ -2097,6 +2113,7 @@ export function Aviary({
           { href: "#new-arrivals", label: "arrivals ↓" },
         ]}
         notice={notice}
+        noticeHeld={noticeHeld}
         onDismissNotice={onDismiss}
         player={player}
       />
