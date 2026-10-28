@@ -168,7 +168,8 @@ SPECIES_DIR = "species"
 # -- right for a hand-run pass, but under a looping tick that would otherwise
 # be ~100 Wikipedia queries a day (house, 15 min) or ~288 (station, 5 min)
 # for a bird with no article. 24 h was the original size; it also parked a
-# transient DNS miss as a blank tile for a full day (kestrel bench, #498).
+# transient DNS miss as a blank tile for a full day (kestrel bench,
+# toddtech-infrastructure#30).
 # 30 minutes is the next-tick-plus-a-few on a station, ~48 lookups/day for a
 # no-article species -- acceptable at life-list scale; nearly all succeed on
 # the first try and leave the worklist. Attempts live in their own table
