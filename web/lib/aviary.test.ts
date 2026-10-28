@@ -56,6 +56,7 @@ import {
   parseRulePayload,
   parseSpeciesFilter,
   pickVisibleNotice,
+  noticeChain,
   championPaths,
   DEMO_NOTICE_KINDS,
   demoNoticesFor,
@@ -123,13 +124,12 @@ import {
   journalStamp,
   earlierLabel,
   FACT_CYCLE_DAYS,
-  FACT_REST_AFTER_EVENT_H,
+  NOTICE_CHAIN_CAP,
   NOTICE_KIND_INK,
   type FunFactPool,
   factCycleDay,
   factIdOf,
   factOfTheDay,
-  factsResting,
   funFactFor,
   funFactNotice,
   funFactNoticeId,
@@ -2954,6 +2954,62 @@ describe("announcement strip helpers (#447 Phase 1)", () => {
     expect(pickVisibleNotice([], () => false)).toBeNull();
   });
 
+  describe("noticeChain caps the stack (#668)", () => {
+    const rare = (n: number) => ({
+      id: `r${n}`,
+      kind: "rare_return" as const,
+      title: `rare ${n}`,
+    });
+    const fact = { id: "f1", kind: "fun_fact" as const, title: "fact" };
+    const best = { id: "b1", kind: "new_best" as const, title: "best" };
+    const ids = (ns: { id: string }[]) => ns.map((n) => n.id);
+    const none = () => false;
+
+    it("holds three, the one on screen included", () => {
+      expect(NOTICE_CHAIN_CAP).toBe(3);
+    });
+
+    it("keeps two rare visitors and the fact behind them", () => {
+      const { chain, cut } = noticeChain([fact, rare(1), rare(2)], none, 3);
+      expect(ids(chain)).toEqual(["r1", "r2", "f1"]);
+      expect(cut).toEqual([]);
+    });
+
+    it("cuts the fact before any event, then the later rare visitor", () => {
+      const { chain, cut } = noticeChain(
+        [rare(1), rare(2), rare(3), rare(4), fact],
+        none,
+        3,
+      );
+      expect(ids(chain)).toEqual(["r1", "r2", "r3"]);
+      expect(ids(cut)).toEqual(["r4", "f1"]);
+    });
+
+    it("never counts or cuts what isOut names", () => {
+      // A dismissed first visitor lets the fourth into the chain.
+      const { chain, cut } = noticeChain(
+        [rare(1), rare(2), rare(3), rare(4), fact],
+        (id) => id === "r1",
+        3,
+      );
+      expect(ids(chain)).toEqual(["r2", "r3", "r4"]);
+      expect(ids(cut)).toEqual(["f1"]);
+    });
+
+    it("keeps a new best and the fact, in rank order", () => {
+      const { chain, cut } = noticeChain([fact, best], none, 3);
+      expect(ids(chain)).toEqual(["b1", "f1"]);
+      expect(cut).toEqual([]);
+    });
+
+    it("keeps queue order within a kind and leaves its input alone", () => {
+      const queue = [rare(3), rare(1), rare(2)];
+      expect(ids(noticeChain(queue, none, 3).chain)).toEqual(["r3", "r1", "r2"]);
+      expect(ids(queue)).toEqual(["r3", "r1", "r2"]);
+      expect(noticeChain([], none, 3)).toEqual({ chain: [], cut: [] });
+    });
+  });
+
   it("dismiss storage marks a notice read", () => {
     const mem = new Map<string, string>();
     const store = {
@@ -3459,18 +3515,6 @@ describe("fun facts (#422)", () => {
     expect(at("birdhouse")).not.toEqual(at("house"));
   });
 
-  it("rests facts for 48 h after the last event the browser saw", () => {
-    const now = 1_800_000_000;
-    const h = 3600;
-    expect(FACT_REST_AFTER_EVENT_H).toBe(48);
-    expect(factsResting(undefined, now)).toBe(false);
-    expect(factsResting(String(now - 47 * h), now)).toBe(true);
-    expect(factsResting(String(now - 48 * h), now)).toBe(false);
-    expect(factsResting(String(now + 600), now)).toBe(false); // skewed clock
-    expect(factsResting("yesterday", now)).toBe(false);
-    expect(factsResting("", now)).toBe(false);
-  });
-
   it("builds the strip's fact: the fact as headline, the bird and the credit", () => {
     const species = {
       species_sci: "Cardinalis cardinalis",
@@ -3508,16 +3552,18 @@ describe("fun facts (#422)", () => {
     );
   });
 
-  it("yields to any event, and never backfills after the event's dismiss", () => {
+  it("yields to any event, and comes back once the event is dismissed", () => {
     const fact = funFactNotice(
       { species_sci: "A a", species_common: "Aa", facts: [] },
       { id: "f1", text: "A fact." },
     );
     const rare = { id: "r1", kind: "rare_return" as const, title: "Rare" };
-    expect(pickVisibleNotice([rare, fact], () => false)?.id).toBe("r1");
-    // The hook's rule once an event has been on screen: ambient kinds leave
-    // the candidates, so dismissing the event empties the strip.
-    const retired = [rare, fact].filter((n) => !isAmbientKind(n.kind));
-    expect(pickVisibleNotice(retired, (id) => id === "r1")).toBeNull();
+    // The hook's rule (#668): the fact stays among the candidates while an
+    // event is on screen, so dismissing the event reveals it.
+    const { chain } = noticeChain([rare, fact], () => false, NOTICE_CHAIN_CAP);
+    expect(pickVisibleNotice(chain, () => false)?.id).toBe("r1");
+    expect(pickVisibleNotice(chain, (id) => id === "r1")?.id).toBe(
+      fact.id,
+    );
   });
 });
