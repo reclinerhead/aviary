@@ -9,7 +9,7 @@
 # Writes nothing to earl.db. Reads the store and the clips, caches the
 # vectors to an .npz so threshold re-runs are instant, prints a report.
 #
-#   cd ~/project-squirrel
+#   cd ~/aviary
 #   MERLE_EARL_DB=... MERLE_EARL_CLIPS=... ~/earl-venv/bin/python \
 #       tools/showcase_probe.py --out ~/showcase-probe
 #   ... --taus 0.15,0.25,0.35 --report-only     # re-slice the cache
@@ -46,7 +46,7 @@ SR = 48_000
 SEG = 3 * SR
 DIM = 1024
 
-# The bestClips rule from mcc/lib/aviary.ts (#333, #442), ported verbatim.
+# The bestClips rule from web/lib/aviary.ts (#333, #442), ported verbatim.
 BEST_CLIP_CONF_WINDOW = 0.05
 BEST_CLIP_CONF_FLOOR = 0.90
 

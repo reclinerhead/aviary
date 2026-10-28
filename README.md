@@ -7,7 +7,7 @@ The Aviary listens to the yard around the clock, names every bird it hears, keep
 Three characters do the work:
 
 - **Earl** (`listener/`) is the ears. He pulls raw audio from every microphone in the yard, screens out human speech, runs Cornell's BirdNET on every three-second window, and keeps the bird record.
-- **The Aviary** (`mcc/`) is the face: a web app that shows the life list, plays the recordings, and charts when each species comes and goes.
+- **The Aviary** (`web/`) is the face: a web app that shows the life list, plays the recordings, and charts when each species comes and goes.
 - **Willard** (`weatherpost/`) is the weatherman: a backyard weather station plus a forecast, so the birds have context.
 
 ## What it does
@@ -65,7 +65,7 @@ https://github.com/user-attachments/assets/6105475a-8c8b-46a3-a488-5347b5bb7b35
 | `listener/` | Earl: capture, the speech and bird gates, visits, clips, the bird record, and the enrichment passes (species profiles, clip enhancement, the repertoire, field notes) |
 | `weatherpost/` | Willard: the weather post and its seasonal archive |
 | `flyway/` | The station network: the liveness watcher and the front-door check-in |
-| `mcc/` | The Next.js web app: the Aviary and its weather tab |
+| `web/` | The Next.js web app: the Aviary and its weather tab |
 | `frontdoor/` | The stations' stable public address (Next.js route handlers on Vercel) |
 | `Servers/` | Caddy and Mosquitto config, and the deploy scripts |
 | `docs/guide/` | The technical guide, one page per area |

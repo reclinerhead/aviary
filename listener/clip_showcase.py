@@ -26,7 +26,7 @@
 # is cosine on L2-normalized vectors; "different" is >= TAU.
 #
 # THE RULE (select_showcase, pure, pytest-covered):
-#   slot 1  = bestClips (mcc/lib/aviary.ts #333/#442), ported verbatim and
+#   slot 1  = bestClips (web/lib/aviary.ts #333/#442), ported verbatim and
 #             pinned to fixtures/best_clips.json which both test suites read
 #   pool    = the species' top POOL_N clips by fill among conf >= floor
 #             (plus the bestClips window set, so slot 1 is always present),
@@ -111,7 +111,7 @@ DIM = 1024
 SR = gate.SAMPLE_RATE
 SEG = gate.WINDOW_S * SR
 
-# The bestClips rule from mcc/lib/aviary.ts (#333, #442), ported verbatim.
+# The bestClips rule from web/lib/aviary.ts (#333, #442), ported verbatim.
 BEST_CLIP_CONF_WINDOW = 0.05
 BEST_CLIP_CONF_FLOOR = 0.90
 
@@ -215,7 +215,7 @@ def _ident(c):
 
 
 def best_clip(cands, cmax=None):
-    """bestClips (mcc/lib/aviary.ts), ported: pure confidence when no
+    """bestClips (web/lib/aviary.ts), ported: pure confidence when no
     candidate has a fill (strictly greater wins, equal keeps the earlier
     take); otherwise the max fill among rows inside the confidence window
     (>= cMax - 0.05 or >= 0.90), ties by higher confidence then earlier ts.

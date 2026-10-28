@@ -107,7 +107,7 @@ def test_neighbour_radius_scales_with_the_pool():
 # --- bestClips, pinned to the shared fixture ----------------------------------
 
 def test_best_clip_matches_the_shared_fixture():
-    """fixtures/best_clips.json is the contract: mcc/lib/aviary.test.ts runs
+    """fixtures/best_clips.json is the contract: web/lib/aviary.test.ts runs
     the same cases through bestClips. Slot 1 can never drift from the page."""
     with open(os.path.join(HERE, "fixtures", "best_clips.json"),
               encoding="utf-8") as f:

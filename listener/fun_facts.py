@@ -4,7 +4,7 @@
 # The Aviary's fun-fact pool (issue #422): 3-5 short, true facts per bird,
 # drawn from its Wikipedia article by a Claude model behind the AI Gateway,
 # each carrying the article sentence it rests on. The pool is a JSON file in
-# the repo (mcc/data/fun-facts.json) that the dashboard picks a fact of the
+# the repo (web/data/fun-facts.json) that the dashboard picks a fact of the
 # day from; it reaches the stations with the nightly promote like any code.
 #
 # A FACT BELONGS TO THE SPECIES, NOT THE YARD. The cardinal's beak-to-beak
@@ -67,7 +67,7 @@ from gateway_client import Gateway, gateway_config
 
 POOL_VERSION = 1
 # The shipped pool, relative to the repo root (the units' WorkingDirectory).
-SHIPPED_POOL = os.path.join("mcc", "data", "fun-facts.json")
+SHIPPED_POOL = os.path.join("web", "data", "fun-facts.json")
 
 # The strip's headline on a phone: a fact past this wraps to a paragraph.
 MAX_FACT_CHARS = 140

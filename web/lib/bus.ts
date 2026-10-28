@@ -4,7 +4,7 @@
 // lives on pearl (192.168.1.64, config at /etc/mosquitto/conf.d/squirrel.conf)
 // and listens on :9001. Since #399 the browser does NOT dial that port
 // directly: these pages are HTTPS, and an HTTPS page cannot open a plain
-// ws:// socket, so NEXT_PUBLIC_MERLE_MQTT_WS in mcc/.env.local names the
+// ws:// socket, so NEXT_PUBLIC_MERLE_MQTT_WS in web/.env.local names the
 // front door's wss://pearl.lan/bus route and Caddy carries the upgrade to
 // :9001. Stations, whose porches are still plain HTTP, keep dialing the port.
 
@@ -28,7 +28,7 @@ export type NarrationLine = {
 export type JournalEntry = NarrationLine & { key: string };
 
 /** The broker's WebSocket URL. In the pearl topology NEXT_PUBLIC_MERLE_MQTT_WS
- * (mcc/.env.local) supplies the whole URL; the fallback -- same host the page
+ * (web/.env.local) supplies the whole URL; the fallback -- same host the page
  * was loaded from, port 9001 -- only ever worked when the broker shared a
  * machine with the dev server, and survives as a guard for any future
  * same-host broker.

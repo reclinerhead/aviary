@@ -8,37 +8,38 @@
 # #354) every MERLE_DEPLOY_INTERVAL_S and brings this box current when it
 # moves -- pull, restart the units listed in
 # MERLE_DEPLOY_UNITS, and (where MERLE_DEPLOY_MCC=1) rebuild + restart the
-# MCC when the merge touched mcc/. Merging a PR IS the deploy; nobody SSHes
-# anywhere -- which is the whole fleet story of epic #212 principle 2: main
-# must stay deployable for boxes we can't walk over to.
+# web app when the merge touched web/. Merging a PR IS the deploy; nobody
+# SSHes anywhere -- which is the whole fleet story of epic #212 principle 2:
+# main must stay deployable for boxes we can't walk over to.
 #
-# One script, several unit names (#303's call, documented): pearl and merle
-# run this as `merle-autodeploy` (historical -- renaming a live unit on two
-# boxes buys nothing), stations as `station-autodeploy` with the unit list
+# One script, several unit names (#303's call, documented): orchid runs this
+# as `aviary-autodeploy`, stations as `station-autodeploy` with the unit list
 # arriving from the station env file (EnvironmentFile=/home/todd/station.env,
 # so the ROLE owns the list -- station.env.example documents it). The loop
-# itself is this one file everywhere; two forks of it is the outcome #303
-# exists to avoid.
+# itself is this one file on every Aviary box; two forks of it in one repo is
+# the outcome #303 exists to avoid. One copy PER REPO is fine (#627 D10):
+# squirrel keeps its own for what still deploys from squirrel (orchid's
+# `merle-autodeploy` beside this one), as MERLE keeps its own.
 #
 # Pull-based on purpose: a webhook receiver would need an inbound hole
 # through the gateway -- no LAN this runs on has ever had one, and a station
 # on someone else's network never will. A 60s poll is invisible traffic and
 # merge-to-live in under a minute.
 #
-# The repo is PRIVATE (it was public when this shipped; discovered the hard
-# way 2026-07-27 when pearl sat silently unfetchable at #295 for days).
-# Every box authenticates its pull with a per-box READ-ONLY deploy key --
-# an ed25519 keypair generated on the box, its public half added at
-# github.com/<repo>/settings/keys with write access OFF, and origin set to
-# the ssh URL (git@github.com:...). Repo-scoped, revocable in one click,
-# and no account credential ever lives on a remote box -- the guest posture
-# a station demands, applied to the whole fleet.
+# The repo is PUBLIC (#627 D9), so every box clones and fetches it over
+# anonymous https (https://github.com/reclinerhead/aviary.git): no deploy
+# key, no credential of any kind on a box -- the guest posture a station
+# demands, taken as far as it goes. The flip side is the 2026-07-27 lesson
+# (pearl sat silently unfetchable at #295 for days when squirrel went
+# private): if this repo is ever made private, every box's fetch fails and
+# this loop logs one line and retries quietly forever. A visibility change
+# is a fleet event.
 #
 # A LOOP SERVICE, not a systemd timer: a timer firing a oneshot every minute
 # writes start/finish journal lines forever -- thousands of lines a day
 # saying "nothing happened", the disease issue #35 cured in the MCC proxy.
 # This loop logs ONLY when it acts (or something breaks), so
-# `journalctl -u merle-autodeploy` (or `-u station-autodeploy`) reads as a
+# `journalctl -u aviary-autodeploy` (or `-u station-autodeploy`) reads as a
 # deploy history.
 #
 # Remote-failure posture (#303 -- a station is two hours from a keyboard):
@@ -59,21 +60,23 @@
 # all, and --reset-env gives the demoted step the owner's HOME (so `bash -l`
 # finds the right profile, and pnpm the right PATH).
 #
-# Config (env -- Environment= lines in pearl/merle's unit, the station env
-# file on stations):
+# Config (env -- a drop-in on orchid's aviary-autodeploy unit, the station
+# env file on stations):
 #   MERLE_DEPLOY_UNITS       space-separated units to restart on any main
-#                            change (pearl: the Python services; merle:
-#                            narrator-jim; stations: earl-listener
-#                            earl-sightings willard-weather). Empty =
+#                            change (orchid: the Aviary's Python services;
+#                            stations: earl-listener earl-sightings
+#                            willard-weather earl-enrichment). Empty =
 #                            restart nothing.
-#   MERLE_DEPLOY_MCC         "1" where the box serves the MCC (pearl and
+#   MERLE_DEPLOY_MCC         "1" where the box serves the web app (orchid and
 #                            every station): when the pulled range touches
-#                            mcc/, run install -> build -> restart for
-#                            mcc-dashboard (the deploy-mcc.sh order; a failed
-#                            build never restarts -- old code keeps serving)
+#                            web/, run install -> build -> restart for
+#                            aviary-web (the deploy-web.sh order; a failed
+#                            build never restarts -- old code keeps serving).
+#                            The name predates the web/ rename and stays:
+#                            MERLE_* names don't change (#627).
 #   MERLE_DEPLOY_INTERVAL_S  poll cadence, default 60
 #   MERLE_DEPLOY_BRANCH      the branch this box deploys from, default main
-#                            (pearl and merle never set it). Stations set
+#                            (orchid never sets it). Stations set
 #                            aviary-station-stable -- the release channel
 #                            (#354): fast-forward-only, never committed to
 #                            directly, promoted to main's tip once nightly
@@ -83,10 +86,10 @@
 #                            the configured branch; anywhere else reads as
 #                            pinned (see the branch guard).
 #   MERLE_DEPLOY_USER        checkout owner, default todd
-#   MERLE_REPO               checkout path, default /home/todd/project-squirrel
+#   MERLE_REPO               checkout path, default /home/todd/aviary
 #
 # Manual escape hatches: `systemctl stop <the watcher unit>` pauses it
-# (manual pulls and Servers/deploy-mcc.sh keep working exactly as before);
+# (manual pulls and Servers/deploy-web.sh keep working exactly as before);
 # `autodeploy.sh --once` runs a single tick by hand, no loop. And the
 # SANCTIONED way to pin a box for field-testing unmerged work is simply to
 # check out a branch: the branch guard in tick() pauses deploys while the
@@ -97,12 +100,12 @@
 # Deliberately NOT `set -e`: the loop must survive a failed fetch, restart,
 # or build -- every step checks and logs its own failure, and the next tick
 # retries. Failure never leaves a service on half-deployed code: the pull is
-# --ff-only or nothing, and the MCC build completes before its restart.
+# --ff-only or nothing, and the web build completes before its restart.
 # =============================================================================
 
 set -uo pipefail
 
-REPO="${MERLE_REPO:-/home/todd/project-squirrel}"
+REPO="${MERLE_REPO:-/home/todd/aviary}"
 SELF="$REPO/Servers/autodeploy.sh"
 UNITS="${MERLE_DEPLOY_UNITS:-}"
 DEPLOY_MCC="${MERLE_DEPLOY_MCC:-0}"
@@ -122,13 +125,13 @@ as_owner() {
 
 repo_git() { as_owner git -C "$REPO" "$@"; }
 
-# One Next app's gated deploy: install -> build -> restart, the deploy-mcc.sh
+# One Next app's gated deploy: install -> build -> restart, the deploy-web.sh
 # order. Build as the owner through a login shell -- pnpm lives on the owner's
 # PATH, and a root-owned .next/ would break the next manual deploy. A failed
 # build never restarts: old code keeps serving, and the log says fix forward.
 deploy_next_app() {
     local dir="$1" unit="$2"
-    log "$dir/ changed -- install + build, then restart (the deploy-mcc.sh order)"
+    log "$dir/ changed -- install + build, then restart (the deploy-web.sh order)"
     local build_out
     if build_out=$(as_owner bash -lc \
             "cd '$REPO/$dir' && pnpm install --frozen-lockfile && pnpm build" 2>&1); then
@@ -222,9 +225,9 @@ tick() {
     done
 
     # The gated expensive path: a docs-only merge never costs a Next build, so
-    # the MCC rebuilds only when mcc/ itself changed.
-    if [ "$DEPLOY_MCC" = "1" ] && grep -q "^mcc/" <<<"$changed"; then
-        deploy_next_app mcc mcc-dashboard
+    # the web app rebuilds only when web/ itself changed.
+    if [ "$DEPLOY_MCC" = "1" ] && grep -q "^web/" <<<"$changed"; then
+        deploy_next_app web aviary-web
     fi
 
     # The self-update guard: this script deploys the repo it lives in. The

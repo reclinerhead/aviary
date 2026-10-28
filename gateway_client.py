@@ -15,7 +15,7 @@
 # Ollama and nothing else (test_listener_enrichment_loop pins it: a tick
 # with AI_GATEWAY_API_KEY in its environment and a Gateway that explodes on
 # construction still writes its entries), so a tick can never spend a cent
-# whatever env a unit carries. The key belongs on orchid's mcc-dashboard
+# whatever env a unit carries. The key belongs on orchid's aviary-web
 # unit, which spawns the refresh; the earl-enrichment unit has no use for
 # it. #617 is where any automatic use of this writer would be decided.
 # The Aviary's fun-fact pool (listener/fun_facts.py, #422) is the other

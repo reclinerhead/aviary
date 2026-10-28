@@ -21,17 +21,23 @@ Route handlers only — no pages, no React tree. Pure logic in
 
 ## Vercel project (one-time)
 
-This folder is its own Vercel project; the rest of project-squirrel never
-deploys to Vercel.
+This folder is its own Vercel project; the rest of the repo never deploys
+to Vercel.
 
-1. **Vercel → Add New → Project → Import `reclinerhead/project-squirrel`.**
-   The Vercel GitHub app must have access to the repo (it is private).
+1. **Vercel → Add New → Project → Import `reclinerhead/aviary`.** The repo
+   is public, but the Vercel GitHub app still needs access to it to deploy
+   on push. (The project was first imported from project-squirrel; moving
+   it is Settings → Git → disconnect, then connect `reclinerhead/aviary`,
+   #666 Part 4. Root Directory, env and storage all stay.)
 2. **Root Directory: `frontdoor`.** Framework preset Next.js is detected.
    Leave "Include source files outside the Root Directory" off.
 3. **Skip builds for unrelated commits.** Project → Settings → Git →
-   enable the option that skips deployments when the Root Directory has no
-   changes. If that toggle is not offered, set the Ignored Build Step
-   command to `git diff --quiet HEAD^ HEAD -- .` (exit 0 = skip).
+   Ignored Build Step: Behavior **Custom**, command
+   `git diff --quiet ${VERCEL_GIT_PREVIOUS_SHA:-HEAD^} HEAD -- .` (exit 0 =
+   skip). Diffing against the last deployed commit rather than `HEAD^`
+   keeps a push of several commits from skipping a `frontdoor/` change that
+   isn't the newest one; if that commit isn't in Vercel's clone, the diff
+   errors and the build runs anyway.
 4. **Storage → Upstash for Redis → create + connect** to this project. The
    Marketplace injects `KV_REST_API_URL` / `KV_REST_API_TOKEN`; the code
    reads them via `Redis.fromEnv()` (the `UPSTASH_REDIS_REST_*` pair works
