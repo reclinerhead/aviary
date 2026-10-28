@@ -50,20 +50,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      # The full pure-logic suite: storage, perception bookkeeping, the daemon
-      # against the synthetic frame source, narrator pacing/templates, the
-      # replay timing math, and the import boundary merle's two-package venv
-      # depends on. CI needs
-      # fastapi/opencv/paho/yaml but NOT ultralytics/torch -- headless opencv
-      # avoids the libGL requirement of the full build. Model- and
-      # camera-dependent code stays out of CI, verified locally. (Deps listed
-      # inline rather than requirements.txt precisely because of the
-      # opencv-python -> headless swap.)
+      # The pure-logic suite: Earl's gate, visits, the bird record and the
+      # enrichment passes; Willard and the weather archive; the Flyway; the
+      # bus and the feed registry; the model clients. CI needs numpy, paho,
+      # yaml and pillow but NOT birdnet/tensorflow -- earl.py imports those
+      # lazily, inside the workers, so nothing here loads them. Model-, mic-
+      # and broker-dependent code stays out of CI, verified on the boxes.
       #
       # THIS LIST IS THE WHOLE CONTRACT: there is no pytest.ini/testpaths
       # fallback, so a test_*.py that isn't named here silently never runs and
-      # CI goes green having tested nothing. Add new files by hand.
-      # (test_bus.py and test_frame_archiver.py joined the list in #123 -- they
-      # had existed for months and never once run here.)
-      - run: pip install pytest httpx fastapi "uvicorn[standard]" numpy opencv-python-headless paho-mqtt pyyaml pillow
-      - run: pytest test_storage.py test_feeds.py test_perception.py test_daemon.py test_frames.py test_narrator.py test_ollama_client.py test_gateway_client.py test_weather.py test_weather_archive.py test_replay.py test_make_2class.py test_bus.py test_frame_archiver.py test_flyway_liveness.py test_import_boundary.py test_listener_gate.py test_listener_sightings.py test_listener_species_profile.py test_listener_fun_facts.py test_listener_species_analysis.py test_listener_notes_validate.py test_listener_solar.py test_listener_region_prior.py test_listener_findings.py test_listener_editor.py test_listener_enrichment_loop.py test_listener_clip_enhance.py test_listener_clip_vocal_fill.py test_listener_clip_showcase.py test_listener_earl.py test_listener_mic_by_mac.py test_fieldmode_session.py test_flyway_checkin.py -q
+      # CI goes green having tested nothing. Add new files by hand. A name
+      # whose file is gone fails the job (pytest exit 4) -- the squirrel-only
+      # files left this list in #664.
+      - run: pip install pytest numpy paho-mqtt pyyaml pillow
+      - run: pytest test_feeds.py test_ollama_client.py test_gateway_client.py test_weather.py test_weather_archive.py test_bus.py test_flyway_liveness.py test_listener_gate.py test_listener_sightings.py test_listener_species_profile.py test_listener_fun_facts.py test_listener_species_analysis.py test_listener_notes_validate.py test_listener_solar.py test_listener_region_prior.py test_listener_findings.py test_listener_editor.py test_listener_enrichment_loop.py test_listener_clip_enhance.py test_listener_clip_vocal_fill.py test_listener_clip_showcase.py test_listener_earl.py test_listener_mic_by_mac.py test_flyway_checkin.py -q
