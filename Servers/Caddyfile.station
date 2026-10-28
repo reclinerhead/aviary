@@ -1,58 +1,37 @@
-# The station's front door (issue #302, epic #212 D1 -- Homestead as the
-# station front door, #304).
+# The station's front door (issue #302, epic #212; the porch retired in #666).
 #
 # Canonical copy lives in the repo at Servers/Caddyfile.station; the live
 # copy is /etc/caddy/Caddyfile on the station. Same manual-sync posture as
-# pearl's (a reverse-proxy config that deploys itself on merge could take
+# orchid's (a reverse-proxy config that deploys itself on merge could take
 # every web surface down at once):
 #
-#     sudo cp ~/project-squirrel/Servers/Caddyfile.station /etc/caddy/Caddyfile
+#     sudo cp ~/aviary/Servers/Caddyfile.station /etc/caddy/Caddyfile
 #     sudo systemctl reload caddy
 #
-# One origin, no names: a station can't assume a local DNS server exists
-# (that's pearl's Pi-hole luxury), so it answers on :80 whatever the visitor
-# typed -- birdhouse.local via mDNS, a bare IP, a router-assigned name. The
-# porch IS the root (pearl parks it at /home/ beside eight other modules; a
-# station's whole web surface is the porch plus the two apps behind its
-# tiles), and the MCC rides the same origin so tiles.station.json's relative
-# URLs (/aviary, /weather) need no hostname baked anywhere.
+# One origin, no names: a station can't assume a local DNS server exists, so
+# it answers on :80 whatever the visitor typed -- a bare IP, a router-assigned
+# name, or the front door's redirect (aviary.toddtech.llc/<station>, #545).
+# Everything is the web app (aviary-web, `next start` on :3000): the Aviary,
+# its weather tab, their API routes, /_next assets, /clips. `/` is the app's
+# own server-side redirect to /aviary (#628) -- the porch that used to own
+# `/` here (Homestead's tile page) retired at the cutover, so there is no
+# file_server and no root. The broker's websocket (:9001) is deliberately
+# NOT proxied: the browser dials it direct (lib/bus.ts's fallback).
 #
-# Plain HTTP on the LAN, auto_https off -- the pearl reasoning travels.
+# Plain HTTP on the LAN, auto_https off -- the house reasoning travels.
 
 {
 	auto_https off
 }
 
 :80 {
-	root * /home/todd/project-squirrel/launchpad
-
 	# Compression at the choke point (issue #494, same line as orchid's
 	# front door): route-handler JSON bypasses Next's compression, and the
 	# roster payload is the Aviary's dominant recurring fetch -- paid here
 	# over the station's own Wi-Fi link and over every remote tailnet admin
-	# session. encode only touches compressible content types; portraits,
-	# clips (and their 206 range answers), and the porch's font files pass
-	# through untouched. The broker websocket isn't proxied here at all.
+	# session. encode only touches compressible content types; portraits and
+	# clips (and their 206 range answers) pass through untouched.
 	encode zstd gzip
 
-	# The porch's own files, each at its exact path. The one rewrite is the
-	# point of this file: app.js fetches "tiles.json", and the station serves
-	# the committed tiles.station.json AS that name -- so the porch code is
-	# byte-identical to pearl's and per-station identity (Phase 2: her
-	# station's masthead) is an edit to the DEPLOYED copy of the json, never
-	# to code (#304).
-	@porch path / /index.html /styles.css /app.js /tiles.json /vendor/* /fonts/*
-	handle @porch {
-		rewrite /tiles.json /tiles.station.json
-		file_server
-	}
-
-	# Everything else is the MCC (next start on :3000): the Aviary, the
-	# weather station view, their API routes, /_next assets, /clips. The
-	# broker's websocket (:9001) is deliberately NOT proxied -- the porch
-	# lamps dial it direct via the ":9001" bus key (resolved against the
-	# page's own host, #304), keeping one idiom with pearl.
-	handle {
-		reverse_proxy 127.0.0.1:3000
-	}
+	reverse_proxy 127.0.0.1:3000
 }

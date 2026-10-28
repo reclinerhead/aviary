@@ -1,5 +1,7 @@
 # Python
 .venv/
+# The boxes' repo venv (~/aviary/venv, #666). Root-anchored, like /frames/.
+/venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -8,6 +10,8 @@ __pycache__/
 # bluejay) and weather.db (the seasonal weather archive on pearl, issue #105).
 # The archive is the one file here that CANNOT be regenerated -- gitignored
 # because it's state, not because it's disposable. See toddtech-infrastructure/servers/Pearl.md.
+# On every box earl.db and weather.db live in the checkout root (~/aviary,
+# #666), so never run `git clean -x` there: ignored is not protected.
 *.db
 *.db-wal
 *.db-shm
@@ -21,9 +25,9 @@ weather_history.json
 narration_journal.json
 
 # Event still-shot archive (frame_archiver.py's default MERLE_FRAMES_DIR on
-# pearl). ANCHORED to the repo root: a bare "frames/" also matches
-# mcc/app/frames/ and silently kept the /frames route out of git (the #90
-# deploy mystery).
+# pearl). ANCHORED to the repo root: a bare "frames/" also matches a nested
+# app/frames/ route, and once silently kept the web app's /frames route out
+# of git (the #90 deploy mystery).
 /frames/
 
 # Datasets, captures, and model weights -- large binaries stay out of git.
@@ -39,7 +43,7 @@ unknowns/
 *.mp4
 *.cache
 
-# Node / Next.js (mcc/ has its own .gitignore; this is belt-and-suspenders)
+# Node / Next.js (web/ has its own .gitignore; this is belt-and-suspenders)
 node_modules/
 .pnp
 .pnp.js

@@ -4,7 +4,7 @@
 Run ON the broker box (orchid, birdhouse, kestrel) with a python that has
 paho-mqtt -- the Earl venv; mosquitto_pub cannot speak WebSockets:
 
-    ~/earl-venv/bin/python ~/project-squirrel/Servers/mosquitto/acl-check.py
+    ~/earl-venv/bin/python ~/aviary/Servers/mosquitto/acl-check.py
 
 Two directions, both must hold:
 

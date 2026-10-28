@@ -1,5 +1,5 @@
 {
-  "_comment": "The bestClips rule (#333 / #442) pinned in one place for both stacks: mcc/lib/aviary.test.ts and test_listener_clip_showcase.py read this file, so slot 1 of the showcase (#551, Python) can never drift from the Aviary's best recording (TypeScript). Add a case here, never only in one suite.",
+  "_comment": "The bestClips rule (#333 / #442) pinned in one place for both stacks: web/lib/aviary.test.ts and test_listener_clip_showcase.py read this file, so slot 1 of the showcase (#551, Python) can never drift from the Aviary's best recording (TypeScript). Add a case here, never only in one suite.",
   "cases": [
     {
       "name": "highest confidence wins when unscored",

@@ -2364,7 +2364,7 @@ export function mergeNewBestNotices(
 
 // --- Fun facts (#422, the strip's ambient consumer) -------------------------
 //
-// The pool is mcc/data/fun-facts.json, written on orchid by
+// The pool is web/data/fun-facts.json, written on orchid by
 // listener/fun_facts.py and reviewed in a PR: per species, 3-5 facts drawn
 // from its Wikipedia article, each with the sentence it rests on. The
 // dashboard's SERVER picks at most one, so the strip is in the first paint
@@ -2801,7 +2801,7 @@ export function aviaryTitle(title?: string | null): string {
  * Next inlines `process.env.FOO` at **build** time when FOO is a static
  * property access. Birdhouse builds without MERLE_STATION_NAME set, so the
  * compiled page baked `undefined` forever and the masthead stayed
- * "earl with the ears" even after station.env was filled and mcc restarted.
+ * "earl with the ears" even after station.env was filled and aviary-web restarted.
  * Bracket access + force-dynamic pages read the live systemd EnvironmentFile.
  */
 export function stationBrandingFromEnv(): {

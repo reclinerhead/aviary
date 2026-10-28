@@ -18,8 +18,8 @@
 // data here" is a chartable answer, and the chart already draws gaps honestly.
 //
 // MERLE_WEATHER_DB has NO DEFAULT here, deliberately: weather.py defaults it
-// to `weather.db` relative to its WorkingDirectory, but the mcc-dashboard
-// unit's WorkingDirectory is the `mcc/` subdirectory, so the same relative
+// to `weather.db` relative to its WorkingDirectory, but the aviary-web
+// unit's WorkingDirectory is the `web/` subdirectory, so the same relative
 // default would name a DIFFERENT FILE and this route would quietly serve an
 // empty archive that nothing ever writes to. The unit must carry an absolute
 // path matching willard-weather's -- the MERLE_FRAMES_DIR coupling exactly.

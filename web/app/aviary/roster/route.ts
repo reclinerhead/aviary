@@ -18,7 +18,7 @@
 // QUIET { species: [] } -- on day one an empty aviary is the normal state,
 // not a journal line. MERLE_EARL_DB has NO DEFAULT here, deliberately:
 // sightings.py defaults to `earl.db` relative to its WorkingDirectory (the
-// repo root), but mcc-dashboard's WorkingDirectory is the `mcc/`
+// repo root), but aviary-web's WorkingDirectory is the `web/`
 // subdirectory, so the same relative default would name a DIFFERENT FILE
 // and this route would quietly serve an empty aviary nothing ever writes to.
 // The unit must carry an absolute path matching earl-sightings' -- the
