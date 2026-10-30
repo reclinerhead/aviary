@@ -4836,9 +4836,12 @@ export function AviaryMask({
 export function AviaryWeather({
   stationName,
   title,
+  weatherJournal = false,
 }: {
   stationName?: string;
   title?: string;
+  /** The page's server read (#655): does this box's journal carry weather? */
+  weatherJournal?: boolean;
 } = {}) {
   const {
     current,
@@ -4864,6 +4867,7 @@ export function AviaryWeather({
         offline={offline}
         onAir={onAir}
         baroTrend={baroTrend}
+        weatherJournal={weatherJournal}
       />
     </div>
   );
