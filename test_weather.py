@@ -740,6 +740,41 @@ def test_report_system_prompt_is_persona_plus_rules():
     assert got.endswith(weather.REPORT_RULES)
 
 
+def test_report_system_prompt_without_a_yard_is_exactly_persona_plus_rules():
+    # No yard (every station today) must be the prompt Willard always had.
+    want = f"{weather.WILLARD_PERSONALITY}\n\n{weather.REPORT_RULES}"
+    assert weather.report_system_prompt() == want
+    assert weather.report_system_prompt(None) == want
+    assert weather.report_system_prompt("") == want
+
+
+def test_report_system_prompt_puts_the_yard_between_persona_and_rules():
+    yard = "A city lot. Woods fall away to a creek; feeders out back."
+    got = weather.report_system_prompt(yard)
+    assert got == (f"{weather.WILLARD_PERSONALITY}\n\n"
+                   f"{weather.REPORT_YARD_HEADER} {yard}\n\n"
+                   f"{weather.REPORT_RULES}")
+
+
+def test_load_yard_reads_the_house_registry():
+    import feeds
+    got = weather.load_yard(feeds.DEFAULT_PATH)
+    assert got and got == feeds.yard(feeds.DEFAULT_PATH)
+
+
+def test_load_yard_is_none_for_a_registry_without_one():
+    import feeds
+    assert weather.load_yard(feeds.DEFAULT_PATH.parent / "feeds.station.yml") is None
+
+
+def test_load_yard_never_raises(tmp_path):
+    # A broken or missing registry costs the yard paragraph, never the broadcast.
+    assert weather.load_yard(tmp_path / "missing.yml") is None
+    broken = tmp_path / "broken.yml"
+    broken.write_text("yard: [not, a, sentence]\n", encoding="utf-8")
+    assert weather.load_yard(broken) is None
+
+
 def test_sanitize_report_strips_markdown_and_quotes():
     assert weather.sanitize_report('"**WELL** hello there!"') == \
         "WELL hello there!"
@@ -765,6 +800,14 @@ def test_broadcast_sends_the_prompts_and_sanitizes():
     assert call["prompt"].startswith(weather.REPORT_CURRENT_HEADER)
     assert call["num_predict"] == weather.REPORT_NUM_PREDICT
     assert call["temperature"] == weather.REPORT_TEMPERATURE
+
+
+def test_broadcast_carries_the_yard_into_the_system_prompt():
+    stub = StubOllama("A fine day for the feeders!")
+    yard = "Woods behind the house, a creek below."
+    weather.broadcast(stub, fresh_current(), [fpt(NOW + 3600)], now=NOW,
+                      yard=yard)
+    assert stub.calls[0]["system"] == weather.report_system_prompt(yard)
 
 
 def test_broadcast_dead_llm_is_none():

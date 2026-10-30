@@ -502,21 +502,28 @@ def save_history(path, window):
 # reporter, not a narrator. Output rules ride separately, the LINE_RULES
 # split: the persona stays pure character.
 
+# The viewership is the house (#670): the camera era's "squirrels and turkeys
+# of the driveway" became everyone who lives here. The voice is unchanged.
+# The family stays unnamed -- this text is public, and an unnamed family is
+# also one the model can't invent names for.
 WILLARD_PERSONALITY = (
-    "You are Willard, the weatherman of a beloved wildlife television program "
-    "broadcasting from a suburban driveway station. Your delivery is an "
-    "affectionate, EXAGGERATED homage to Willard Scott, the legendary NBC "
+    "You are Willard, the weatherman of a beloved backyard television program "
+    "broadcasting from the weather station at a family home. Your delivery is "
+    "an affectionate, EXAGGERATED homage to Willard Scott, the legendary NBC "
     "weatherman: booming folksy warmth, corny showmanship, groan-worthy puns, "
     "and utter delight in perfectly ordinary weather. You flatter the "
     "sunshine, gently scold the wind, and treat a passing shower like news "
-    "from a dear old friend. Your loyal viewers are the squirrels and turkeys "
-    "of the driveway, and you look out for them -- a hot afternoon means "
-    "advising the squirrels to take it easy, a cold snap means fluffing up "
-    "those feathers. Now and then you salute a distinguished local on a "
-    "milestone -- a hundred-year-old oak, a venerable acorn -- in the grand "
-    "birthday-wishes tradition. You are never mean and never bored: there is "
-    "no such thing as dull weather, only weather that hasn't been properly "
-    "introduced."
+    "from a dear old friend. Your loyal viewers are everyone who lives here: "
+    "the family in the house, the birds at the feeders and in the trees, and "
+    "the yard's four-legged regulars -- the squirrels, the deer, and the "
+    "rabbits -- and you look out for all of them: a hot afternoon means "
+    "telling the family to take it easy and the squirrels to find some shade, "
+    "a cold snap means fluffing up those feathers and keeping the feeders "
+    "full. Now and then you salute a distinguished local on a milestone -- a "
+    "hundred-year-old oak, a venerable acorn -- in the grand birthday-wishes "
+    "tradition. You never give the family names. You are never mean and "
+    "never bored: there is no such thing as dull weather, only weather that "
+    "hasn't been properly introduced."
 )
 
 REPORT_RULES = (
@@ -535,10 +542,33 @@ REPORT_RULES = (
 REPORT_CURRENT_HEADER = "Current conditions at the station:"
 REPORT_OUTLOOK_HEADER = "The next 24 hours:"
 REPORT_EXTENDED_HEADER = "The days ahead:"
+REPORT_YARD_HEADER = "Where the station sits:"
 
 
-def report_system_prompt():
-    return f"{WILLARD_PERSONALITY}\n\n{REPORT_RULES}"
+def report_system_prompt(yard=None):
+    """The persona, then -- when the feed registry describes the yard (#636,
+    #670) -- where the station sits, then the output rules. The yard rides
+    the system prompt because it never changes between segments. No yard is
+    exactly the persona-plus-rules prompt Willard always had."""
+    parts = [WILLARD_PERSONALITY]
+    if yard:
+        parts.append(f"{REPORT_YARD_HEADER} {yard}")
+    parts.append(REPORT_RULES)
+    return "\n\n".join(parts)
+
+
+def load_yard(path=None):
+    """The registry's yard description for Willard's prompt, or None (no
+    `yard:` key -- every station today -- or a registry that fails to load).
+    Never raises, and imports `feeds` lazily for the same reason: a config
+    problem costs Willard his sense of place, never his broadcast."""
+    try:
+        import feeds
+        return feeds.yard(path)
+    except Exception as e:
+        print(f"[weather] no yard description ({type(e).__name__}: {e}) "
+              f"-- broadcasting without one")
+        return None
 
 
 def clock_12h(ts):
@@ -746,16 +776,17 @@ def sanitize_report(text):
     return "\n\n".join(paras) or None
 
 
-def broadcast(ollama, current, forecast_points, now=None):
+def broadcast(ollama, current, forecast_points, now=None, yard=None):
     """One Willard segment: prompt -> Ollama -> sanitized text, or None when
     there is nothing fresh to narrate or the LLM is unreachable (the caller
-    retries on the next poll pass -- never a dead service)."""
+    retries on the next poll pass -- never a dead service). `yard` is the
+    registry's description, loaded once at startup (load_yard)."""
     now = time.time() if now is None else now
     prompt = build_report_prompt(current, forecast_points, now)
     if prompt is None:
         return None
     return sanitize_report(ollama.complete(
-        report_system_prompt(), prompt,
+        report_system_prompt(yard), prompt,
         num_predict=REPORT_NUM_PREDICT, temperature=REPORT_TEMPERATURE))
 
 
@@ -814,6 +845,7 @@ def main():
     # same kill switch -- MERLE_OLLAMA unset means no weather/report topic
     # and this service runs exactly as it did before the segment existed.
     ollama = None
+    yard = None
     addr = ollama_address()
     if addr:
         model = os.environ.get("MERLE_OLLAMA_MODEL", "").strip() \
@@ -822,6 +854,11 @@ def main():
         print(f"[weather] willard's voice: LLM ({model} via "
               f"{addr[0]}:{addr[1]}), a segment every "
               f"{REPORT_INTERVAL_S // 60} min")
+        # Where he broadcasts from (#670): read once, since a yard doesn't
+        # move. A change to the registry's yard: text needs a restart.
+        yard = load_yard()
+        print(f"[weather] willard's yard: "
+              f"{'the registry description' if yard else 'none'}")
     else:
         print("[weather] willard's voice: off (MERLE_OLLAMA not set)")
 
@@ -939,7 +976,7 @@ def main():
                 # poll costs one 60s beat, not a report. Retained, like the
                 # rest of the weather set -- a fresh dashboard tab paints the
                 # segment instantly.
-                text = broadcast(ollama, current, forecast_points)
+                text = broadcast(ollama, current, forecast_points, yard=yard)
                 if text:
                     publisher.publish(
                         bus.WEATHER_REPORT_TOPIC,
