@@ -791,6 +791,44 @@ def test_sanitize_report_unusable_is_none():
     assert weather.sanitize_report('  "" \n\n  ') is None
 
 
+# --- finish_sentences (#673): never air a sentence cut off mid-word ----------
+
+def test_finish_sentences_keeps_a_complete_segment_unchanged():
+    text = "What a day out there!\n\nRain by Monday, folks. Bundle up?"
+    assert weather.finish_sentences(text) == text
+
+
+def test_finish_sentences_trims_the_tail_the_cap_cut_off():
+    # The live 2026-10-30 11:38 ending, verbatim.
+    got = weather.finish_sentences(
+        "Monday's gonna be a soaker. Get ready for the cooler weather "
+        "that's just around the")
+    assert got == "Monday's gonna be a soaker."
+
+
+def test_finish_sentences_drops_a_paragraph_that_is_only_a_fragment():
+    got = weather.finish_sentences("Sunny and 61.\n\nNow, looking ahead to the")
+    assert got == "Sunny and 61."
+
+
+def test_finish_sentences_keeps_closing_quotes_and_other_endings():
+    assert weather.finish_sentences('He says "take it easy!" and the') == \
+        'He says "take it easy!"'
+    assert weather.finish_sentences("Rain? Why, yes it") == "Rain?"
+    assert weather.finish_sentences("Well… the wind") == "Well…"
+
+
+def test_finish_sentences_never_ends_on_a_decimal_point():
+    assert weather.finish_sentences("Expect 0.25 inches. Then 0.5 more by") == \
+        "Expect 0.25 inches."
+
+
+def test_finish_sentences_with_no_complete_sentence_is_none():
+    assert weather.finish_sentences("Well hello there folks, it is a") is None
+    assert weather.finish_sentences("") is None
+    assert weather.finish_sentences(None) is None
+
+
 def test_broadcast_sends_the_prompts_and_sanitizes():
     stub = StubOllama('"A **gorgeous** day out there!"')
     got = weather.broadcast(stub, fresh_current(), [fpt(NOW + 3600)], now=NOW)
@@ -800,6 +838,20 @@ def test_broadcast_sends_the_prompts_and_sanitizes():
     assert call["prompt"].startswith(weather.REPORT_CURRENT_HEADER)
     assert call["num_predict"] == weather.REPORT_NUM_PREDICT
     assert call["temperature"] == weather.REPORT_TEMPERATURE
+
+
+def test_broadcast_trims_a_reply_the_cap_cut_off(capsys):
+    stub = StubOllama("What a day! The squirrels are thrilled. Monday brings "
+                      "the cooler weather that's just around the")
+    got = weather.broadcast(stub, fresh_current(), [fpt(NOW + 3600)], now=NOW)
+    assert got == "What a day! The squirrels are thrilled."
+    assert "trimmed" in capsys.readouterr().out
+
+
+def test_broadcast_with_no_complete_sentence_skips_the_segment():
+    stub = StubOllama("Well hello there folks, it is a")
+    assert weather.broadcast(stub, fresh_current(), [fpt(NOW + 3600)],
+                             now=NOW) is None
 
 
 def test_broadcast_carries_the_yard_into_the_system_prompt():
