@@ -886,26 +886,25 @@ function NewArrivals({
 /** One entry of the species hero's recordings row (#551 Phase 2): a play
  * slot beside a stamp label and the take's confidence + date in the display
  * face. Three callers (best recording, second call, third call) share it so
- * the three can never drift apart; an unfilled slot keeps the exact same
- * geometry with the reserved dot and a dash (house rule #1). */
+ * the three can never drift apart. Only the best recording renders before
+ * its take exists (the loading dash); a call the bird hasn't shown yet is
+ * not rendered at all (#675). */
 function RecordingEntry({
   label,
   clip,
   confidence,
   ts,
   player,
-  emptyTitle,
 }: {
   label: string;
   clip: string | null;
   confidence: number | null;
   ts: number | null;
   player: ClipPlayer;
-  emptyTitle?: string;
 }) {
   return (
     <div className="flex items-center gap-3">
-      <PlaySlot clip={clip} player={player} emptyTitle={emptyTitle} />
+      <PlaySlot clip={clip} player={player} />
       <div className="min-w-0">
         <dt className="stamp text-[9px] text-inkfaint">{label}</dt>
         <dd
@@ -935,11 +934,9 @@ function RecordingEntry({
 function PlaySlot({
   clip,
   player,
-  emptyTitle,
 }: {
   clip: string | null;
   player: ClipPlayer;
-  emptyTitle?: string;
 }) {
   // One size everywhere (#341). The best-recording slot wore a larger `big`
   // variant from #333, when it led a block of its own; since #339 put it at
@@ -949,10 +946,7 @@ function PlaySlot({
   const glyph = "h-3 w-3";
   if (!clip)
     return (
-      <span
-        className={`${box} border-line text-inkfaint`}
-        title={emptyTitle ?? "no clip"}
-      >
+      <span className={`${box} border-line text-inkfaint`} title="no clip">
         <span className="text-[9px]">·</span>
       </span>
     );
@@ -3405,7 +3399,7 @@ export function SpeciesProfile({
               </div>
             )}
             <div className="relative">
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
               <div className="min-w-0">
                 {/* Breadcrumb home (#412-shaped, desk request): the masthead
                     "dashboard" tab is real navigation but small and easy to
@@ -3441,16 +3435,19 @@ export function SpeciesProfile({
                   rendered and merely disabled until the entry lands (the
                   now-button idiom): a control that appeared with the fetch
                   would nudge the header.
-                  Detection (#506) opens the per-species rules overlay --
-                  new chrome at the text-xs floor, deliberately NOT the
-                  legacy 10px remove size: this one is an everyday setting,
-                  not a last resort, and the operator has to be able to
-                  read and hit it.
-                  Remove (#216) keeps its faint chrome -- the destructive
-                  weight is carried by the confirm step rather than by
-                  color (the palette's only red means "chipmunk", never
-                  "danger"). */}
-              <div className="mt-1 flex shrink-0 items-center gap-2">
+                  One box for both (#675): detection's (#506) text-xs floor
+                  -- it opens the per-species rules overlay, an everyday
+                  setting the operator has to be able to read and hit -- and
+                  remove (#216) wears the same box rather than its old legacy
+                  10px, which beside detection only read as a mismatch.
+                  Remove stays the quieter of the two by INK (inkfaint vs
+                  inkdim), never by size; its destructive weight is carried
+                  by the confirm step rather than by color (the palette's
+                  only red means "chipmunk", never "danger").
+                  Below sm the pair stacks under the name (#675): side by
+                  side, the shrink-0 pair left a phone's title column ~30px
+                  and the "all species" crumb ran under detection. */}
+              <div className="flex shrink-0 items-center gap-2 sm:mt-1">
                 <button
                   type="button"
                   disabled={!entry}
@@ -3467,27 +3464,35 @@ export function SpeciesProfile({
                     setExcludeFuture(false);
                     setConfirmOpen(true);
                   }}
-                  className="stamp rounded-sm border border-line px-2 py-1 text-[10px] text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkfaint"
+                  className="stamp rounded-sm border border-line px-2.5 py-1.5 text-xs text-inkfaint transition-colors hover:border-linebright hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-inkfaint"
                 >
                   remove species
                 </button>
               </div>
             </div>
             {/* The recordings row (#551 Phase 2, reshaping #339/#333): the
-                bird's repertoire in three play slots of one geometry. The
-                best recording LEADS (bestClips, #333/#442), then the
-                showcase's second and third calls -- the listener pass's
-                fullest clips that sound DIFFERENT from every earlier slot
-                (species_showcase; listener/clip_showcase.py owns the rule).
-                Slot 1 renders from best_clip, not from the table, so the
-                #447 new-best announcement keeps observing exactly what it
-                observed before. All three slots ALWAYS render: an unfilled
-                call is the reserved dot with a dash and a title that says
-                why, never a missing element, so a species growing a second
-                call reflows nothing (house rule #1). First contact's play
-                button is gone (#551): first heard IS a date, kept on the
-                facts row below, and its clip was a mediocre take by
-                construction for 43 of 73 species. */}
+                bird's repertoire, up to three play slots of one geometry.
+                The best recording LEADS (bestClips, #333/#442) and always
+                renders; slot 1 comes from best_clip, not from the table, so
+                the #447 new-best announcement keeps observing exactly what
+                it observed before. The showcase's second and third calls --
+                the listener pass's fullest clips that sound DIFFERENT from
+                every earlier slot (species_showcase;
+                listener/clip_showcase.py owns the rule) -- render only once
+                the bird HAS them (#675): a reserved empty play box read as a
+                broken control, on most of the roster. House rule #1 still
+                holds by construction: this page reads the roster once on
+                mount, so a call slot can only ever be ADDED, once, when the
+                fetch lands (the #69 shape), and never removed mid-view.
+                That is the moment the best recording's dash already widens
+                into its take, which reflowed a wrapping row before #675 too
+                (three loaded takes never fit one line of a ~590px hero), so
+                the slot count adds no new moment of movement. If this page
+                ever polls the roster, a call appearing mid-view is the
+                shift to revisit.
+                First contact's play button is gone (#551): first heard IS a
+                date, kept on the facts row below, and its clip was a
+                mediocre take by construction for 43 of 73 species. */}
             <dl className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
               <RecordingEntry
                 label="best recording"
@@ -3497,26 +3502,21 @@ export function SpeciesProfile({
                 player={player}
               />
               {([2, 3] as const).map((n) => {
-                const s = entry?.showcase?.find((x) => x.slot === n) ?? null;
-                return (
+                const s = entry?.showcase?.find((x) => x.slot === n);
+                return s ? (
                   <RecordingEntry
                     key={n}
                     label={n === 2 ? "second call" : "third call"}
-                    clip={s?.clip ?? null}
-                    confidence={s?.confidence ?? null}
-                    ts={s?.ts ?? null}
+                    clip={s.clip}
+                    confidence={s.confidence}
+                    ts={s.ts}
                     player={player}
-                    emptyTitle={
-                      entry
-                        ? "no distinct call recorded yet — the showcase fills in as the bird shows more of its repertoire"
-                        : "no clip"
-                    }
                   />
-                );
+                ) : null;
               })}
             </dl>
             {/* The facts row: what the recordings row used to carry beside
-                the takes, on a line of its own so the three slots read as
+                the takes, on a line of its own so the recordings read as
                 one group. Same stamps, same reserved dashes. */}
             <dl className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
               <div>
