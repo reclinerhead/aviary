@@ -742,6 +742,7 @@ export function WeatherStationView({
   offline,
   onAir,
   baroTrend,
+  weatherJournal = false,
 }: {
   current: CurrentWeather | null;
   history: WeatherPoint[];
@@ -752,6 +753,9 @@ export function WeatherStationView({
   offline: boolean;
   onAir: boolean;
   baroTrend: "rising" | "falling" | "steady" | null;
+  /** This box's field journal carries weather (#655): decided on the
+   *  server per box, so the "why weather?" note is fixed from first paint. */
+  weatherJournal?: boolean;
 }) {
   // A page section under the Aviary masthead since #652. Until then this was
   // the MCC dashboard's full-screen overlay, with the Live Watch contract
@@ -1036,6 +1040,26 @@ export function WeatherStationView({
             </span>
           )}
         </div>
+
+        {/* Why weather? (#655): a birdwatching app's answer to its own weather
+            tab, in the mask page's explainer idiom (#596). Static per box --
+            no state reaches it, so it never moves (house rule #1). Every
+            sentence is true on every box except the journal's, which the
+            server includes only where the field journal carries weather
+            (the house; the stations write no notes). */}
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-inkdim">
+          <span className="stamp mr-2 text-xs text-inkfaint">why weather?</span>
+          Birds keep their own schedule, and weather is one of the few things
+          shaping it that we can measure.
+          {weatherJournal &&
+            " The field journal checks how often each bird turns up under clear skies, cloud, rain and snow, and in spells warmer or colder than usual for the season, against its own average, and a bird’s notes say so when the weather makes a difference."}{" "}
+          When the wind blows past 15 miles an hour, Earl needs more
+          confidence before a detection counts, and the ones that still count
+          are marked <span className="stamp text-inkdim">wind?</span>. The
+          readings come from the yard’s own weather station where there is
+          one, and from OpenWeather’s report for this location where there
+          isn’t.
+        </p>
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
           {/* --- The sky: hero conditions + the big chart ------------------ */}
