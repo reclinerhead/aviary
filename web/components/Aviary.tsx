@@ -3399,7 +3399,7 @@ export function SpeciesProfile({
               </div>
             )}
             <div className="relative">
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
               <div className="min-w-0">
                 {/* Breadcrumb home (#412-shaped, desk request): the masthead
                     "dashboard" tab is real navigation but small and easy to
@@ -3443,8 +3443,11 @@ export function SpeciesProfile({
                   Remove stays the quieter of the two by INK (inkfaint vs
                   inkdim), never by size; its destructive weight is carried
                   by the confirm step rather than by color (the palette's
-                  only red means "chipmunk", never "danger"). */}
-              <div className="mt-1 flex shrink-0 items-center gap-2">
+                  only red means "chipmunk", never "danger").
+                  Below sm the pair stacks under the name (#675): side by
+                  side, the shrink-0 pair left a phone's title column ~30px
+                  and the "all species" crumb ran under detection. */}
+              <div className="flex shrink-0 items-center gap-2 sm:mt-1">
                 <button
                   type="button"
                   disabled={!entry}
