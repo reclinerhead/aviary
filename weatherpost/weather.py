@@ -102,6 +102,7 @@
 import json
 import math
 import os
+import re
 import sqlite3
 import time
 import urllib.parse
@@ -130,8 +131,10 @@ REPORT_MAX_AGE_S = 30 * 60
 # A segment is longer than a narrator line (conditions + outlook + a look at
 # the days ahead, issue #60), so it gets more headroom than narrate()'s 120;
 # the temperature keeps two half-hour broadcasts over the same numbers from
-# reading like reruns.
-REPORT_NUM_PREDICT = 280
+# reading like reruns. 360, not 280 (#673): six uncapped gemma3:12b takes of
+# the house prompt ran 202-271 tokens, and a live one ran past 280 and aired
+# cut off mid-word. finish_sentences() is the guarantee; this is headroom.
+REPORT_NUM_PREDICT = 360
 REPORT_TEMPERATURE = 0.9
 
 OWM_BASE = "https://api.openweathermap.org/data/2.5"
@@ -776,6 +779,25 @@ def sanitize_report(text):
     return "\n\n".join(paras) or None
 
 
+# A sentence ends at . ! ? or an ellipsis, with any closing quotes or a
+# parenthesis after it, then whitespace or the end of the text. A decimal
+# point ("0.25 inches") is followed by a digit, so it never counts.
+_SENTENCE_END = re.compile(r'[.!?…]["\'”’)]*(?=\s|$)')
+
+
+def finish_sentences(text):
+    """A segment the token cap cut off (#673) -> the segment up to its last
+    complete sentence, dropping a final paragraph that is only a fragment;
+    None when no sentence is complete. A segment that already ends a
+    sentence comes back unchanged. Pure -- broadcast() logs the trim."""
+    if not text:
+        return None
+    ends = list(_SENTENCE_END.finditer(text))
+    if not ends:
+        return None
+    return text[:ends[-1].end()].rstrip() or None
+
+
 def broadcast(ollama, current, forecast_points, now=None, yard=None):
     """One Willard segment: prompt -> Ollama -> sanitized text, or None when
     there is nothing fresh to narrate or the LLM is unreachable (the caller
@@ -785,9 +807,19 @@ def broadcast(ollama, current, forecast_points, now=None, yard=None):
     prompt = build_report_prompt(current, forecast_points, now)
     if prompt is None:
         return None
-    return sanitize_report(ollama.complete(
+    text = sanitize_report(ollama.complete(
         report_system_prompt(yard), prompt,
         num_predict=REPORT_NUM_PREDICT, temperature=REPORT_TEMPERATURE))
+    if text is None:
+        return None
+    # Never air a sentence cut off mid-word (#673). The line says how much
+    # went, so the cap can be tuned from the journal.
+    done = finish_sentences(text)
+    if done != text:
+        print(f"[weather] segment ran past the {REPORT_NUM_PREDICT}-token cap "
+              f"-- trimmed {len(text) - len(done or '')} characters to the last "
+              f"full sentence", flush=True)
+    return done
 
 
 def fetch(url):
