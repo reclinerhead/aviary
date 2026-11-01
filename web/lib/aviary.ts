@@ -1636,11 +1636,19 @@ export function dayStart(ts: number): number {
  * India (+05:30) and Newfoundland (-03:30) put their hour boundaries on the
  * half-hour in UTC, so the arithmetic version would draw every bucket 30
  * minutes off the viewer's own clock -- the exact class of bug the
- * client-buckets rule exists to prevent. */
+ * client-buckets rule exists to prevent.
+ *
+ * Nor `d.setMinutes(0, 0, 0)` (#677): that re-resolves a local WALL-CLOCK
+ * time, and a fall-back night's 1am happens twice -- JS resolves the
+ * ambiguity to the EARLIER instant, so 1:00 EST floored back to 1:00 EDT and
+ * every `hourStart(cursor + 3600)` stepper stood still until the tab ran out
+ * of memory. Subtracting the local minutes and seconds keeps the instant we
+ * were given: the result is always within the hour at or before `ts`, so a
+ * stepper always advances. */
 export function hourStart(ts: number): number {
-  const d = new Date(ts * 1000);
-  d.setMinutes(0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
+  const t = Math.floor(ts);
+  const d = new Date(t * 1000);
+  return t - (d.getMinutes() * 60 + d.getSeconds());
 }
 
 /** Visit-opening timestamps -> counts per the VIEWER's local hour (#204).

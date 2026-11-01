@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BirdEvent } from "./bus";
 import {
   ARRIVALS_24H_S,
@@ -1738,28 +1738,53 @@ describe("hourBuckets", () => {
     expect(hourBuckets([1000], 500, 500)).toEqual([]);
   });
 
-  // The DST pair. Written to hold in ANY zone the suite runs in (CI is UTC,
-  // Todd's machine is not): rather than asserting "23 buckets", they assert
-  // that the buckets exactly tile the real seconds between two local
-  // midnights and every one lands on a real local hour. In a DST zone that
-  // IS 23 or 25; in UTC it's 24; the invariant is the same either way, and
-  // a stepper that skipped or doubled an hour fails all three.
-  const tiles = (from: number, to: number) => {
-    const bars = hourBuckets([], from, to);
-    expect(bars).toHaveLength(Math.round((to - from) / 3600));
-    for (let i = 1; i < bars.length; i++)
-      expect(bars[i].ts).toBeGreaterThan(bars[i - 1].ts);
-    for (const b of bars)
-      expect(new Date(b.ts * 1000).getMinutes()).toBe(0);
-  };
-  it("tiles a spring-forward day without skipping an hour", () => {
-    // US spring-forward 2026: March 8.
-    tiles(dayStart(noon(2026, 2, 8)), dayStart(noon(2026, 2, 9)));
-  });
-  it("tiles a fall-back day without doubling one", () => {
-    // US fall-back 2026: November 1. The repeated 1am hours are distinct
-    // absolute hours and must land in distinct buckets.
-    tiles(dayStart(noon(2026, 9, 1)), dayStart(noon(2026, 9, 2)));
+  // The DST pair. The assertion is zone-agnostic -- the buckets exactly tile
+  // the real seconds between two local midnights and every one lands on a
+  // real local hour, so a stepper that skipped or doubled an hour fails --
+  // but the ZONE is pinned (#677): CI is UTC, which has no transitions, so
+  // unpinned these passed there without ever crossing one. Node re-reads
+  // process.env.TZ on assignment, and Vitest's forked workers keep the
+  // change to this file; every Date below is built inside an `it`, after
+  // beforeAll has run.
+  describe("across a DST transition (pinned to America/New_York)", () => {
+    const prevTz = process.env.TZ;
+    beforeAll(() => {
+      process.env.TZ = "America/New_York";
+    });
+    afterAll(() => {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    });
+    const tiles = (from: number, to: number) => {
+      const bars = hourBuckets([], from, to);
+      expect(bars).toHaveLength(Math.round((to - from) / 3600));
+      for (let i = 1; i < bars.length; i++)
+        expect(bars[i].ts).toBeGreaterThan(bars[i - 1].ts);
+      for (const b of bars)
+        expect(new Date(b.ts * 1000).getMinutes()).toBe(0);
+    };
+    it("tiles a spring-forward day without skipping an hour", () => {
+      // US spring-forward 2026: March 8 (noon's month is 0-based).
+      const from = dayStart(noon(2026, 2, 8));
+      const to = dayStart(noon(2026, 2, 9));
+      expect(to - from).toBe(23 * 3600); // the pin took: a real 23h day
+      tiles(from, to);
+    });
+    it("tiles a fall-back day without doubling one", () => {
+      // US fall-back 2026: November 1 -- month 10, not 9, which tiled an
+      // ordinary October day until #677. The repeated 1am hours are
+      // distinct absolute hours and must land in distinct buckets.
+      const from = dayStart(noon(2026, 10, 1));
+      const to = dayStart(noon(2026, 10, 2));
+      expect(to - from).toBe(25 * 3600); // the pin took: a real 25h day
+      // hourStart first, directly: on the #677 code it floored 1:00 EST
+      // back to 1:00 EDT, and the tiling walk below would then spin
+      // forever rather than fail -- this fails it fast instead.
+      const edt1 = from + 3600;
+      expect(hourStart(edt1 + 3600)).toBe(edt1 + 3600);
+      expect(hourStart(edt1 + 5400)).toBe(edt1 + 3600);
+      tiles(from, to);
+    });
   });
 });
 
