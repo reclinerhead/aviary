@@ -7,6 +7,7 @@ import {
   parseAudioSources,
   sourceListenLabel,
   voiceColor,
+  type BirdEvent,
 } from "./bus";
 
 describe("busUrl", () => {
@@ -179,6 +180,8 @@ describe("parseAudioEvent", () => {
 });
 
 describe("audioEventKey", () => {
+  // Narrowed to the detection arm: spreading the AudioEvent union would carry
+  // its SoundEvent arm (no species_common) into `other` below.
   const base = parseAudioEvent(
     JSON.stringify({
       ts: 1000,
@@ -188,9 +191,9 @@ describe("audioEventKey", () => {
       species_common: "A",
       confidence: 0.9,
     }),
-  )!;
+  ) as BirdEvent;
   it("differs for two species sharing one window", () => {
-    const other = { ...base, kind: "detection" as const, species_sci: "B sci" };
+    const other = { ...base, species_sci: "B sci" };
     expect(audioEventKey(base)).not.toBe(audioEventKey(other));
   });
   it("differs for a detection and a sound sharing one window", () => {
