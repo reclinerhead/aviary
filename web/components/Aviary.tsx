@@ -1380,24 +1380,27 @@ function useAviaryNoticeStrip(
 
   useEffect(() => {
     const all = [...queued];
+    // The try holds only the URL read and the sample build: React Compiler
+    // 1.0 can't compile a loop, conditional or `?.` inside a try, and skips
+    // the whole hook if one is there (#680). The storage helpers catch their
+    // own errors.
+    let demos: AviaryNotice[] = [];
     try {
-      if (typeof window !== "undefined") {
-        const flag = new URLSearchParams(window.location.search).get("notice");
-        for (const d of demoNoticesFor(
-          flag,
-          samples,
-          Math.floor(Date.now() / 1000),
-          dayWithYearOf,
-        )) {
-          if (!undismissed.current.has(d.id)) {
-            undismissNotice(localStorage, d.id);
-            undismissed.current.add(d.id);
-          }
-          all.push(d);
-        }
-      }
+      demos = demoNoticesFor(
+        new URLSearchParams(window.location.search).get("notice"),
+        samples,
+        Math.floor(Date.now() / 1000),
+        dayWithYearOf,
+      );
     } catch {
       // ignore
+    }
+    for (const d of demos) {
+      if (!undismissed.current.has(d.id)) {
+        undismissNotice(localStorage, d.id);
+        undismissed.current.add(d.id);
+      }
+      all.push(d);
     }
     if (ambient && !ambientRetired.current) all.push(ambient);
     const { chain, cut: over } = noticeChain(
@@ -1441,7 +1444,10 @@ function useAviaryNoticeStrip(
         isNoticeDismissed(localStorage, nid),
       ),
     );
-  }, []);
+    // setVisible is stable, so this stays a once-per-mount callback; it's
+    // listed because the React Compiler infers it as a dependency and skips
+    // the hook when the manual list disagrees (#680).
+  }, [setVisible]);
 
   return { notice: visible, held, onDismiss };
 }
@@ -4164,12 +4170,21 @@ export function AviaryEvents({
     const url =
       `/aviary/recent?${queryRef.current}` +
       (before !== null ? `&before=${before}` : "");
-    try {
-      const r = await fetch(url, { cache: "no-store" });
-      const body: { events?: unknown[] } = r.ok
-        ? await r.json()
-        : { events: [] };
-      if (gen !== genRef.current) return; // superseded by a filter change
+    // No try: React Compiler 1.0 can't compile a try/finally, nor a
+    // conditional inside a try/catch, and skips the whole page for either
+    // (#680). A failed fetch or body read resolves to null instead.
+    const body: { events?: unknown[] } | null = await fetch(url, {
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { events: [] }))
+      .catch(() => null);
+    if (gen !== genRef.current) return; // superseded by a filter change
+    if (body === null) {
+      // A failed page ends the scroll politely rather than hammering a dead
+      // route from the observer; a reload starts fresh.
+      exhaustedRef.current = true;
+      setExhausted(true);
+    } else {
       const raw = (Array.isArray(body.events) ? body.events : [])
         .map(audioEventFrom)
         .filter((e): e is BirdEvent => e?.kind === "detection");
@@ -4187,19 +4202,9 @@ export function AviaryEvents({
         beforeRef.current = nextBefore(raw[raw.length - 1].ts, before);
       }
       setRows((prev) => (append ? [...prev, ...fresh] : fresh));
-    } catch {
-      // A failed page ends the scroll politely rather than hammering a dead
-      // route from the observer; a reload starts fresh.
-      if (gen === genRef.current) {
-        exhaustedRef.current = true;
-        setExhausted(true);
-      }
-    } finally {
-      if (gen === genRef.current) {
-        busyRef.current = false;
-        setLoading(false);
-      }
     }
+    busyRef.current = false;
+    setLoading(false);
   }, []);
 
   // Filter changes (and the gated first load): reset and fetch page one.
