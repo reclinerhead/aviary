@@ -148,8 +148,15 @@ const PROFILE_ROWS = 200;
 // key against the cursor's deliberate one-row overlap.
 const ARCHIVE_PAGE = 100;
 
-type TickerEvent = AudioEvent & { key: string };
-type ArchiveRow = BirdEvent & { key: string };
+// `live`: arrived over the bus. Hydrated rows arrive already-read: they get
+// no filed-flash on mount (the broadcast view's openedWith lesson); only live
+// arrivals flare. Carried on the row, not in a ref -- render can't read refs
+// without the React Compiler skipping the dashboard (#679).
+type TickerEvent = AudioEvent & { key: string; live: boolean };
+// `live`: arrived over the bus, not loaded from an archive page -- only these
+// glow. The default is "from the store, no glow", so a refetch re-reads a
+// live row as ordinary history and it can't glow a second time.
+type ArchiveRow = BirdEvent & { key: string; live: boolean };
 
 // --- Formatting (locale-side -- the audio namespace is epoch end to end) ----
 
@@ -301,6 +308,7 @@ function Portrait({
   const [lost, setLost] = useState(false);
   if (has && !lost)
     return (
+      // eslint-disable-next-line @next/next/no-img-element -- the portrait route owns thumbs and versioned caching (#495)
       <img
         src={portraitUrl(sci, { thumb, v })}
         alt={alt}
@@ -358,6 +366,7 @@ function TickerThumb({
       className={`flex ${box} shrink-0 items-center justify-center overflow-hidden rounded-sm border border-line bg-panel text-inkfaint`}
     >
       {has && !lost ? (
+        // eslint-disable-next-line @next/next/no-img-element -- the portrait route owns thumbs and versioned caching (#495)
         <img
           src={portraitUrl(sci, { thumb: true, v })}
           alt=""
@@ -472,6 +481,7 @@ function useClipPlayer(): ClipPlayer {
   useEffect(() => {
     const stored = coerceGain(localStorage.getItem(GAIN_KEY));
     gainRef.current = stored;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setGainState(stored);
   }, []);
 
@@ -493,39 +503,46 @@ function useClipPlayer(): ClipPlayer {
    * So each attempt owns an AbortController. Whichever signal arrives first
    * aborts it and acts; the second sees an aborted controller and returns.
    * Listeners are registered against the signal, so a superseded attempt
-   * detaches itself rather than lingering to misjudge its successor. */
+   * detaches itself rather than lingering to misjudge its successor.
+   *
+   * The raw retry re-enters through the local `attempt`, never `start`
+   * itself: a callback that names itself inside its own initializer makes
+   * the React Compiler skip the whole hook (#679). */
   const start = useCallback(
     (a: HTMLAudioElement, clip: string, useEnhanced: boolean) => {
-      attemptRef.current?.abort();
-      const ctl = new AbortController();
-      attemptRef.current = ctl;
-      const enh = useEnhanced ? enhancedClipUrl(clip) : null;
+      function attempt(useEnhanced: boolean) {
+        attemptRef.current?.abort();
+        const ctl = new AbortController();
+        attemptRef.current = ctl;
+        const enh = useEnhanced ? enhancedClipUrl(clip) : null;
 
-      const failed = () => {
-        if (ctl.signal.aborted) return; // this attempt was already resolved
-        ctl.abort();
-        if (enh !== null) {
-          // No sibling for this one. Fall back quietly -- an un-enhanced clip
-          // is not an error, it's a clip the pass hasn't reached yet. This
-          // silent retry IS the existence check (see the hook's note), and
-          // #331 is simply that we now REMEMBER the answer instead of
-          // discarding it: the audio stays uninterrupted, the label stops
-          // lying. Since #325 enhances on a 5-15 minute tick, a clip lands
-          // here mostly in the window before its first pass -- a normal,
-          // recurring state, which is exactly why it deserves honest chrome
-          // rather than an error.
-          setRawOnly((prev) => new Set(prev).add(clip));
-          start(a, clip, false);
-          return;
-        }
-        setFaded((prev) => new Set(prev).add(clip));
-        stop(null);
-      };
+        const failed = () => {
+          if (ctl.signal.aborted) return; // this attempt was already resolved
+          ctl.abort();
+          if (enh !== null) {
+            // No sibling for this one. Fall back quietly -- an un-enhanced
+            // clip is not an error, it's a clip the pass hasn't reached yet.
+            // This silent retry IS the existence check (see the hook's
+            // note), and #331 is simply that we now REMEMBER the answer
+            // instead of discarding it: the audio stays uninterrupted, the
+            // label stops lying. Since #325 enhances on a 5-15 minute tick, a
+            // clip lands here mostly in the window before its first pass -- a
+            // normal, recurring state, which is exactly why it deserves
+            // honest chrome rather than an error.
+            setRawOnly((prev) => new Set(prev).add(clip));
+            attempt(false);
+            return;
+          }
+          setFaded((prev) => new Set(prev).add(clip));
+          stop(null);
+        };
 
-      a.addEventListener("error", failed, { signal: ctl.signal });
-      a.src = enh ?? clipUrl(clip);
-      a.play().catch(failed);
-      stop(clip);
+        a.addEventListener("error", failed, { signal: ctl.signal });
+        a.src = enh ?? clipUrl(clip);
+        a.play().catch(failed);
+        stop(clip);
+      }
+      attempt(useEnhanced);
     },
     [stop],
   );
@@ -1049,10 +1066,12 @@ function EarlLamp({
   busUp,
   status,
   sources,
+  now,
 }: {
   busUp: boolean;
   status: string | null;
   sources: AudioSource[] | null;
+  now: number | null;
 }) {
   let lamp: ReactNode;
   if (!busUp)
@@ -1085,12 +1104,13 @@ function EarlLamp({
 
   // Sources only matter while the bus is up and Earl has published a
   // roster -- an empty list is a legitimate "no workers configured" and
-  // stays quiet rather than inventing a line. Capturing needs a clock;
-  // client-only, so Date.now here is fine (the masthead is not SSR'd with
-  // live source state).
-  const now = Math.floor(Date.now() / 1000);
+  // stays quiet rather than inventing a line. Capturing needs a clock: the
+  // dashboard's minute-ticked `now`, passed in, never Date.now() in render.
+  // The React Compiler cached that read with the line (keyed on the sources
+  // alone), and Earl republishes sources only on a state change -- so a
+  // source read "capturing" for as long as it stayed online (#679).
   const sourceLine =
-    busUp && sources && sources.length > 0 ? (
+    busUp && now !== null && sources && sources.length > 0 ? (
       <div className="max-w-[min(100vw-2rem,28rem)] text-right stamp text-[10px] leading-snug">
         {sources.map((s, i) => {
           const label = sourceListenLabel(s, now);
@@ -1360,24 +1380,27 @@ function useAviaryNoticeStrip(
 
   useEffect(() => {
     const all = [...queued];
+    // The try holds only the URL read and the sample build: React Compiler
+    // 1.0 can't compile a loop, conditional or `?.` inside a try, and skips
+    // the whole hook if one is there (#680). The storage helpers catch their
+    // own errors.
+    let demos: AviaryNotice[] = [];
     try {
-      if (typeof window !== "undefined") {
-        const flag = new URLSearchParams(window.location.search).get("notice");
-        for (const d of demoNoticesFor(
-          flag,
-          samples,
-          Math.floor(Date.now() / 1000),
-          dayWithYearOf,
-        )) {
-          if (!undismissed.current.has(d.id)) {
-            undismissNotice(localStorage, d.id);
-            undismissed.current.add(d.id);
-          }
-          all.push(d);
-        }
-      }
+      demos = demoNoticesFor(
+        new URLSearchParams(window.location.search).get("notice"),
+        samples,
+        Math.floor(Date.now() / 1000),
+        dayWithYearOf,
+      );
     } catch {
       // ignore
+    }
+    for (const d of demos) {
+      if (!undismissed.current.has(d.id)) {
+        undismissNotice(localStorage, d.id);
+        undismissed.current.add(d.id);
+      }
+      all.push(d);
     }
     if (ambient && !ambientRetired.current) all.push(ambient);
     const { chain, cut: over } = noticeChain(
@@ -1421,7 +1444,10 @@ function useAviaryNoticeStrip(
         isNoticeDismissed(localStorage, nid),
       ),
     );
-  }, []);
+    // setVisible is stable, so this stays a once-per-mount callback; it's
+    // listed because the React Compiler infers it as a dependency and skips
+    // the hook when the manual list disagrees (#680).
+  }, [setVisible]);
 
   return { notice: visible, held, onDismiss };
 }
@@ -1444,6 +1470,7 @@ function AviaryMasthead({
     busUp: boolean;
     status: string | null;
     sources: AudioSource[] | null;
+    now: number | null;
   };
   /** Small-viewport anchor chips in the tab bar (#265) -- only the main
    * page has the stacked-columns problem (and the sections) they jump to,
@@ -1513,6 +1540,7 @@ function AviaryMasthead({
             busUp={lamp.busUp}
             status={lamp.status}
             sources={lamp.sources}
+            now={lamp.now}
           />
         )}
       </div>
@@ -1781,9 +1809,6 @@ export function Aviary({
   // never vanishing mid-read on a render.
   const [nowTs, setNowTs] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
-  // Hydrated rows arrive already-read: they get no filed-flash on mount
-  // (the broadcast view's openedWith lesson); only live arrivals flare.
-  const hydratedKeys = useRef<Set<string>>(new Set());
   const midnightRef = useRef<number | null>(null);
   const player = useClipPlayer();
 
@@ -1837,6 +1862,7 @@ export function Aviary({
   // an initializer read would hydration-mismatch. Empty first paint, then
   // the stored fragment re-filters the grid in place (content only).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setQuery(readLifeListQuery(sessionStorage));
   }, []);
 
@@ -1855,6 +1881,7 @@ export function Aviary({
     d.setHours(0, 0, 0, 0);
     const mid = Math.floor(d.getTime() / 1000);
     midnightRef.current = mid;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setMidnight(mid);
     setNowTs(Math.floor(Date.now() / 1000));
 
@@ -1881,8 +1908,7 @@ export function Aviary({
         const hydrated = rows
           .map(audioEventFrom)
           .filter((e): e is AudioEvent => e !== null)
-          .map((e) => ({ ...e, key: audioEventKey(e) }));
-        hydrated.forEach((e) => hydratedKeys.current.add(e.key));
+          .map((e) => ({ ...e, key: audioEventKey(e), live: false }));
         // Live arrivals may already be in state (the bus connects fast);
         // keys make the merge a dedupe, newest live rows staying on top.
         setEvents((prev) => {
@@ -1933,7 +1959,7 @@ export function Aviary({
       setEvents((prev) =>
         prev.some((e) => e.key === key)
           ? prev
-          : [{ ...event, key }, ...prev].slice(0, TICKER_CAP),
+          : [{ ...event, key, live: true }, ...prev].slice(0, TICKER_CAP),
       );
       if (event.kind !== "detection") return;
       // A live detection IS a visit opening (#175: the listener publishes
@@ -2099,7 +2125,7 @@ export function Aviary({
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
       <AviaryMasthead
-        lamp={{ busUp, status: earlStatus, sources: earlSources }}
+        lamp={{ busUp, status: earlStatus, sources: earlSources, now: nowTs }}
         stationName={stationName}
         title={title}
         jumps={[
@@ -2309,12 +2335,7 @@ export function Aviary({
                 // unchanged.
                 <ul className="scrollpane -m-3 flex max-h-[564px] flex-col gap-1.5 overflow-y-auto p-3">
                   {events.map((e) => (
-                    <li
-                      key={e.key}
-                      className={
-                        hydratedKeys.current.has(e.key) ? "" : "event-new"
-                      }
-                    >
+                    <li key={e.key} className={e.live ? "event-new" : ""}>
                       {e.kind === "detection" ? (
                         <div className="flex items-center gap-2.5 rounded-sm border border-line bg-panel2 px-2.5 py-2">
                           <TickerThumb
@@ -3212,6 +3233,7 @@ export function SpeciesProfile({
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     const mid = Math.floor(d.getTime() / 1000);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setMidnight(mid);
     const nowTs = Math.floor(Date.now() / 1000);
     setNow(nowTs);
@@ -3365,6 +3387,7 @@ export function SpeciesProfile({
                 flat panel they render today, and no layout difference. */}
             {entry?.image_file && (
               <div className="pointer-events-none absolute inset-0" aria-hidden>
+                {/* eslint-disable-next-line @next/next/no-img-element -- the portrait route owns thumbs and versioned caching (#495) */}
                 <img
                   // Full size + the roster's version (#495): the backdrop
                   // and the figure share one URL, so the hero costs no
@@ -4099,10 +4122,6 @@ export function AviaryEvents({
   const busyRef = useRef(false);
   const exhaustedRef = useRef(false);
   const keysRef = useRef<Set<string>>(new Set());
-  // Keys that arrived LIVE over the bus (not loaded from an archive page):
-  // only these glow. The inverse of the ticker's hydratedKeys -- here the
-  // default is "from the store, no glow", so we mark the new ones instead.
-  const liveKeysRef = useRef<Set<string>>(new Set());
   // The live bus handler is subscribed once, so it reads the current filter
   // through refs rather than closing over stale state (the loadPage idiom).
   const selectedRef = useRef<ReadonlySet<string>>(selected);
@@ -4120,6 +4139,7 @@ export function AviaryEvents({
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     const mid = Math.floor(d.getTime() / 1000);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setMidnight(mid);
 
     fetch(`/aviary/roster?today=${mid}`, { cache: "no-store" })
@@ -4150,12 +4170,21 @@ export function AviaryEvents({
     const url =
       `/aviary/recent?${queryRef.current}` +
       (before !== null ? `&before=${before}` : "");
-    try {
-      const r = await fetch(url, { cache: "no-store" });
-      const body: { events?: unknown[] } = r.ok
-        ? await r.json()
-        : { events: [] };
-      if (gen !== genRef.current) return; // superseded by a filter change
+    // No try: React Compiler 1.0 can't compile a try/finally, nor a
+    // conditional inside a try/catch, and skips the whole page for either
+    // (#680). A failed fetch or body read resolves to null instead.
+    const body: { events?: unknown[] } | null = await fetch(url, {
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { events: [] }))
+      .catch(() => null);
+    if (gen !== genRef.current) return; // superseded by a filter change
+    if (body === null) {
+      // A failed page ends the scroll politely rather than hammering a dead
+      // route from the observer; a reload starts fresh.
+      exhaustedRef.current = true;
+      setExhausted(true);
+    } else {
       const raw = (Array.isArray(body.events) ? body.events : [])
         .map(audioEventFrom)
         .filter((e): e is BirdEvent => e?.kind === "detection");
@@ -4164,7 +4193,7 @@ export function AviaryEvents({
         const key = audioEventKey(e);
         if (keysRef.current.has(key)) continue; // the cursor's overlap row
         keysRef.current.add(key);
-        fresh.push({ ...e, key });
+        fresh.push({ ...e, key, live: false });
       }
       if (raw.length < ARCHIVE_PAGE) {
         exhaustedRef.current = true;
@@ -4173,19 +4202,9 @@ export function AviaryEvents({
         beforeRef.current = nextBefore(raw[raw.length - 1].ts, before);
       }
       setRows((prev) => (append ? [...prev, ...fresh] : fresh));
-    } catch {
-      // A failed page ends the scroll politely rather than hammering a dead
-      // route from the observer; a reload starts fresh.
-      if (gen === genRef.current) {
-        exhaustedRef.current = true;
-        setExhausted(true);
-      }
-    } finally {
-      if (gen === genRef.current) {
-        busyRef.current = false;
-        setLoading(false);
-      }
     }
+    busyRef.current = false;
+    setLoading(false);
   }, []);
 
   // Filter changes (and the gated first load): reset and fetch page one.
@@ -4193,15 +4212,13 @@ export function AviaryEvents({
     if (!ready) return;
     const gen = ++genRef.current;
     keysRef.current = new Set();
-    // A refetch re-reads live rows from the store as ordinary history; they
-    // must not glow a second time, so the live set resets with the page.
-    liveKeysRef.current = new Set();
     exhaustedRef.current = false;
     beforeRef.current = anchorDay === "" ? null : dayAnchor(anchorDay);
     const qp = new URLSearchParams();
     qp.set("limit", String(ARCHIVE_PAGE));
     if (selected.size > 0) qp.set("species", [...selected].join(","));
     queryRef.current = qp.toString();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the page-one reset rides the fetch it starts; genRef drops stale pages (#679)
     setExhausted(false);
     setRows([]);
     void loadPage(gen, false);
@@ -4245,8 +4262,7 @@ export function AviaryEvents({
       const key = audioEventKey(event);
       if (keysRef.current.has(key)) return;
       keysRef.current.add(key);
-      liveKeysRef.current.add(key);
-      setRows((prev) => [{ ...event, key }, ...prev]);
+      setRows((prev) => [{ ...event, key, live: true }, ...prev]);
     });
     return () => {
       client.end(true);
@@ -4482,7 +4498,7 @@ export function AviaryEvents({
                       <li
                         key={e.key}
                         className={`flex items-center gap-3 rounded-sm border border-line bg-panel2 px-3 py-2.5${
-                          liveKeysRef.current.has(e.key) ? " event-new" : ""
+                          e.live ? " event-new" : ""
                         }`}
                       >
                         <TickerThumb
@@ -4619,6 +4635,7 @@ export function AviaryMask({
   // Session-persist the box under its own key (#410's pattern, the
   // life-list lesson: post-mount, never an initializer read).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setQuery(readSessionQuery(sessionStorage, MASK_QUERY_KEY));
   }, []);
   const setMaskQuery = useCallback((next: string) => {

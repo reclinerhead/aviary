@@ -23,6 +23,12 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      # Neither runs anywhere else: Vitest doesn't typecheck, `next build`'s
+      # type pass skips test files, and Next 16's build no longer lints. Lint
+      # is also the React Compiler's gate -- a react-hooks error is a
+      # component the compiler skips or mis-memoizes (#679).
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm lint
 
   # The station front door (#545) -- its own tiny Next app, its own lockfile.
   frontdoor:
@@ -42,6 +48,8 @@ jobs:
           cache-dependency-path: frontdoor/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm lint
 
   python:
     runs-on: ubuntu-latest

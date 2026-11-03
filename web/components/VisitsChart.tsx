@@ -23,7 +23,7 @@
 // disappears into it. The toggle is the viewer's, and each mode's span is
 // fixed within itself -- a clamp still never resizes a window.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DETAIL_SPAN_S,
   TAP_SLOP_PX,
@@ -87,37 +87,49 @@ export function VisitsChart({ sci }: { sci: string }) {
   // would ask for the same range twice. inFlight can't catch that.
   const askedBelow = useRef<number | null>(null);
   const fetchedFrom = useRef<number | null>(null);
+  // The same floor for render (the left wall, until first_ts is known). The
+  // ref stays the handlers' synchronous answer; render reads this copy,
+  // because a ref read in render makes the React Compiler skip the chart.
+  const [fetchedFloor, setFetchedFloor] = useState<number | null>(null);
 
-  const load = (from: number, to: number, replace: boolean) => {
-    inFlight.current += 1;
-    return fetch(
-      `/aviary/visits/${encodeURIComponent(sci)}?from=${Math.trunc(from)}&to=${Math.trunc(to)}`,
-      { cache: "no-store" },
-    )
-      .then((r) => (r.ok ? r.json() : { visits: [], first_ts: null }))
-      .then((b: Fetched) => {
-        const got = Array.isArray(b.visits) ? b.visits : [];
-        setFirstTs((prev) => prev ?? b.first_ts);
-        // Ranges are fetched once and merged additively -- history is
-        // immutable once past. Deduped by ts because adjacent chunks share
-        // their boundary second.
-        setVisits((prev) =>
-          replace ? got : [...new Set([...prev, ...got])].sort((a, b2) => a - b2),
-        );
-        // Reached the beginning of the record: stop asking. An empty answer
-        // means the same thing (nothing older exists) -- both are the wall.
-        if (b.first_ts !== null && from <= b.first_ts) setExhausted(true);
-        else if (!replace && got.length === 0) setExhausted(true);
-      })
-      .catch(() => setExhausted(true))
-      .finally(() => {
-        inFlight.current -= 1;
-        if (inFlight.current === 0 && !dragging.current) setFrozenCeil(null);
-      });
-  };
+  // Stable per species, so the mount effect can depend on it honestly.
+  const load = useCallback(
+    (from: number, to: number, replace: boolean) => {
+      inFlight.current += 1;
+      return fetch(
+        `/aviary/visits/${encodeURIComponent(sci)}?from=${Math.trunc(from)}&to=${Math.trunc(to)}`,
+        { cache: "no-store" },
+      )
+        .then((r) => (r.ok ? r.json() : { visits: [], first_ts: null }))
+        .then((b: Fetched) => {
+          const got = Array.isArray(b.visits) ? b.visits : [];
+          setFirstTs((prev) => prev ?? b.first_ts);
+          // Ranges are fetched once and merged additively -- history is
+          // immutable once past. Deduped by ts because adjacent chunks share
+          // their boundary second.
+          setVisits((prev) =>
+            replace
+              ? got
+              : [...new Set([...prev, ...got])].sort((a, b2) => a - b2),
+          );
+          // Reached the beginning of the record: stop asking. An empty answer
+          // means the same thing (nothing older exists) -- both are the wall.
+          if (b.first_ts !== null && from <= b.first_ts) setExhausted(true);
+          else if (!replace && got.length === 0) setExhausted(true);
+        })
+        .catch(() => setExhausted(true))
+        .finally(() => {
+          inFlight.current -= 1;
+          if (inFlight.current === 0 && !dragging.current) setFrozenCeil(null);
+        });
+    },
+    [sci],
+  );
 
   useEffect(() => {
     const n = Math.floor(Date.now() / 1000);
+    // The clock at mount (see `now`): client-only, so it lands post-mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe post-mount read (#679)
     setNow(n);
     const to = dayStart(n) + 86400; // through the end of today
     // The opening fetch is sized for OVERVIEW deliberately: 30 days plus a
@@ -125,6 +137,7 @@ export function VisitsChart({ sci }: { sci: string }) {
     // never waits on the network -- the data is already in hand.
     const from = to - VISITS_SPAN_S - VISITS_CHUNK_S;
     fetchedFrom.current = from;
+    setFetchedFloor(from);
     load(from, to, true).finally(() => setLoaded(true));
     // Species changes mean a different bird entirely: reset, don't merge.
     return () => {
@@ -134,8 +147,9 @@ export function VisitsChart({ sci }: { sci: string }) {
       setWindowEnd(null);
       askedBelow.current = null;
       fetchedFrom.current = null;
+      setFetchedFloor(null);
     };
-  }, [sci]);
+  }, [sci, load]);
 
   if (now === null) {
     // Reserve the footprint before the clock is known (house rule #1).
@@ -154,7 +168,7 @@ export function VisitsChart({ sci }: { sci: string }) {
   const live = windowEnd === null;
   // The left wall: where the record begins, or -- until first_ts is known --
   // as far back as we've fetched.
-  const oldest = firstTs ?? fetchedFrom.current ?? ts0;
+  const oldest = firstTs ?? fetchedFloor ?? ts0;
 
   const bars = detail
     ? hourBuckets(visits, ts0, ts1, firstTs)
@@ -184,6 +198,7 @@ export function VisitsChart({ sci }: { sci: string }) {
     askedBelow.current = floor;
     const from = floor - VISITS_CHUNK_S;
     fetchedFrom.current = from;
+    setFetchedFloor(from);
     load(from, floor - 1, false);
   };
 
