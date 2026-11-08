@@ -11,12 +11,22 @@
 # One origin, no names: a station can't assume a local DNS server exists, so
 # it answers on :80 whatever the visitor typed -- a bare IP, a router-assigned
 # name, or the front door's redirect (aviary.toddtech.llc/<station>, #545).
-# Everything is the web app (aviary-web, `next start` on :3000): the Aviary,
-# its weather tab, their API routes, /_next assets, /clips. `/` is the app's
-# own server-side redirect to /aviary (#628) -- the porch that used to own
-# `/` here (Homestead's tile page) retired at the cutover, so there is no
-# file_server and no root. The broker's websocket (:9001) is deliberately
-# NOT proxied: the browser dials it direct (lib/bus.ts's fallback).
+# Everything but two paths is the web app (aviary-web, `next start` on
+# :3000): the Aviary, its weather tab, their API routes, /_next assets,
+# /clips. `/` is the app's own server-side redirect to /aviary (#628) -- the
+# porch that used to own `/` here (Homestead's tile page) retired at the
+# cutover, so there is no file_server and no root. The broker's websocket
+# (:9001) is deliberately NOT proxied: the browser dials it direct
+# (lib/bus.ts's fallback).
+#
+# The two paths are the twins (#684): the Quarry at /quarry (:3020,
+# reclinerhead/quarry#101) and, in spring, the Conservatory at /conservatory
+# (:3010). Each serves itself under its path, built with Next's basePath, so
+# the route keeps the prefix (handle, not handle_path). The routes are
+# written in, not `import`ed from the twins' checkouts as orchid's are: an
+# import of a file that is not there fails the whole config, and on a box
+# two hours from a keyboard that would take the Aviary down with it. A route
+# to a port with nothing on it is a 502 on that path and nothing else.
 #
 # Plain HTTP on the LAN, auto_https off -- the house reasoning travels.
 
@@ -33,5 +43,15 @@
 	# clips (and their 206 range answers) pass through untouched.
 	encode zstd gzip
 
-	reverse_proxy 127.0.0.1:3000
+	# The twins, ahead of the catch-all. Same fixed ports on every box.
+	handle /quarry* {
+		reverse_proxy 127.0.0.1:3020
+	}
+	handle /conservatory* {
+		reverse_proxy 127.0.0.1:3010
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
 }
