@@ -1,19 +1,20 @@
 # /etc/sudoers.d/station-netwatch -- the station Wi-Fi watchdog's root
-# actions (issue #686), and nothing else. Install with a syntax check, never
-# a plain cp (a broken sudoers file locks sudo out):
+# actions (issue #686), and nothing else. A TEMPLATE: Servers/install-netwatch.sh
+# replaces WIFI_IFACE with this station's interface (wlx + the stick's MAC),
+# checks the result with visudo and installs it. Don't copy this file by hand.
 #
-#     sudo visudo -cf ~/aviary/Servers/station-netwatch.sudoers
-#     sudo install -m 0440 -o root -g root ~/aviary/Servers/station-netwatch.sudoers /etc/sudoers.d/station-netwatch
+# Exact names, no wildcards: the stations run sudo-rs (Ubuntu 26.04's sudo),
+# which rejects wildcards in command arguments. If the stick is swapped, its
+# interface name changes: re-run the installer. Until then, rungs 1 and 2 log
+# a sudo error and the reboot rung still works.
 #
 # Why sudo lines and not a root unit: todd's sudo asks for a password, and
 # flyway/netwatch.py lives in the todd-owned checkout that station-autodeploy
 # updates from GitHub. A root unit would run that tree as root every two
-# minutes -- a new todd-to-root path. These lines grant only: bounce a wl*
-# network device, unbind/bind a USB device, reboot. No file writes outside
-# those two sysfs files, no shell, no editor. (sudo's * also matches spaces,
-# so the nmcli lines could name extra devices -- a disconnect, never more.)
-todd ALL=(root) NOPASSWD: /usr/bin/nmcli device disconnect wl*, \
-                          /usr/bin/nmcli device connect wl*, \
-                          /usr/bin/tee /sys/bus/usb/drivers/usb/unbind, \
-                          /usr/bin/tee /sys/bus/usb/drivers/usb/bind, \
-                          /usr/bin/systemctl reboot
+# minutes -- a new todd-to-root path. These lines grant only: bounce the Wi-Fi
+# device, unbind/bind a USB device, reboot. No other file writes, no shell.
+todd ALL=(root) NOPASSWD: /usr/bin/nmcli device disconnect WIFI_IFACE
+todd ALL=(root) NOPASSWD: /usr/bin/nmcli device connect WIFI_IFACE
+todd ALL=(root) NOPASSWD: /usr/bin/tee /sys/bus/usb/drivers/usb/unbind
+todd ALL=(root) NOPASSWD: /usr/bin/tee /sys/bus/usb/drivers/usb/bind
+todd ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
