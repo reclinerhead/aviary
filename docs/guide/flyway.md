@@ -2,9 +2,9 @@
 
 > Spoke of the [Merle Technical Guide](../../TechnicalGuide.md) — read the hub first for the machine roster, quick start, and cross-cutting conventions.
 >
-> **Covers:** the station network layer — `flyway/` (the liveness watcher; the front-door check-in, #545) and `frontdoor/` (the public redirect site, the repo's one Vercel surface); epic #212 Phase 3's hub store + sync and Phase 4's bus bridge land here later
-> **Runs on:** pearl
-> **Related:** epic #212 (remote stations + The Flyway); issue #342
+> **Covers:** the station network layer — `flyway/` (the liveness watcher; the front-door check-in, #545; the station Wi-Fi watchdog, #686) and `frontdoor/` (the public redirect site, the repo's one Vercel surface); epic #212 Phase 3's hub store + sync and Phase 4's bus bridge land here later
+> **Runs on:** orchid (the liveness watcher); every station (the check-in, the Wi-Fi watchdog)
+> **Related:** epic #212 (remote stations + The Flyway); issues #342, #545, #686
 
 ## What the Flyway is
 
@@ -121,6 +121,68 @@ the QR sticker to the front-door URL — a person who bookmarks after
 landing bookmarks the IP again. The DHCP reservation becomes optional.
 Ops (units, hook, rollout, failure modes): `toddtech-infrastructure/servers/Birdhouse.md` § The
 units and step 13; Vercel project setup: `frontdoor/README.md`.
+
+## The Wi-Fi watchdog (`flyway/netwatch.py`, issue #686)
+
+The station recovering its own link, because the fault it exists for is
+invisible to everything else on the box. The MT7612U stick (`mt76x2u`) can
+go **half-dead**: still associated, still hearing beacons, signal fine, but
+data frames mostly lost. wpa_supplicant, NetworkManager and the driver all
+report a healthy link; DNS, Tailscale and the LAN all fail (kestrel
+2026-11-08 for 6.5 hours, 2026-10-11 for 90 minutes, each ended by a
+relative pulling the plug). The liveness watcher sees it from outside but
+can't reach in over the dead link, so the remedy lives on the station.
+
+- **Judged by what the link can do.** Every 2 minutes (the
+  `station-netwatch` oneshot + timer, `Servers/station-netwatch.*`): DNS for
+  the front door's host (from `MERLE_FRONTDOOR_URL`, a host the station
+  already talks to) plus a TCP connect to it on 443, both required (a
+  resolver cache can hide dead DNS, it can't fake a handshake). When that
+  fails, 4 pings to the default gateway are the LAN-only control: **clean
+  means 4/4**. A healthy LAN answers 4/4; a stick dropping most frames
+  almost never does.
+- **Episodes, not rounds.** The first failed round starts an episode; two
+  good rounds in a row end it, so one lucky round in a dark hour doesn't
+  reset the clock. The state (dark-since, rounds, rungs taken) is a JSON
+  file in `/run/station-netwatch/`, and every time in it is
+  `CLOCK_BOOTTIME`, so NTP stepping the wall clock at boot can't fake a long
+  dark spell, and a reboot clears both together.
+- **The ladder**, one rung per run, in order, each once per episode, at
+  least 10 minutes after the previous rung:
+  1. ~10 min dark: `nmcli device disconnect` + `connect` of the Wi-Fi
+     interface.
+  2. ~30 min dark: USB unbind + bind of the stick (reloads the mt76
+     firmware). The device name comes from the interface's
+     `/sys/class/net/<iface>/device` link (`…/1-1.1:1.0` → `1-1.1`;
+     birdhouse's is `2-1.3`), never hardcoded.
+  3. ~60 min dark: reboot, at most once per 6 hours. The wall-clock stamp
+     sits in `/var/lib/station-netwatch/last-reboot` because it has to
+     outlive the reboot.
+- **The gateway rule:** a single clean gateway round in an episode marks it
+  as the house's internet, not the stick, and caps it at rung 1. A T-Mobile
+  outage costs one reconnect, never a USB reset or a reboot. No rung fires
+  in the first 10 minutes after boot.
+- **Recovery reports itself.** A rung 1 or 2 that works brings the
+  connection back `up`, so the existing dispatcher hook fires
+  `station-checkin` and the front door has the address at once. The watchdog
+  never touches the check-in.
+- **Privilege: sudo lines, not a root unit.** The unit runs as `todd`. Its
+  three root actions go through `sudo -n` against the exact command lines in
+  `Servers/station-netwatch.sudoers` (nmcli disconnect/connect of a `wl*`
+  device, `tee` to the USB `unbind`/`bind` files, `systemctl reboot`).
+  todd's own sudo asks for a password, and the code is the todd-owned,
+  autodeployed checkout, so a root unit would make it a new todd→root path.
+  The worst these lines allow is a disconnect, a USB reset or a reboot.
+
+Thresholds are code, not config (`RUNG_AFTER_S`, `RUNG_GAP_S`,
+`BOOT_GRACE_S`, `REBOOT_GAP_S` in `netwatch.py`), the liveness watcher's
+posture. A good round logs nothing; a dark round logs one line; each rung
+logs what it did (`journalctl -u station-netwatch`). Desk check:
+`python -m flyway.netwatch --dry-run` runs one round and prints the
+interface, USB device, probe results and the rung it would take, without
+acting or writing state. The pure logic (episode tracking, rung choice,
+gaps, the gateway rule, boot grace, the sysfs → USB device mapping) is in
+`test_flyway_netwatch.py`. Install: `toddtech-infrastructure/servers/Birdhouse.md` § The units.
 
 ## What arrives here later (decided in epic #212, not yet built)
 
