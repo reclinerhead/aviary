@@ -182,7 +182,10 @@ logs what it did (`journalctl -u station-netwatch`). Desk check:
 interface, USB device, probe results and the rung it would take, without
 acting or writing state. The pure logic (episode tracking, rung choice,
 gaps, the gateway rule, boot grace, the sysfs → USB device mapping) is in
-`test_flyway_netwatch.py`. Install: `toddtech-infrastructure/servers/Birdhouse.md` § The units.
+`test_flyway_netwatch.py`. Install: `bash ~/aviary/Servers/install-netwatch.sh` as todd on the station
+(idempotent; dry run, sudoers with a `visudo` check, units, a first round,
+then proves the sudo lines need no password); ops context in
+`toddtech-infrastructure/servers/Birdhouse.md` § The units.
 
 ## What arrives here later (decided in epic #212, not yet built)
 
