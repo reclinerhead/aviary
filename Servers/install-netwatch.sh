@@ -4,6 +4,9 @@
 #
 #     bash ~/aviary/Servers/install-netwatch.sh
 #
+# Re-run it after swapping the Wi-Fi stick: the sudoers lines name the
+# interface (wlx + MAC) exactly, because sudo-rs allows no wildcards.
+#
 # Safe to re-run: every step overwrites with the repo's copy. It stops at the
 # first problem and says what it was. It never disconnects the Wi-Fi, so it
 # is safe over ssh.
@@ -32,14 +35,18 @@ out=$(cd "$AVIARY" && MERLE_FRONTDOOR_URL="$url" PYTHONDONTWRITEBYTECODE=1 \
       venv/bin/python -m flyway.netwatch --dry-run) \
   || die "the dry run crashed (output above)"
 echo "$out"
-grep -q 'iface wl' <<<"$out" || die "no Wi-Fi interface found"
+iface=$(sed -nE 's/.*iface (wl[a-z0-9]+),.*/\1/p' <<<"$out")
+[ -n "$iface" ] || die "no Wi-Fi interface found"
 grep -qE 'usb [0-9]' <<<"$out" || die "the Wi-Fi interface isn't a USB device"
 
-step "3/5  Sudo permissions (asks for your password)"
-sudo visudo -cf "$AVIARY/Servers/station-netwatch.sudoers" \
+step "3/5  Sudo permissions for $iface (asks for your password)"
+# The template names the interface exactly -- sudo-rs allows no wildcards.
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+sed "s/WIFI_IFACE/$iface/g" "$AVIARY/Servers/station-netwatch.sudoers" >"$tmp"
+sudo visudo -cf "$tmp" \
   || die "the sudoers file failed its syntax check; nothing installed"
-sudo install -m 0440 -o root -g root "$AVIARY/Servers/station-netwatch.sudoers" \
-  /etc/sudoers.d/station-netwatch
+sudo install -m 0440 -o root -g root "$tmp" /etc/sudoers.d/station-netwatch
 echo "ok"
 
 step "4/5  The timer"
@@ -51,9 +58,10 @@ sudo systemctl start station-netwatch.service || true  # one real round now; jud
 echo "ok"
 
 step "5/5  Check"
-sudo -k   # forget the password, so this proves the watchdog's lines need none
-sudo -n -l /usr/bin/systemctl reboot >/dev/null \
-  || die "the watchdog's sudo lines aren't working"
+# Ask sudo itself whether todd now holds the reboot line, password-free.
+granted=$(sudo -l -U todd 2>&1 || true)
+grep -q 'systemctl reboot' <<<"$granted" && grep -q 'NOPASSWD' <<<"$granted" \
+  || { echo "$granted"; echo "WARNING: sudo's listing above doesn't show the watchdog's reboot line as NOPASSWD -- everything else is installed; paste this output to Claude."; }
 systemctl is-active --quiet station-netwatch.timer || die "the timer isn't running"
 systemctl list-timers station-netwatch.timer --no-pager | head -2 || true
 if ! systemctl is-failed --quiet station-netwatch.service; then

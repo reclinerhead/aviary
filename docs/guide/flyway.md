@@ -168,11 +168,15 @@ can't reach in over the dead link, so the remedy lives on the station.
   never touches the check-in.
 - **Privilege: sudo lines, not a root unit.** The unit runs as `todd`. Its
   three root actions go through `sudo -n` against the exact command lines in
-  `Servers/station-netwatch.sudoers` (nmcli disconnect/connect of a `wl*`
-  device, `tee` to the USB `unbind`/`bind` files, `systemctl reboot`).
-  todd's own sudo asks for a password, and the code is the todd-owned,
-  autodeployed checkout, so a root unit would make it a new todd→root path.
-  The worst these lines allow is a disconnect, a USB reset or a reboot.
+  `Servers/station-netwatch.sudoers` (nmcli disconnect/connect of the
+  station's Wi-Fi device, `tee` to the USB `unbind`/`bind` files,
+  `systemctl reboot`). todd's own sudo asks for a password, and the code is
+  the todd-owned, autodeployed checkout, so a root unit would make it a new
+  todd→root path. The worst these lines allow is a disconnect, a USB reset
+  or a reboot. The stations run **sudo-rs** (Ubuntu 26.04's sudo), which
+  rejects wildcards in command arguments, so the file is a template: the
+  installer writes the station's exact interface name into it. Swapping the
+  stick changes that name, so re-run the installer afterwards.
 
 Thresholds are code, not config (`RUNG_AFTER_S`, `RUNG_GAP_S`,
 `BOOT_GRACE_S`, `REBOOT_GAP_S` in `netwatch.py`), the liveness watcher's
@@ -183,8 +187,9 @@ interface, USB device, probe results and the rung it would take, without
 acting or writing state. The pure logic (episode tracking, rung choice,
 gaps, the gateway rule, boot grace, the sysfs → USB device mapping) is in
 `test_flyway_netwatch.py`. Install: `bash ~/aviary/Servers/install-netwatch.sh` as todd on the station
-(idempotent; dry run, sudoers with a `visudo` check, units, a first round,
-then proves the sudo lines need no password); ops context in
+(idempotent; dry run, the sudoers template filled with the interface and
+checked by `visudo`, units, a first round, then asks sudo to list todd's
+password-free lines); ops context in
 `toddtech-infrastructure/servers/Birdhouse.md` § The units.
 
 ## What arrives here later (decided in epic #212, not yet built)
