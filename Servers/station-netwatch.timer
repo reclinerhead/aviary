@@ -1,0 +1,14 @@
+# The station Wi-Fi watchdog's cadence (issue #686): a round every 2 minutes.
+# The ladder's thresholds (10/30/60 min dark) and the boot grace are in
+# flyway/netwatch.py, not here -- the timer only sets how often it looks.
+[Unit]
+Description=Station Wi-Fi watchdog, every 2 minutes (issue #686)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=station-netwatch.service
+
+[Install]
+WantedBy=timers.target
