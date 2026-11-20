@@ -227,7 +227,7 @@ def effective_threshold(threshold, wind_mph):
 
 
 def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
-           allowed_species=None, rules=None):
+           allowed_species=None, rules=None, masked=None):
     """The gate. `predictions` is [(label, confidence), ...] for ONE window
     (BirdNET's top-k, any order); returns (accepted, windy) where `accepted`
     is the filtered [(label, confidence), ...] best-first and `windy` says
@@ -250,6 +250,15 @@ def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
     never quietly loosen it below the yard's bar. `always_include` bypasses
     only the region mask; speech, the threshold, and the caller's confirm
     hold still apply -- it is a one-species hole, not a way to run unmasked.
+
+    `masked` (issue #583) is the mask's ledger: pass a list and every
+    (label, confidence) the region mask ALONE removed is appended to it, best-
+    first -- a prediction that cleared the bar and its species' own floor,
+    is neither human nor noise, and carries no `exclude`. It reports and
+    never decides: the return value is the same with or without it, a
+    speech-killed window appends nothing, and running unmasked appends
+    nothing. The caller owns the counting and the logging; this module
+    stays pure.
     """
     ranked = sorted(predictions, key=lambda p: -p[1])
     if ranked and is_human(ranked[0][0]):
@@ -275,6 +284,8 @@ def decide(predictions, *, threshold=DEFAULT_THRESHOLD, wind_mph=None,
                 continue
         if (allowed_species is not None and sci not in allowed_species
                 and not (rule and rule.get("always_include"))):
+            if masked is not None:
+                masked.append((label, conf))
             continue
         accepted.append((label, conf))
     return accepted, windy
