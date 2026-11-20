@@ -384,6 +384,24 @@ def test_mask_rows_from_nothing_is_an_empty_list():
     assert earl.mask_rows_from([]) == []
 
 
+# What the mask discarded, as a journal line (issue #583). The format is
+# parsed back by listener/masked_report.py, so it is pinned here.
+
+def test_format_masked_sorts_by_windows_then_name():
+    tally = {
+        "Phasianus colchicus": ["Ring-necked Pheasant", 1, 0.72],
+        "Strix varia": ["Barred Owl", 3, 0.908],
+        "Accipiter cooperii": ["Cooper's Hawk", 1, 0.7],
+    }
+    assert earl.format_masked(tally, 39) == (
+        "masked (week 39): Barred Owl x3 best 0.91, "
+        "Cooper's Hawk x1 best 0.70, Ring-necked Pheasant x1 best 0.72")
+
+
+def test_format_masked_nothing_cut_is_no_line():
+    assert earl.format_masked({}, 39) is None
+
+
 def test_mask_payload_masked_shape():
     body = earl.mask_payload((42.29, -85.59), 43, _mask_rows(), now=1700)
     assert body == {

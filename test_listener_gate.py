@@ -207,6 +207,80 @@ def test_no_rules_and_empty_rules_are_todays_behavior():
         assert accepted == [(CHICKADEE, 0.88)]
 
 
+# --- the mask's ledger (issue #583) ------------------------------------------
+# decide(masked=list) reports what the region mask ALONE removed, so the
+# worker can count it. It reports and never decides.
+
+OWL = "Strix varia_Barred Owl"
+
+
+def test_masked_collects_exactly_the_mask_only_cuts():
+    cut = []
+    accepted, _ = gate.decide(
+        [(CHICKADEE, 0.88), (OWL, 0.91), (AFRICAN, 0.80)],
+        allowed_species=LOCALS, masked=cut)
+    assert accepted == [(CHICKADEE, 0.88)]
+    assert cut == [(OWL, 0.91), (AFRICAN, 0.80)]   # best-first, like accepted
+
+
+def test_masked_skips_what_another_rule_removed_first():
+    owl_floor = rules_for("Strix varia", threshold=0.95)
+    for predictions, rules in (
+            ([(OWL, 0.60)], None),                 # under the yard's bar
+            ([(OWL, 0.91)], owl_floor),            # under its own floor
+            ([(ENGINE, 0.95)], None),              # noise is never a bird
+            ([(OWL, 0.91), (SPEECH, 0.70)], rules_for("Strix varia",
+                                                      exclude=True)),
+    ):
+        cut = []
+        accepted, _ = gate.decide(predictions, allowed_species=LOCALS,
+                                  rules=rules, masked=cut)
+        assert accepted == []
+        assert cut == []
+
+
+def test_masked_skips_an_always_include_species_because_it_was_accepted():
+    cut = []
+    accepted, _ = gate.decide(
+        [(OWL, 0.91)], allowed_species=LOCALS, masked=cut,
+        rules=rules_for("Strix varia", always_include=True))
+    assert accepted == [(OWL, 0.91)]
+    assert cut == []
+
+
+def test_masked_is_empty_for_a_speech_killed_window():
+    # The invariant: a window speech killed is never counted as anything.
+    cut = []
+    accepted, _ = gate.decide([(SPEECH, 0.97), (OWL, 0.91)],
+                              allowed_species=LOCALS, masked=cut)
+    assert accepted == []
+    assert cut == []
+
+
+def test_masked_respects_the_wind_raised_bar():
+    windy_mph = gate.WIND_GATE_MPH + 5
+    cut = []
+    gate.decide([(OWL, 0.72)], wind_mph=windy_mph,
+                allowed_species=LOCALS, masked=cut)
+    assert cut == []          # 0.72 clears 0.65 but not the windy 0.75
+    gate.decide([(OWL, 0.76)], wind_mph=windy_mph,
+                allowed_species=LOCALS, masked=cut)
+    assert cut == [(OWL, 0.76)]
+
+
+def test_masked_is_empty_when_running_unmasked():
+    cut = []
+    accepted, _ = gate.decide([(OWL, 0.91)], allowed_species=None, masked=cut)
+    assert accepted == [(OWL, 0.91)]
+    assert cut == []
+
+
+def test_masked_never_changes_the_verdict():
+    predictions = [(CHICKADEE, 0.88), (OWL, 0.91), (SPEECH, 0.70)]
+    assert gate.decide(predictions, allowed_species=LOCALS, masked=[]) == \
+        gate.decide(predictions, allowed_species=LOCALS)
+
+
 # --- the confirm hold (issue #506) -------------------------------------------
 # The test contract's band: false positives clustered 0.25-0.61, true locals
 # 0.89-0.92, skip bar 0.85 -- a 0.72 one-off must never mint a life-list row

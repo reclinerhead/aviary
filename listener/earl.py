@@ -79,7 +79,9 @@
 # The region mask (D4, mandatory -- Phase 0 measured why): BirdNET's geo
 # model, given MERLE_LATLON and the BirdNET week (48-week year, 4 per month),
 # yields the species that plausibly occur here now; the gate discards
-# everything else. Recomputed when the week ticks over. If the geo model
+# everything else -- and what it discards is counted and logged per species
+# (issue #583: `masked (week N): ...`, read back by listener/masked_report.py).
+# Recomputed when the week ticks over. If the geo model
 # can't load (it downloads on first use), Earl runs UNMASKED and says so
 # loudly every status interval -- a missing mask thins nothing silently.
 #
@@ -379,6 +381,26 @@ def mask_rows_from(pairs):
     return [best[sci] for sci in sorted(best)]
 
 
+def format_masked(tally, week):
+    """What the region mask cut since the last report (issue #583), as one
+    journal line body -- or None when it cut nothing, so a quiet mask costs
+    no line. `tally` is {species_sci: [common, windows, best_conf]}, the
+    worker's count of windows in which gate.decide() reported that species
+    as removed by the mask alone. Species sort by windows (most first), then
+    name, and `week` is the mask's own BirdNET week:
+
+        masked (week 39): Barred Owl x3 best 0.91, Ring-necked Pheasant x1 best 0.72
+
+    The format is a contract: listener/masked_report.py parses it back out
+    of the journal, and a test round-trips the two."""
+    if not tally:
+        return None
+    entries = sorted(tally.values(), key=lambda e: (-e[1], e[0]))
+    return f"masked (week {int(week)}): " + ", ".join(
+        f"{common} x{windows} best {best:.2f}"
+        for common, windows, best in entries)
+
+
 def mask_payload(latlon, week, rows, error=None, now=None):
     """The audio/mask body (issue #593). `rows` None means the geo model
     could not be asked at all -- status "unmasked", an empty species list,
@@ -580,7 +602,19 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
     held_clips = {}
     held_await = []   # held paths still waiting on their post-roll window
     counters = {"windows": 0, "speech": 0, "notable": 0, "listen": 0,
-                "ungated": 0, "gate_ms": 0.0}
+                "ungated": 0, "gate_ms": 0.0, "masked": 0}
+    # What the region mask alone discarded since the last gate-stats line
+    # (#583): {species_sci: [common, windows, best_conf]}. Logged and reset
+    # on that cadence -- and before a week tick, so a line's week is always
+    # the week of the mask that did the cutting. In the journal only: no
+    # event, no clip, nothing persisted.
+    masked_tally = {}
+
+    def flush_masked():
+        line = format_masked(masked_tally, week)
+        if line:
+            log(line)
+        masked_tally.clear()
 
     # The operator's per-species rules (#506), re-read every RULES_RELOAD_S
     # so an Aviary edit lands within a minute without a restart. No
@@ -593,6 +627,7 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
     with model.predict_session(top_k=3, show_stats=None) as session:
         while True:
             if birdnet_week() != week:
+                flush_masked()
                 week = birdnet_week()
                 try:
                     allowed, mask = region_mask(*latlon, week)
@@ -736,7 +771,9 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                         f"{counters['speech']} speech-killed, "
                         f"{counters['notable']} notable, "
                         f"{counters['ungated']} ungated; "
-                        f"gate {ms:.0f} ms avg")
+                        f"gate {ms:.0f} ms avg; "
+                        f"{counters['masked']} masked")
+                    flush_masked()
 
                 if verdict == "speech":
                     prev_window = buf
@@ -778,9 +815,17 @@ def source_worker(name, argv, redacted, latlon, threshold, gate_floor,
                 # check, the invariant's second layer).
                 df = session.run_arrays((audio, gate.SAMPLE_RATE)).to_dataframe()
                 predictions = list(zip(df["species_name"], df["confidence"]))
+                cut = []
                 accepted, windy = gate.decide(
                     predictions, threshold=threshold, wind_mph=wind,
-                    allowed_species=allowed, rules=rules)
+                    allowed_species=allowed, rules=rules, masked=cut)
+                if cut:
+                    counters["masked"] += 1
+                    for label, conf in cut:
+                        sci, common = gate.split_label(label)
+                        entry = masked_tally.setdefault(sci, [common, 0, 0.0])
+                        entry[1] += 1
+                        entry[2] = max(entry[2], float(conf))
                 if not accepted:
                     prev_window = buf
                     continue
