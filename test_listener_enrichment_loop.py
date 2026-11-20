@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_enrichment_loop.py
+# aviary -- test_listener_enrichment_loop.py
 #
 # The crank that turns itself (issue #217) -- the loop's pure logic and its
 # wiring of the two passes' gates, with every wire faked. The load-bearing

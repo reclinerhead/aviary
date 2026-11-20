@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_narration_gateway.py
+# aviary -- test_narration_gateway.py
 #
 # The cloud writer (#632). What is pinned: the body that leaves the box is
 # exactly four keys and nothing else; the reply parser and every failure

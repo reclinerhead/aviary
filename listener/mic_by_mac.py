@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/mic_by_mac.py
+# aviary -- listener/mic_by_mac.py
 #
 # A network mic found by its MAC, not its address (issue #580). The Warbler32
 # at Kathy's announces nothing (no mDNS in its firmware, and `.local` failed

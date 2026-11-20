@@ -1,5 +1,5 @@
 // =============================================================================
-// project-squirrel -- frontdoor/lib/frontdoor.ts
+// aviary -- frontdoor/lib/frontdoor.ts
 //
 // The pure logic of the station front door (issue #545): slug and address
 // validation, the roster parser, constant-time token matching, and the

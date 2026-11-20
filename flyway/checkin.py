@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- flyway/checkin.py
+# aviary -- flyway/checkin.py
 #
 # The station front-door check-in (issue #545): a station telling the public
 # front door (aviary.toddtech.llc) where it lives on its home LAN, so the
@@ -138,7 +138,7 @@ def _post(url, token, payload):
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json",
                  "Authorization": f"Bearer {token}",
-                 "User-Agent": "project-squirrel station-checkin"},
+                 "User-Agent": "aviary station-checkin"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=POST_TIMEOUT_S) as resp:

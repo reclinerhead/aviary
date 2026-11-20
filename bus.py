@@ -1,49 +1,25 @@
 # =============================================================================
-# project-squirrel -- bus.py
+# aviary -- bus.py
 #
-# The Merle event bus: names and helpers for the MQTT (Mosquitto) topics that
-# connect the daemon, the narrator(s), the replay script, and the MCC dashboard.
-# Every process that touches the bus imports its topic names from here so a
-# typo'd topic string can't silently split the system in two.
+# The Aviary's event bus: names and helpers for the MQTT (Mosquitto) topics
+# that connect Earl, the bird record, Willard, the liveness watcher and the
+# web app. Every process that touches the bus imports its topic names from
+# here so a typo'd topic string can't silently split the system in two.
 #
-# Architecture rule (epic + issue #9): presence and events live on the bus;
-# nobody needs to know who else exists. The bus is the LIVE transport only --
-# SQLite remains the durable archive, so a message dropped while the broker is
-# down is never a lost record, just a moment nobody narrated.
+# Architecture rule: presence and events live on the bus; nobody needs to
+# know who else exists. The bus is the LIVE transport only -- SQLite remains
+# the durable archive, so a message dropped while the broker is down is a
+# moment nobody heard live, never a lost record.
+#
+# Every box runs its own broker: the house's on orchid (mqtt.lan), a
+# station's on its own loopback. Nothing crosses between them on the bus.
+#
+# This file came out of project-squirrel, where the same bus also carried the
+# vision daemon's driveway/* topics and the narrators' narration/* and
+# narrators/* topics. Those stay in squirrel's copy (#691); the namespaces
+# below are the ones the Aviary speaks, unchanged.
 #
 # Topics:
-#   driveway/events          daemon -> world     one JSON object per event
-#   driveway/frames/<id>/    daemon -> world     the event's still shot (issue
-#     {full,thumb}                               #90): raw JPEG bytes, NOT JSON
-#                                                -- full is the annotated
-#                                                stream-downscaled frame, thumb
-#                                                a ~320px copy. Fire-and-forget
-#                                                and non-retained, same ethos
-#                                                as events: a dropped frame is
-#                                                a moment nobody archived (the
-#                                                event row still exists), never
-#                                                a lost record. frame_archiver
-#                                                on pearl subscribes and writes
-#                                                them to disk, where the MCC
-#                                                can reach them with the
-#                                                daemon asleep
-#   narration/lines          narrator -> world   one JSON object per spoken line
-#   narration/journal/<id>   narrator -> world   the field journal: each
-#                                                narrator's last 50 spoken lines,
-#                                                RETAINED and republished whole
-#                                                (issue #58) -- a fresh dashboard
-#                                                tab gets the journal back the
-#                                                way a late joiner gets the
-#                                                weather. Namespaced per narrator
-#                                                (issue #80): a single shared
-#                                                topic republished whole by each
-#                                                narrator meant every republish
-#                                                clobbered the other's window
-#                                                -- the dashboard subscribes the
-#                                                wildcard and merges
-#   narrators/<id>/status    narrator presence   "online"/"offline", RETAINED
-#                            ("offline" is each narrator's MQTT Last Will, so a
-#                            crash flips it without anyone noticing the crash)
 #   weather/current          weather -> world    latest conditions, RETAINED
 #   weather/forecast         weather -> world    shaped forecast series, RETAINED
 #   weather/history          weather -> world    rolling 48h observed window at
@@ -54,11 +30,9 @@
 #                                                outlook, RETAINED, ~every 30 min;
 #                                                absent entirely when the LLM
 #                                                tier is off (MERLE_OLLAMA unset)
-#   weather/status           weather presence    "online"/"offline", RETAINED --
-#                            same contract as narrators/<id>/status ("offline"
-#                            is the Last Will), but in the weather namespace:
-#                            Willard is a reporter, not a narrator, and must
-#                            not light up the Field Journal's presence wildcard
+#   weather/status           weather presence    "online"/"offline", RETAINED
+#                            ("offline" is Willard's MQTT Last Will, so a
+#                            crash flips it without anyone noticing the crash)
 #   audio/events             Earl -> world       one JSON object per accepted
 #                                                audio detection (issue #172):
 #                                                species, confidence, source,
@@ -72,10 +46,8 @@
 #   audio/status             Earl presence       "online"/"offline", RETAINED
 #                                                ("offline" is the Last Will)
 #                                                -- the weather/status
-#                                                contract verbatim, own
-#                                                namespace for the same
-#                                                reason: Earl is not a
-#                                                narrator
+#                                                contract verbatim, in its
+#                                                own namespace
 #   audio/sources            Earl -> world       per-source health, RETAINED
 #                                                JSON ({state, last_window_ts}
 #                                                per source) republished on
@@ -99,53 +71,39 @@
 #                                                the Aviary can show what the
 #                                                yard could be hearing
 #   services/<name>/status   service presence    "online"/"offline", RETAINED --
-#                            the house-wide namespace (epic #110 Phase 4,
-#                            issue #147) for anything that is neither a
-#                            narrator nor a weather reporter.
-#                            Same contract as all the status topics above.
-#                            The pre-existing namespaces STAY WHERE THEY ARE
-#                            on purpose -- each was split so a wildcard
-#                            subscriber (the Field Journal's narrator roster)
-#                            picks up exactly its own kind; this one is
-#                            additive, never a migration target. First
-#                            tenant: services/merle-daemon/status (the
-#                            perception daemon -- its down state is NORMAL,
-#                            it only runs during bluejay sessions, so the
-#                            launchpad's Merle lamp is honest, not alarming)
+#                            the house-wide namespace (issue #147) for a
+#                            service that is neither Earl nor Willard. Same
+#                            contract as the status topics above. The older
+#                            namespaces stay where they are on purpose: each
+#                            was split so a wildcard subscriber picks up
+#                            exactly its own kind, and this one is additive,
+#                            never a migration target. The Aviary's tenant is
+#                            services/station-liveness/status (the watcher's
+#                            own presence, so a dead watcher is never
+#                            mistaken for a dead station)
 #   network/<station>/status station liveness    "online"/"offline", RETAINED --
-#                            spoken BY pearl ABOUT a remote station (epic
+#                            spoken BY the house ABOUT a remote station (epic
 #                            #212: a station's own Last Will fires on its own
-#                            loopback broker where pearl can't hear it, and
-#                            the tailnet ACL forbids the station pushing
-#                            anything here -- so pearl probes the station's
+#                            loopback broker where the house can't hear it,
+#                            and the tailnet ACL forbids the station pushing
+#                            anything here -- so orchid probes the station's
 #                            dashboard over the tailnet and publishes the
 #                            debounced verdict itself; flyway/liveness.py,
 #                            issue #342). Same payload contract as every
-#                            status topic above, its own namespace because
-#                            network/<station>/ is where epic #212 Phase 4
-#                            lands remote-station traffic
-#                            (network/<station>/audio/events) -- this watcher
-#                            is that bridge's first tenant, not a one-off
+#                            status topic above
 #
 # The weather topics are retained on purpose: weather is *state*, not a moment.
-# A late joiner (dashboard tab, restarted narrator) gets the latest report from
-# the broker instantly, so nobody needs an HTTP path or a poll loop. Nothing is
-# archived -- the station keeps reporting and a dropped report is refetched on
-# the next poll, so the bus stays live-transport-only.
+# A late joiner (a browser tab, a restarted Earl reading the wind) gets the
+# latest report from the broker instantly, so nobody needs an HTTP path or a
+# poll loop. Nothing is archived from the bus -- Willard keeps reporting and a
+# dropped report is refetched on the next poll.
 # =============================================================================
 
 import json
 import os
-import re
 
 import paho.mqtt.client as mqtt
 
-EVENTS_TOPIC = "driveway/events"
-FRAMES_WILDCARD = "driveway/frames/#"
-FRAME_VARIANTS = ("full", "thumb")
-NARRATION_TOPIC = "narration/lines"
-NARRATION_JOURNAL_WILDCARD = "narration/journal/+"
-NARRATOR_STATUS_WILDCARD = "narrators/+/status"
 WEATHER_CURRENT_TOPIC = "weather/current"
 WEATHER_FORECAST_TOPIC = "weather/forecast"
 WEATHER_HISTORY_TOPIC = "weather/history"
@@ -164,49 +122,16 @@ def service_status_topic(name):
 
 
 def station_status_topic(name):
-    """The liveness verdict pearl publishes about one remote station (epic
+    """The liveness verdict the house publishes about one remote station (epic
     #212; flyway/liveness.py). The name is validated by the watcher's
     SAFE_NAME guard before it ever reaches a topic path."""
     return f"network/{name}/status"
 
 
-def narrator_status_topic(mqtt_id):
-    return f"narrators/{mqtt_id}/status"
-
-
-def narrator_status_id(topic):
-    """"narrators/marlin/status" -> "marlin"; None for any other topic (the
-    dashboard's statusTopicId, needed Python-side since issue #88: a narrator
-    deferring the play-by-play watches its colleagues' presence topics)."""
-    m = re.fullmatch(r"narrators/([^/]+)/status", topic)
-    return m.group(1) if m else None
-
-
-def narration_journal_topic(mqtt_id):
-    return f"narration/journal/{mqtt_id}"
-
-
-def frame_topic(frame_id, variant):
-    """The still-shot topic for one event frame (issue #90). variant is "full"
-    (the annotated stream-downscaled JPEG) or "thumb" (~320px)."""
-    if variant not in FRAME_VARIANTS:
-        raise ValueError(f"unknown frame variant: {variant}")
-    return f"driveway/frames/{frame_id}/{variant}"
-
-
-def frame_topic_parts(topic):
-    """"driveway/frames/<id>/full" -> ("<id>", "full"); None for any other
-    topic (including unknown variants and ids with slashes -- the archiver
-    derives filenames from this, so anything shaped wrong dies here, not on
-    the filesystem)."""
-    m = re.fullmatch(r"driveway/frames/([^/]+)/(full|thumb)", topic)
-    return (m.group(1), m.group(2)) if m else None
-
-
 def broker_address():
     """Broker host/port from MERLE_MQTT ("host" or "host:port"). REQUIRED --
     no localhost default. The broker may live on another machine entirely
-    (bluejay's daemon publishes to pearl; a station's is loopback), so a
+    (a desk session publishing to the house's; a station's is loopback), so a
     silent localhost fallback meant a process that looked healthy while
     publishing into the void. Missing config fails at startup; a broker
     that's merely down is still tolerated (see EventPublisher)."""
@@ -224,7 +149,7 @@ def broker_address():
 
 class EventPublisher:
     """A fire-and-forget JSON publisher for processes whose real job is not
-    messaging (the daemon's perception loop, the replay script).
+    messaging (Willard's poll loop, the liveness watcher's probes).
 
     Resilience contract: constructing it is inert; start() connects in the
     background and paho keeps retrying forever, so the owner runs identically
@@ -237,7 +162,7 @@ class EventPublisher:
                                    client_id=client_id)
         self._status_topic = status_topic
         if status_topic:
-            # Presence, the narrator contract: retained "online" on every
+            # Presence, the status-topic contract: retained "online" on every
             # (re)connect, retained "offline" as the Last Will. The will fires
             # whenever the socket dies without an MQTT DISCONNECT -- a crash,
             # but also systemd's SIGTERM -- so `systemctl stop` flips the
@@ -264,9 +189,10 @@ class EventPublisher:
         self._client.publish(topic, json.dumps(payload), qos=0, retain=retain)
 
     def publish_bytes(self, topic, payload):
-        # Raw bytes on the wire (the frame topics, issue #90) -- same
-        # fire-and-forget contract as publish(), just without the JSON
-        # encoding a JPEG must not go through.
+        # Raw bytes on the wire -- same fire-and-forget contract as
+        # publish(), just without the JSON encoding a binary payload must
+        # not go through. Nothing in the Aviary publishes bytes today (clips
+        # are files + paths, D1 in listener/earl.py); kept as the idiom.
         self._client.publish(topic, payload, qos=0, retain=False)
 
     def close(self):

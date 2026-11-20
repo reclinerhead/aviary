@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/fun_facts.py
+# aviary -- listener/fun_facts.py
 #
 # The Aviary's fun-fact pool (issue #422): 3-5 short, true facts per bird,
 # drawn from its Wikipedia article by a Claude model behind the AI Gateway,

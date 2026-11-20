@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_species_analysis.py
+# aviary -- test_listener_species_analysis.py
 #
 # The analysis pass's computed half (issue #186) -- which is the whole point
 # of the design: the LLM is forbidden from doing arithmetic, so every number

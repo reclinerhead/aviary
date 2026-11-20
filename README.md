@@ -68,12 +68,12 @@ https://github.com/user-attachments/assets/6105475a-8c8b-46a3-a488-5347b5bb7b35
 | `web/` | The Next.js web app: the Aviary and its weather tab |
 | `frontdoor/` | The stations' stable public address (Next.js route handlers on Vercel) |
 | `Servers/` | Caddy and Mosquitto config, and the deploy scripts |
-| `docs/guide/` | The technical guide, one page per area |
+| `TechnicalGuide.md`, `docs/guide/` | The technical guide: the hub, and one page per area |
 | repo root | `bus.py` (the MQTT topic contract), `feeds.py` and `feeds*.yml` (the microphone registry), the model clients, `station.env.example`, and the pytest suites |
 
 ## Documentation
 
-The technical guide in [`docs/guide/`](docs/guide/) is the living record of how everything is built and why: [Earl](docs/guide/earl.md), [the Aviary](docs/guide/aviary.md), [the web app](docs/guide/web.md), [the weather post](docs/guide/weather.md) and [the Flyway](docs/guide/flyway.md). Non-trivial changes start as an issue and land as a pull request that closes it, so the issue history is the design history, back to the first commit in July 2026.
+The technical guide is the living record of how everything is built and why. Start at the hub, [`TechnicalGuide.md`](TechnicalGuide.md), then the page for each area in [`docs/guide/`](docs/guide/): [Earl](docs/guide/earl.md), [the Aviary](docs/guide/aviary.md), [the web app](docs/guide/web.md), [the weather post](docs/guide/weather.md) and [the Flyway](docs/guide/flyway.md). Non-trivial changes start as an issue and land as a pull request that closes it, so the issue history is the design history, back to the first commit in July 2026.
 
 ## License
 

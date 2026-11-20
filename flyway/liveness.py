@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- flyway/liveness.py
+# aviary -- flyway/liveness.py
 #
 # The station liveness watcher (issue #342, epic #212 Phase 1): a tiny
 # pearl-resident service that probes each remote station's dashboard over the

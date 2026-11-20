@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_notes_validate.py
+# aviary -- test_listener_notes_validate.py
 #
 # The check between the model and the store (issue #612). Every case here
 # is a sentence the model actually wrote into earl.db on orchid before the

@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/editor.py
+# aviary -- listener/editor.py
 #
 # The editor (issue #614): given every finding for one bird (findings.py)
 # and what the journal has already said about it, decide WHETHER an entry

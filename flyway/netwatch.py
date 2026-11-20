@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- flyway/netwatch.py
+# aviary -- flyway/netwatch.py
 #
 # The station Wi-Fi watchdog (issue #686): the station noticing, from inside,
 # that its link has gone half-dead, and climbing a recovery ladder instead of

@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/gate.py
+# aviary -- listener/gate.py
 #
 # Earl's pure decision core (issue #172): given what BirdNET said about one
 # 3-second window, decide what -- if anything -- goes on the bus. No I/O, no

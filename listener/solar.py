@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/solar.py
+# aviary -- listener/solar.py
 #
 # Sunrise and sunset for one place and one date (issue #614): the frame a
 # bird's day is actually lived in. The field notes used to bucket visits by

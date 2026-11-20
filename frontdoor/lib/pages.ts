@@ -1,5 +1,5 @@
 // =============================================================================
-// project-squirrel -- frontdoor/lib/pages.ts
+// aviary -- frontdoor/lib/pages.ts
 //
 // The three human-facing responses of the front door, rendered as HTML
 // strings from route handlers (no React tree in this app). They share the

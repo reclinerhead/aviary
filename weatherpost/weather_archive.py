@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- weather_archive.py
+# aviary -- weather_archive.py
 #
 # The seasonal archive (issue #105): every observation the station reports,
 # kept forever, at the same 5-minute resolution the rolling window keeps.

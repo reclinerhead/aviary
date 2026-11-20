@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_species_profile.py
+# aviary -- test_listener_species_profile.py
 #
 # The species enrichment pass's guarantees (issue #184): Wikipedia responses
 # parse honestly (missing pages, missing images, disambiguation pages all

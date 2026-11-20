@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- gateway_client.py
+# aviary -- gateway_client.py
 #
 # The cloud writer (issue #632): a Claude model behind the Vercel AI
 # Gateway, with the shape of the Ollama client beside it (ollama_client.py,

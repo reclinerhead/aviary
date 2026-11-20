@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- tools/showcase_probe.py
+# aviary -- tools/showcase_probe.py
 #
 # Phase 0 of issue #551 (species showcase: three best recordings per species,
 # each a different call). A ONE-SHOT MEASUREMENT, not a service: does

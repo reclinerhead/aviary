@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_clip_enhance.py
+# aviary -- test_listener_clip_enhance.py
 #
 # The clip enhancement pass (issue #190). Deterministic DSP whose regressions
 # are SILENT -- a wrong result survives both a build and a casual listen --

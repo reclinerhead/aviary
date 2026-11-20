@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_earl.py
+# aviary -- test_listener_earl.py
 #
 # The capture read's three answers (issue #201). Earl only ever recovered
 # from a capture that EXITED; a capture that stalls without exiting hung its

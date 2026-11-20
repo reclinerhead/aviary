@@ -1,47 +1,29 @@
 # Python
 .venv/
-# The boxes' repo venv (~/aviary/venv, #666). Root-anchored, like /frames/.
+# The boxes' repo venv (~/aviary/venv, #666). Root-anchored, so it can never
+# match a nested directory of the same name.
 /venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# SQLite stores -- mutable state, never committed: merle.db (the daemon's, on
-# bluejay) and weather.db (the seasonal weather archive on pearl, issue #105).
-# The archive is the one file here that CANNOT be regenerated -- gitignored
-# because it's state, not because it's disposable. See toddtech-infrastructure/servers/Pearl.md.
-# On every box earl.db and weather.db live in the checkout root (~/aviary,
+# SQLite stores -- mutable state, never committed: earl.db (the bird record)
+# and weather.db (the seasonal weather archive, issue #105). Neither can be
+# regenerated -- they are gitignored because they are state, not because they
+# are disposable. On every box both live in the checkout root (~/aviary,
 # #666), so never run `git clean -x` there: ignored is not protected.
+# Backups: toddtech-infrastructure/servers/Orchid.md.
 *.db
 *.db-wal
 *.db-shm
 
-# Weather service's rolling 48h window (mutable state on pearl -- see weather.py)
+# Willard's rolling 48h window (mutable state beside the stores -- see
+# weatherpost/weather.py)
 weather_history.json
 
-# Narrator journal windows (mutable state beside each narrator -- issue #58's
-# weather_history.json sibling, unignored by oversight until #95's watcher
-# refused to deploy over it)
-narration_journal.json
-
-# Event still-shot archive (frame_archiver.py's default MERLE_FRAMES_DIR on
-# pearl). ANCHORED to the repo root: a bare "frames/" also matches a nested
-# app/frames/ route, and once silently kept the web app's /frames route out
-# of git (the #90 deploy mystery).
-/frames/
-
-# Datasets, captures, and model weights -- large binaries stay out of git.
-# (Datasets live in Roboflow + local disk; weights are reproducible from training.)
-runs/
-training/
-hard_frames/
-debug_frames/
-snapshots/
-unknowns/
-*.pt
+# Stray images in the checkout root stay out of git (portraits and thumbs
+# live under MERLE_EARL_CLIPS, outside the checkout).
 *.jpg
-*.mp4
-*.cache
 
 # Node / Next.js (web/ has its own .gitignore; this is belt-and-suspenders)
 node_modules/
@@ -65,8 +47,3 @@ yarn-error.log*
 # Local machine config and secrets
 .claude/
 .env*
-
-# Agent instructions for this checkout only (Grok Build / project-squirrel-grok).
-# Kept out of git so it does not collide with Claude Code (or other) checkouts
-# of the same repo that carry their own agent files.
-AGENTS.md

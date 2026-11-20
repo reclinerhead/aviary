@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# project-squirrel -- Servers/autodeploy.sh
+# aviary -- Servers/autodeploy.sh
 #
 # The deploy watcher (issue #95; role-generalized in #303): a long-lived
 # loop that checks the configured deploy branch (MERLE_DEPLOY_BRANCH --

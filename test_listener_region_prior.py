@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_region_prior.py
+# aviary -- test_listener_region_prior.py
 #
 # The regional prior's pure half (#614): the due check that decides when the
 # loop spawns the BirdNET-venv half, the row shaping that makes every

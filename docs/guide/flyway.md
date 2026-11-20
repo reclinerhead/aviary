@@ -1,6 +1,6 @@
 # The Flyway
 
-> Spoke of the [Merle Technical Guide](../../TechnicalGuide.md) — read the hub first for the machine roster, quick start, and cross-cutting conventions.
+> Spoke of the [Aviary technical guide](../../TechnicalGuide.md) — read the hub first for the boxes, the services, the bus and the cross-cutting conventions.
 >
 > **Covers:** the station network layer — `flyway/` (the liveness watcher; the front-door check-in, #545; the station Wi-Fi watchdog, #686) and `frontdoor/` (the public redirect site, the repo's one Vercel surface); epic #212 Phase 3's hub store + sync and Phase 4's bus bridge land here later
 > **Runs on:** orchid (the liveness watcher); every station (the check-in, the Wi-Fi watchdog)
@@ -8,7 +8,7 @@
 
 ## What the Flyway is
 
-The network layer of epic #212: everything on the house orchestrator (orchid after #371 Phase 3; was pearl) that concerns the
+The network layer of epic #212: everything on the house box (orchid) that concerns the
 *remote* stations (birdhouse live at Mom's; kestrel live at Kathy's
 since 2026-08-29, station 2). A station is
 fully self-contained by principle — own broker, own `earl.db`, own dashboard
@@ -23,10 +23,10 @@ a package, not new root modules.
 
 ## The liveness watcher (`flyway/liveness.py`, issue #342)
 
-Pearl's word on whether each station is alive. The house's Last-Will idiom
+The house's word on whether each station is alive (it began on pearl, the house's first server, and runs on orchid). The house's Last-Will idiom
 can't answer this — a station's will fires on its *own* loopback broker
 (principle 1), and the tailnet ACL forbids the station pushing anything to
-pearl (principle 7) — so pearl polls, in the one direction the ACL allows,
+the house (principle 7) — so orchid polls, in the one direction the ACL allows,
 and speaks for the station on its own bus:
 
 - **Probes the station's dashboard, not its IP** — an HTTP 2xx/3xx from the
@@ -41,7 +41,7 @@ and speaks for the station on its own bus:
   consecutive missed probes — about 5 minutes at the default cadence —
   and back online after `ONLINE_AFTER` (2) consecutive answers. Her power,
   her internet, and our internet are three different outages that look
-  identical from pearl, and a flapping lamp is noise (the #175
+  identical from the house, and a flapping lamp is noise (the #175
   visit-debounce lesson, one domain over). The state machine (`step()`) is
   pure and unit-tested (`test_flyway_liveness.py`); "unknown" flips online
   on the *first* good probe — startup generosity carries no flap risk —
@@ -54,9 +54,9 @@ and speaks for the station on its own bus:
   (the standard Last-Will contract), so a dead watcher is visible as
   itself — never mistaken for a dead station, whose retained verdict would
   merely go stale.
-- **The audience is us, not her.** The lamp lives on *our* Homestead — the
-  Birdhouse tile in `launchpad/tiles.json` carries the topic in its
-  `presence` key (config-only, the #147 mechanism). She won't notice a
+- **The audience is us, not her.** The lamp lives on the house's launchpad
+  (Homestead, which is not in this repo): a station's tile there subscribes
+  to its `network/<station>/status` topic. She won't notice a
   dark dashboard; we need to, before it becomes a birthday-week house call.
 
 Config is the `bus.py` ethos — `MERLE_STATIONS` (required, no default;
@@ -192,14 +192,22 @@ checked by `visudo`, units, a first round, then asks sudo to list todd's
 password-free lines); ops context in
 `toddtech-infrastructure/servers/Birdhouse.md` § The units.
 
-## What arrives here later (decided in epic #212, not yet built)
+## What arrives here later (epic #556, not yet built)
 
-- **Phase 3 — the hub**: `flyway.db` beside pearl's `earl.db`; stations
-  push nightly digests and pull the family rollup over one tailnet port
-  (the single ACL rule `tag:station → pearl:<port>`). Store-and-forward,
-  station-local `earl.db` always the source of truth, every field from a
-  station validated as untrusted input.
-- **Phase 4 — the fun layer**: the Flyway tab in the Aviary, the bridge
-  republishing remote events as `network/<station>/audio/events` (lifers
-  near-real-time, the rest nightly), the weekly template-generated Flyway
-  Report. No LLM in the delivery path.
+The community layer: a hub store on orchid, station digests, and a Flyway
+tab in the Aviary. Epic #556 is the contract and supersedes the sketch epic
+#212 carried. The decisions that shape it:
+
+- **The house pulls, and the house pushes.** Orchid pulls each station's
+  digests and pushes the rollup back, so every connection is opened by the
+  house, the direction liveness already uses. No tailnet rule names a
+  station as a source, and none is added.
+- **Station-local `earl.db` is the source of truth; the hub is derived.**
+  `flyway.db` is rebuildable by pulling again. A species removed on a
+  station is removed at the hub.
+- **Every field from a station is untrusted input**, validated before it is
+  stored.
+- **A station is still self-contained.** The Flyway tab renders from the last
+  rollup stored locally, with an honest "as of" stamp. An unreachable hub
+  means stale data, never an error.
+- **No model in the delivery path.**

@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_weather.py
+# aviary -- test_weather.py
 #
 # Pure logic of the weather service: config parsing, station and OpenWeather
 # response -> bus payload mapping, and the rolling history window. The fetch

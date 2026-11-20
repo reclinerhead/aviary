@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_findings.py
+# aviary -- test_listener_findings.py
 #
 # The finding engine (#614). Every kind is tested the way species_analysis's
 # bucket_rates always was: PLANT an effect in a fixture, recover its value.
