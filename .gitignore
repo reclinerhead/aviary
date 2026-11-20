@@ -47,8 +47,3 @@ yarn-error.log*
 # Local machine config and secrets
 .claude/
 .env*
-
-# Agent instructions for this checkout only (Grok Build / project-squirrel-grok).
-# Kept out of git so it does not collide with Claude Code (or other) checkouts
-# of the same repo that carry their own agent files.
-AGENTS.md
