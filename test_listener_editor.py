@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_editor.py
+# aviary -- test_listener_editor.py
 #
 # The editor (#614): which finding leads, which support it, and whether an
 # entry is due at all. Its regressions are silent -- a bird written up every

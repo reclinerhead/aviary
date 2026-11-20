@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_mic_by_mac.py
+# aviary -- test_listener_mic_by_mac.py
 #
 # The MAC lookup behind kestrel's rear Warbler32 (issue #580). Two pure
 # pieces: pick_ip(), which reads `ip neigh` output, and sweep_targets(), which

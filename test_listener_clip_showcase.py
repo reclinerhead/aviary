@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_clip_showcase.py
+# aviary -- test_listener_clip_showcase.py
 #
 # The species showcase's pure half (issue #551): cosine distance, the
 # bestClips port pinned to the shared fixture both suites read, the greedy

@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_clip_vocal_fill.py
+# aviary -- test_listener_clip_vocal_fill.py
 #
 # Vocal-fill score + backfill worklist (issue #442). Pure DSP + pure SQL
 # worklist — silent regressions would crown the wrong "best recording".

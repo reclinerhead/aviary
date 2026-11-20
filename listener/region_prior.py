@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/region_prior.py
+# aviary -- listener/region_prior.py
 #
 # The regional prior (issue #614): BirdNET's own range model asked, once,
 # how likely each life-list species is HERE in each of its 48 weeks. That

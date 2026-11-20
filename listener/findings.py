@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/findings.py
+# aviary -- listener/findings.py
 #
 # The finding engine (issue #614, epic #611 Phase A): every fact the field
 # journal may lead with, computed here, each as one Finding --

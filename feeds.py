@@ -1,9 +1,9 @@
 # =============================================================================
-# project-squirrel -- feeds.py
+# aviary -- feeds.py
 #
-# Loader for feeds.yml, the project feed registry (issue #270): one YAML file
-# declares every video/audio feed in the house and which consumers may use
-# it, and this module is the one place it is parsed. Consumers dispatch on a
+# Loader for feeds.yml, the feed registry (issue #270): one YAML file
+# declares every audio feed a box listens to, and this module is the one
+# place it is parsed. Consumers dispatch on a
 # feed's `kind`, never its name -- the registry exists so no source name is
 # hardcoded again (listener/earl.py's source_commands() branched on
 # "amcrest" until #270, which made every new feed a code edit).
@@ -15,7 +15,8 @@
 # the strict loader below exists because a silent overwrite is exactly how a
 # copy-pasted camera block eats its neighbor), unknown kind, a kind missing
 # its required field, unknown keys (typo'd flags must not read as false),
-# non-boolean flags, and more than one naturalist feed.
+# and non-boolean flags. The vision daemon's `naturalist` flag left with the
+# daemon (#691), so a registry that still carries it fails as an unknown key.
 #
 # PLACES (issue #612): a feed may carry `place:`, the plain-English phrase
 # for where it listens ("the back of the house, over the driveway"), and the
@@ -36,10 +37,9 @@
 # when a microphone heard the bird. Absent is fine (a station whose owner
 # has not written one); a non-string or blank one raises.
 #
-# Import cost: yaml only. `yaml` sits on every venv in the fleet including
-# the Pi's two-package one (test_import_boundary.py's PI_DEPS) -- the one
-# venv that needs a deploy step is Earl's separate py3.11 venv on pearl
-# (toddtech-infrastructure/servers/Pearl.md).
+# Import cost: yaml only. It is in requirements.txt, so every repo venv has
+# it; Earl's separate py3.11 venv (~/earl-venv) is the one that needs it
+# installed as its own step.
 # =============================================================================
 
 import os
@@ -51,12 +51,12 @@ import yaml
 
 DEFAULT_PATH = Path(__file__).resolve().parent / "feeds.yml"
 
-# One flag per consumer. A future consumer (a transcriber, a second vision
-# daemon) adds its flag here and in the Feed fields -- nowhere else.
-CONSUMERS = ("earl", "naturalist")
+# One flag per consumer. A future consumer (a transcriber, say) adds its
+# flag here and in the Feed fields -- nowhere else.
+CONSUMERS = ("earl",)
 
-# What each kind must carry. A new kind (the rover's MJPEG video, #236) is
-# an entry here plus dispatch in the consumers that can use it.
+# What each kind must carry. A new kind is an entry here plus dispatch in
+# the consumers that can use it.
 REQUIRED_BY_KIND = {"rtsp": "url", "command": "cmd"}
 
 _ALLOWED_KEYS = {"kind", "url", "cmd", "place"} | set(CONSUMERS)
@@ -74,15 +74,14 @@ class Feed:
     url: str = None
     cmd: str = None
     earl: bool = False
-    naturalist: bool = False
     place: str = None
 
 
 @dataclass(frozen=True)
 class Place:
     """Where one `source` label listens from, for prose. `current` is True
-    for a feed Earl runs today (`earl: true`); a registry feed Earl no longer
-    runs (the rover) and every `retired_sources` entry are False. `phrase` is
+    for a feed Earl runs today (`earl: true`); a registry feed with
+    `earl: false` and every `retired_sources` entry are False. `phrase` is
     None when the registry gives none -- callers fall back to the label."""
     phrase: str = None
     current: bool = False
@@ -92,9 +91,7 @@ def redact_rtsp(url):
     """rtsp://user:pass@host/... -> rtsp://user:***@host/... A restream URL
     carries no credentials and passes through unchanged; the mask exists so
     a direct camera URL in an alternate registry (or MERLE_RTSP_URL) can
-    never leak into logs. Deliberately a twin of vision/frames.py's
-    redact_rtsp rather than an import: frames.py needs cv2, and this module
-    is imported by the lean listener package (the ENH_SUFFIX precedent)."""
+    never leak into logs."""
     return re.sub(r"(?<=//)([^/@:]+):[^@/]+@", r"\1:***@", url)
 
 
@@ -180,14 +177,8 @@ def load_feeds(path=None):
     FeedsError on anything malformed -- see the module header for the list."""
     path = Path(path) if path is not None else registry_path()
     data = _read(path)
-    feeds = {name: _build(path, name, spec)
-             for name, spec in data["feeds"].items()}
-    naturalists = [f.name for f in feeds.values() if f.naturalist]
-    if len(naturalists) > 1:
-        raise FeedsError(f"{path}: {len(naturalists)} feeds are flagged "
-                         f"naturalist ({naturalists}) -- the vision daemon "
-                         "has exactly one video source")
-    return feeds
+    return {name: _build(path, name, spec)
+            for name, spec in data["feeds"].items()}
 
 
 def places(path=None):
@@ -231,8 +222,7 @@ def yard(path=None):
 
 def feed(name, path=None):
     """One feed by name, or FeedsError if absent -- for a consumer that wants
-    a specific feed by name (the daemon's house-front eye, #274) rather than
-    by consumer flag."""
+    a specific feed by name rather than by consumer flag."""
     loaded = load_feeds(path)
     if name not in loaded:
         raise FeedsError(f"{registry_path() if path is None else path}: "
@@ -250,8 +240,8 @@ def feeds_for(consumer, path=None):
 
 
 def feed_for(consumer, path=None):
-    """The single feed flagged for `consumer` -- for consumers that take
-    exactly one (the naturalist). Zero is as loud as two."""
+    """The single feed flagged for `consumer` -- for a consumer that takes
+    exactly one. Zero is as loud as two."""
     matches = feeds_for(consumer, path)
     if len(matches) != 1:
         raise FeedsError(f"{registry_path() if path is None else path}: "

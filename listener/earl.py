@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/earl.py
+# aviary -- listener/earl.py
 #
 # Earl, the ears of the house (epic #133, issue #172): a pearl-resident daemon
 # that pulls raw audio from the yard's microphones, runs Cornell's BirdNET on
@@ -69,9 +69,8 @@
 #            bandwidth). Normally Frigate's credential-free go2rtc restream
 #            (#247); camera-side audio must be enabled in the cam's web UI
 #            (the Save button is load-bearing -- learned 2026-07-18).
-#   command  the feed's cmd verbatim (the rover's ssh+arecord pull of its
-#            USB camera mic -- plughw:0,0; Phase 0 D5: the JMTek dongle is
-#            silent).
+#   command  the feed's cmd verbatim (a station's arecord; a Warbler32
+#            found by its MAC, listener/mic_by_mac.py).
 # A dead source restarts with backoff forever; a source that can't start is
 # "offline" on audio/sources, never a dead Earl (per-source liveness is the
 # entire point of the sources topic).
@@ -104,8 +103,6 @@
 #                         local uncommitted registry whose rtsp feed carries
 #                         the direct camera URL, credentials and all --
 #                         rtsp_argv redacts them from every log line.
-#                         (pearl->merle ssh keys for the rover feed remain a
-#                         deploy step.)
 #   MERLE_EARL_THRESHOLD  BirdNET confidence floor (default
 #                         gate.DEFAULT_THRESHOLD)
 #   MERLE_EARL_GATE_FLOOR YAMNet routing floor for bird/notable (default

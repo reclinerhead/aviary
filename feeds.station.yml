@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- feeds.station.yml (issue #302, epic #212)
+# aviary -- feeds.station.yml (issue #302, epic #212)
 #
 # The STATION feed registry: what a standalone Aviary station's Earl listens
 # to. A station's env file points MERLE_FEEDS at this file (see

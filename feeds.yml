@@ -1,35 +1,30 @@
 # =============================================================================
-# project-squirrel -- feeds.yml (issue #270)
+# aviary -- feeds.yml (issue #270)
 #
-# Every video/audio feed in the house, and which consumers may use it. This
-# is the ONLY place a feed is declared -- consumers (feeds.py's callers)
-# dispatch on a feed's `kind`, never on its name, so adding camera #3 or
-# retiring a mic is an edit here, not a code change.
+# Every audio feed the house listens to. This is the ONLY place a feed is
+# declared -- Earl (feeds.py's caller) dispatches on a feed's `kind`, never
+# on its name, so adding camera #3 or retiring a mic is an edit here, not a
+# code change. The stations have their own files, feeds.station.yml and
+# feeds.kestrel.yml.
 #
 # Camera credentials live in Frigate's config (issue #247): Frigate holds the
 # only sessions to the cameras and republishes them credential-free at
-# rtsp://nvr.lan:8554/<name>. nvr.lan is a Pi-hole name for the NVR box
-# (pearl after #471). The hostname form resolves on the NVR itself
-# and on the consumer boxes, so this one committed file serves every machine.
+# rtsp://nvr.lan:8554/<name>. nvr.lan is a Pi-hole name for the NVR box, so
+# this committed file holds no address and survives the NVR moving.
 #
 # A feed's name doubles as its published source label (audio/events, the bird
 # record's `source` column, the clip directory under MERLE_EARL_CLIPS), so
-# renaming one is a data migration (#270's runbook: toddtech-infrastructure/servers/Pearl.md) --
-# choose names that will stay.
+# renaming one is a data migration -- choose names that will stay.
 #
 # Kinds:
-#   rtsp     -> url  the go2rtc restream; Earl pulls the audio track, the
-#                    naturalist decodes the video
+#   rtsp     -> url  the go2rtc restream; Earl pulls the audio track alone
 #   command  -> cmd  a shell capture producing s16le/48kHz/mono on stdout
-#                    (the garage mic's MAC lookup, the rover's ssh+arecord
-#                    pull)
+#                    (the garage mic's MAC lookup; a station's arecord)
 #
 # Flags (absent = false):
 #   earl: true        Earl runs BirdNET on this feed's audio. This flag is
 #                     the CPU dial -- flip house-front to false and redeploy
 #                     to drop Earl back to one camera, no code change.
-#   naturalist: true  the vision daemon's video source (exactly one feed;
-#                     feeds.py enforces it).
 #
 # Descriptive (issue #612):
 #   place: "..."      where this feed listens, in plain English, worded to
@@ -45,19 +40,15 @@
 # =============================================================================
 
 feeds:
-  # The rear camera (192.168.1.102, watching the driveway) -- Earl's first
-  # ear since #172 (as "amcrest" before #270) and the naturalist's one and
-  # only video source.
+  # The rear camera, watching the driveway -- Earl's first ear since #172
+  # (as "amcrest" before #270).
   house-rear:
     kind: rtsp
     url: rtsp://nvr.lan:8554/house-rear
     earl: true
-    naturalist: true
     place: the back of the house, over the driveway
 
-  # The front-door camera (192.168.1.173, added by #269). Audio only for
-  # now -- deliberately NOT a naturalist feed; squirrel/turkey detection
-  # stays a one-camera affair.
+  # The front-door camera (added by #269).
   house-front:
     kind: rtsp
     url: rtsp://nvr.lan:8554/house-front
@@ -79,33 +70,16 @@ feeds:
     earl: true
     place: the back of the garage
 
-  # The rover's own USB-camera mic, arecord piped over ssh (Phase 0 D5: the
-  # JMTek dongle is silent; plughw:0,0 is the camera). BatchMode + the
-  # ServerAlive pair are load-bearing (issue #201): merle powering down
-  # mid-capture half-opens the TCP, and without them ssh waits on the
-  # kernel's ~2-hour keepalive instead of exiting in ~15s.
-  #
-  # earl: false since #375 -- the rover's mic belongs to Field Mode now
-  # (#233). The device is single-open, and distance stopped freeing it the
-  # day the fleet joined the tailnet: MagicDNS resolves `merle` to its
-  # tailnet address, so this ssh pull follows the rover onto a park hotspot
-  # and holds plughw:0,0 there -- a field session then records NOTHING
-  # (measured 2026-08-01, twice). Flip back to true for a driveway era when
-  # the rover should be a third house ear again.
-  rover:
-    kind: command
-    cmd: >-
-      ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5
-      -o ServerAliveCountMax=3 todd@merle
-      arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw -q
-    earl: false
-    place: the rover, parked in the driveway
-
-# Labels still in the bird record whose feed is gone (issue #612). The
-# garage trial board (#512) published as `Warbler32` from Sep 1 to Oct 13,
-# 2026, and carried the Barred Owl almost alone; garage-rear replaced it.
+# Labels still in the bird record whose feed is gone (issue #612).
+#   Warbler32  the garage trial board (#512), Sep 1 to Oct 13, 2026. It
+#              carried the Barred Owl almost alone; garage-rear replaced it.
+#   rover      the rover's USB-camera mic, pulled over ssh while it sat in
+#              the driveway, Jul 18 to Aug 1, 2026 (388 sightings). Earl
+#              stopped running it in #375 and the rover belongs to MERLE now;
+#              the feed left this file in #691.
 retired_sources:
   Warbler32: the back of the garage
+  rover: the rover, parked in the driveway
 
 # The yard, in the owner's words (issue #636): what the field notes may tie
 # a bird's habits to. It describes the place, never the microphones (the

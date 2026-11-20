@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/species_profile.py
+# aviary -- listener/species_profile.py
 #
 # The species enrichment pass (epic #182 Phase 2, issue #184): real photos
 # and descriptions for the Aviary, from Wikipedia, keyed by the scientific
@@ -115,8 +115,8 @@ import urllib.parse
 import urllib.request
 
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
-USER_AGENT = ("MerleEarl/1.0 "
-              "( https://github.com/reclinerhead/project-squirrel )")
+USER_AGENT = ("AviaryEarl/1.0 "
+              "( https://github.com/reclinerhead/aviary )")
 WIKI_MAXLAG_S = 5
 FETCH_TIMEOUT_S = 20
 THROTTLE_S = 1.0     # ~17 species today; a polite crawl, not a hammer

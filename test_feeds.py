@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_feeds.py
+# aviary -- test_feeds.py
 #
 # The feed registry loader (issue #270). Two kinds of coverage:
 #
@@ -8,12 +8,12 @@
 #      registry's whole reason to exist is that a config typo dies at
 #      startup with a named complaint, never runs as a silent default.
 #
-#   2. The SHIPPED feeds.yml itself. The rover's ssh keepalives and the
-#      camera restream URLs used to be code (constants in earl.py) guarded
-#      by tests; now they are data, so the guard follows them here. If a
-#      registry edit drops ServerAliveInterval from the rover cmd, this file
-#      is what goes red -- not a 2 a.m. discovery that merle's half-open
-#      ssh waits on the kernel's 2-hour keepalive (issue #201).
+#   2. The SHIPPED registries themselves. The camera restream URLs and the
+#      capture commands used to be code (constants in earl.py) guarded by
+#      tests; now they are data, so the guard follows them here. If a
+#      registry edit drops the station mic's buffer or puts a LAN address
+#      in a file that ships to someone else's house, this file is what
+#      goes red.
 # =============================================================================
 
 import dataclasses
@@ -37,7 +37,6 @@ feeds:
     kind: rtsp
     url: rtsp://pearl:8554/cam-a
     earl: true
-    naturalist: true
   cam-b:
     kind: rtsp
     url: rtsp://pearl:8554/cam-b
@@ -56,28 +55,29 @@ def test_loads_and_filters_by_consumer(tmp_path):
     all_feeds = feeds.load_feeds(path)
     assert list(all_feeds) == ["cam-a", "cam-b", "mic-c"]   # file order
     assert [f.name for f in feeds.feeds_for("earl", path)] == ["cam-a", "mic-c"]
-    assert feeds.feed_for("naturalist", path).url == "rtsp://pearl:8554/cam-a"
 
 
 def test_flags_default_false(tmp_path):
     path = write_registry(tmp_path,
                           "feeds:\n  f:\n    kind: rtsp\n    url: rtsp://x\n")
     feed = feeds.load_feeds(path)["f"]
-    assert feed.earl is False and feed.naturalist is False
+    assert feed.earl is False
 
 
 def test_unknown_consumer_fails_loud(tmp_path):
     # A typo'd consumer name in CODE is as dangerous as one in config.
     path = write_registry(tmp_path, SAMPLE)
     with pytest.raises(feeds.FeedsError, match="unknown consumer"):
-        feeds.feeds_for("naturallist", path)
+        feeds.feeds_for("eral", path)
 
 
 def test_feed_for_zero_matches_is_as_loud_as_two(tmp_path):
     path = write_registry(tmp_path,
                           "feeds:\n  f:\n    kind: rtsp\n    url: rtsp://x\n")
     with pytest.raises(feeds.FeedsError, match="exactly one"):
-        feeds.feed_for("naturalist", path)
+        feeds.feed_for("earl", path)
+    with pytest.raises(feeds.FeedsError, match="exactly one"):
+        feeds.feed_for("earl", write_registry(tmp_path, SAMPLE))   # two
 
 
 # --- the fail-loud validation, one malformation at a time ---------------------
@@ -151,14 +151,14 @@ def test_duplicate_feed_names_raise(tmp_path):
         feeds.load_feeds(path)
 
 
-def test_two_naturalist_feeds_raise(tmp_path):
+def test_the_retired_naturalist_flag_is_an_unknown_key(tmp_path):
+    # The vision daemon's flag left with the daemon (#691). A registry that
+    # still carries it must fail loudly, not load with the flag ignored.
     path = write_registry(tmp_path,
                           "feeds:\n"
                           "  a:\n    kind: rtsp\n    url: rtsp://a\n"
-                          "    naturalist: true\n"
-                          "  b:\n    kind: rtsp\n    url: rtsp://b\n"
                           "    naturalist: true\n")
-    with pytest.raises(feeds.FeedsError, match="exactly one video source"):
+    with pytest.raises(feeds.FeedsError, match="unknown keys.*naturalist"):
         feeds.load_feeds(path)
 
 
@@ -187,8 +187,9 @@ def test_places_default_to_none_without_the_keys(tmp_path):
 
 def test_places_read_phrases_and_retired_sources(tmp_path):
     path = write_registry(tmp_path, SAMPLE.replace(
-        "    earl: true\n    naturalist: true",
-        "    earl: true\n    naturalist: true\n    place: the back porch")
+        "    url: rtsp://pearl:8554/cam-a\n    earl: true",
+        "    url: rtsp://pearl:8554/cam-a\n    earl: true\n"
+        "    place: the back porch")
         + "retired_sources:\n  old-mic: the old shed\n")
     got = feeds.places(path)
     assert got["cam-a"] == feeds.Place("the back porch", True)
@@ -260,18 +261,21 @@ def test_every_shipped_registry_names_every_live_ear():
         unnamed = [k for k, p in got.items() if p.current and not p.phrase]
         assert unnamed == [], (name, unnamed)
     house = feeds.places(feeds.DEFAULT_PATH)
-    # The garage trial board's rows (Sep 1 - Oct 13, 2026) are still in the
-    # house record and must be named rightly, as a retired post.
-    assert house["Warbler32"].current is False
-    assert house["rover"].current is False
+    # The garage trial board's rows (Sep 1 - Oct 13, 2026) and the rover's
+    # (Jul 18 - Aug 1, 2026) are still in the house record and must be named
+    # rightly, as retired posts. The rover's feed left the file in #691; its
+    # label did not leave the record.
+    assert house["Warbler32"] == feeds.Place("the back of the garage", False)
+    assert house["rover"] == feeds.Place(
+        "the rover, parked in the driveway", False)
+    assert "rover" not in feeds.load_feeds(feeds.DEFAULT_PATH)
 
 
 # --- the SHIPPED registry -----------------------------------------------------
 
 def test_shipped_registry_is_valid_and_names_the_house():
     shipped = feeds.load_feeds(feeds.DEFAULT_PATH)
-    assert set(shipped) >= {"house-rear", "house-front", "rover"}
-    assert feeds.feed_for("naturalist", feeds.DEFAULT_PATH).name == "house-rear"
+    assert list(shipped) == ["house-rear", "house-front", "garage-rear"]
     # Feed names double as published source labels (the bird record, clip
     # dirs) and as go2rtc restream paths -- the URL/name join must hold.
     for name in ("house-rear", "house-front"):
@@ -287,7 +291,7 @@ def test_shipped_garage_mic_is_found_by_mac():
     registry must hold the MAC and nothing else about the LAN."""
     garage = feeds.load_feeds(feeds.DEFAULT_PATH)["garage-rear"]
     assert garage.kind == "command"
-    assert garage.earl and not garage.naturalist
+    assert garage.earl
     argv = shlex.split(garage.cmd)
     assert argv[0].startswith("/") and argv[0].endswith("/python")
     assert argv[1:] == ["-m", "listener.mic_by_mac", "90:70:69:1a:1b:fc"]
@@ -303,9 +307,6 @@ def test_shipped_station_registry_is_a_working_ear():
     station = feeds.load_feeds(station_path)
     assert [f.name for f in feeds.feeds_for("earl", station_path)] == \
         ["window-mic"]
-    # A station runs no vision daemon; a naturalist flag here would send
-    # feed_for("naturalist") looking for a camera that doesn't exist.
-    assert not any(f.naturalist for f in station.values())
     argv = shlex.split(station["window-mic"].cmd)
     assert argv[0] == "arecord"
     assert "S16_LE" in argv and "48000" in argv
@@ -343,7 +344,6 @@ def test_shipped_kestrel_registry_is_two_ears():
     kestrel = feeds.load_feeds(kestrel_path)
     assert [f.name for f in feeds.feeds_for("earl", kestrel_path)] == \
         ["window-mic", "house-rear"]
-    assert not any(f.naturalist for f in kestrel.values())
     # The front ear is the shared station entry exactly, not a fork of it --
     # in every CAPTURE field. The place phrase (#612) is the one honest
     # difference: birdhouse's mic is in a window, kestrel's under an eave.
@@ -356,16 +356,3 @@ def test_shipped_kestrel_registry_is_two_ears():
     assert argv[0].startswith("/") and argv[0].endswith("/python")
     assert argv[1:] == ["-m", "listener.mic_by_mac", "90:70:69:1a:1c:a8"]
     assert not re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", rear.cmd), rear.cmd
-
-
-def test_shipped_rover_cmd_carries_ssh_keepalives():
-    """Layer 2 of the stall defenses (issue #201), now data: merle powered
-    off mid-capture half-opens the TCP, and the kernel's own keepalive is
-    ~2 hours away. ServerAlive* makes ssh exit in ~15s, landing the rover
-    in the same restart path. BatchMode keeps a keyless deploy from hanging
-    on a password prompt it can never answer."""
-    rover = feeds.load_feeds(feeds.DEFAULT_PATH)["rover"]
-    argv = shlex.split(rover.cmd)
-    assert "ServerAliveInterval=5" in argv
-    assert "ServerAliveCountMax=3" in argv
-    assert "BatchMode=yes" in argv

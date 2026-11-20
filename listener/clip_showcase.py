@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/clip_showcase.py
+# aviary -- listener/clip_showcase.py
 #
 # The species showcase (issue #551): the THREE best recordings of each
 # species, each a different call. Slot 1 is the Aviary's best recording

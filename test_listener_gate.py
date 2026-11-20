@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_gate.py
+# aviary -- test_listener_gate.py
 #
 # Earl's accept/reject decision (issue #172) is exactly the kind of pure logic
 # whose regressions are silent: a wrong verdict survives startup, the bus, and

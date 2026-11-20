@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_sightings.py
+# aviary -- test_listener_sightings.py
 #
 # The bird record's two guarantees (issue #172): every well-formed detection
 # becomes a sightings row, and first-heard is enforced BY THE STORE (INSERT

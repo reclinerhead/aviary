@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/enrichment_loop.py
+# aviary -- listener/enrichment_loop.py
 #
 # The Aviary tends itself (issue #217): one loop service -- pearl and every
 # station (#312) -- that runs the enrichment worklists, each whenever its

@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/clip_enhance.py
+# aviary -- listener/clip_enhance.py
 #
 # The clip enhancement pass (epic #182, issue #190; v2 in #599; de-hum in
 # #609): make a faint

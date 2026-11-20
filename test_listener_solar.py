@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_solar.py
+# aviary -- test_listener_solar.py
 #
 # The outside judge for listener/solar.py (#614): published times for the
 # house's own coordinates (the earl.db `locations` Home row), fetched from

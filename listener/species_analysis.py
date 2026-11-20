@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/species_analysis.py
+# aviary -- listener/species_analysis.py
 #
 # The field journal (epic #182 Phase 4 / #186, rebuilt as epic #611 Phase A,
 # issue #614, one note per bird since #626): what the yard's own record says
@@ -416,7 +416,7 @@ def mic_name(label, places):
 def is_live(label, places):
     """A source still listening. With no registry at all every source
     counts as live (no claim either way); with one, a label the registry
-    does not run -- retired, Earl-off like the rover, or unknown -- is not."""
+    does not run -- retired, `earl: false`, or unknown -- is not."""
     if not places:
         return True
     p = places.get(label)

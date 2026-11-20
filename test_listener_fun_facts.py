@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- test_listener_fun_facts.py
+# aviary -- test_listener_fun_facts.py
 #
 # The fun-fact pool's guarantees (issue #422): only facts whose quote is
 # really in the article survive, with no figure or absolute the quote

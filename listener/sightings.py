@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/sightings.py
+# aviary -- listener/sightings.py
 #
 # The bird record (issue #172): a tiny pearl-resident consumer -- the
 # frame_archiver.py mold -- that subscribes to audio/events and writes every

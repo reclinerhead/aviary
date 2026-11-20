@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/clip_vocal_fill.py
+# aviary -- listener/clip_vocal_fill.py
 #
 # Vocal-fill score for Earl visit clips (issue #442): how much of a clip
 # carries bird-band energy, not just a high-confidence chirp with silence

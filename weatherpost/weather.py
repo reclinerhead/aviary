@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- weather.py
+# aviary -- weather.py
 #
 # The weather post (issue #25, re-instrumented in #51): a pearl-resident
 # service that reads the driveway's OWN weather station -- an Ecowitt GW2000B

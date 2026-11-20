@@ -1,5 +1,5 @@
 # =============================================================================
-# project-squirrel -- listener/notes_validate.py
+# aviary -- listener/notes_validate.py
 #
 # The check between the model and the store (issue #612). The field notes'
 # whole safety property is "Python computes, the model narrates" -- and until
