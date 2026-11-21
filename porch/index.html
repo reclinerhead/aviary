@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home</title>
+<link rel="preload" href="/porch/fonts/zilla-slab-600-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/porch/fonts/atkinson-hyperlegible-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/porch/porch.css">
+<script src="/porch/porch.js" defer></script>
+</head>
+<body>
+  <!-- The porch (#696): the station's launcher, served by Caddy itself from
+       Servers/Caddyfile.station. Static on purpose: no build, no unit, no
+       port, so it stays up when any of the three apps is down. Everything
+       here is the default state; porch.js fills in the date, the greeting,
+       the station's name and this week's photos, and leaves the defaults
+       alone when it cannot. -->
+  <header class="bar">
+    <div class="wrap bar-row">
+      <div class="station">
+        <svg aria-hidden="true" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg>
+        <span class="station-name" id="station">Home</span>
+      </div>
+      <div class="today" id="today"></div>
+    </div>
+  </header>
+
+  <main class="wrap main">
+    <div class="hello">
+      <h1 class="greeting" id="greeting">Hello.</h1>
+      <p class="ask">Where would you like to go?</p>
+    </div>
+
+    <div class="tiles">
+        <a class="tile" id="tile-aviary" href="/aviary" aria-label="Aviary: the birds at your window">
+          <img class="tile-photo" src="/porch/covers/aviary.jpg" alt="">
+          <span class="dab">
+            <span class="dab-caption">Northern Cardinal</span>
+            <span class="dab-credit">photo: Rhododendrites · CC BY-SA 4.0 · via Wikipedia</span>
+          </span>
+          <span class="plate">
+            <span class="plate-inner">
+              <span class="plate-head">
+                <span class="plate-name">Aviary</span>
+                <span class="go">
+                  <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+                </span>
+              </span>
+              <span class="plate-line">The birds at your window</span>
+            </span>
+          </span>
+        </a>
+
+        <a class="tile" id="tile-quarry" href="/quarry" aria-label="Quarry: your rocks and minerals">
+          <img class="tile-photo" src="/porch/covers/quarry.jpg" alt="">
+          <span class="dab">
+            <span class="dab-caption">Amethyst on matrix</span>
+            <span class="dab-credit" hidden></span>
+          </span>
+          <span class="plate">
+            <span class="plate-inner">
+              <span class="plate-head">
+                <span class="plate-name">Quarry</span>
+                <span class="go">
+                  <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+                </span>
+              </span>
+              <span class="plate-line">Your rocks and minerals</span>
+            </span>
+          </span>
+        </a>
+
+        <a class="tile" id="tile-conservatory" href="/conservatory" aria-label="Conservatory: your plants and flowers">
+          <img class="tile-photo" src="/porch/covers/conservatory.jpg" alt="">
+          <span class="dab">
+            <span class="dab-caption">Lipstick echeveria</span>
+            <span class="dab-credit" hidden></span>
+          </span>
+          <span class="plate">
+            <span class="plate-inner">
+              <span class="plate-head">
+                <span class="plate-name">Conservatory</span>
+                <span class="go">
+                  <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+                </span>
+              </span>
+              <span class="plate-line">Your plants and flowers</span>
+            </span>
+          </span>
+        </a>
+    </div>
+
+    <footer class="foot">
+      <a class="powered" href="https://www.toddtech.llc" target="_blank" rel="noopener">Powered by <span class="brand">TODDTECH</span></a>
+    </footer>
+  </main>
+</body>
+</html>
