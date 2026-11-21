@@ -24,6 +24,8 @@ weather_history.json
 # Stray images in the checkout root stay out of git (portraits and thumbs
 # live under MERLE_EARL_CLIPS, outside the checkout).
 *.jpg
+# ...but the porch's three default tile photos are part of the page (#696).
+!porch/covers/*.jpg
 
 # Node / Next.js (web/ has its own .gitignore; this is belt-and-suspenders)
 node_modules/
