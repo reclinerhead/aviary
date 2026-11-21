@@ -69,7 +69,7 @@ function todaysFunFact(station: string, dismissedId: string | undefined) {
 }
 
 export default async function AviaryPage() {
-  const { stationName, title } = stationBrandingFromEnv();
+  const { stationName, title, onStation } = stationBrandingFromEnv();
   // The fun fact is picked HERE, not in the browser (#422): it is in the
   // first paint, so the strip never pops in after hydration, and the pool
   // never ships to the client. Cookies, because the server makes the pick.
@@ -78,5 +78,12 @@ export default async function AviaryPage() {
     stationName ?? "house",
     jar.get(FACT_DISMISS_COOKIE)?.value,
   );
-  return <Aviary stationName={stationName} title={title} funFact={funFact} />;
+  return (
+    <Aviary
+      stationName={stationName}
+      title={title}
+      onStation={onStation}
+      funFact={funFact}
+    />
+  );
 }

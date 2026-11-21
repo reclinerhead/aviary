@@ -35,6 +35,7 @@ import {
   dayAnchor,
   dayBuckets,
   mastheadSub,
+  pickCover,
   aviaryTitle,
   dayGroups,
   dayStart,
@@ -135,6 +136,7 @@ import {
   funFactNoticeId,
   isAmbientKind,
   localDayNumber,
+  weekKey,
 } from "./aviary";
 
 const bird = (over: Partial<BirdEvent> = {}): BirdEvent => ({
@@ -3590,5 +3592,64 @@ describe("fun facts (#422)", () => {
     expect(pickVisibleNotice(chain, (id) => id === "r1")?.id).toBe(
       fact.id,
     );
+  });
+});
+
+describe("weekKey (#697, the porch's cover week)", () => {
+  it("names the ISO week of a local date", () => {
+    expect(weekKey(new Date(2026, 10, 21))).toBe("2026-W47");
+  });
+
+  it("turns over between a Sunday and the Monday after it", () => {
+    expect(weekKey(new Date(2026, 10, 22))).toBe("2026-W47");
+    expect(weekKey(new Date(2026, 10, 23))).toBe("2026-W48");
+  });
+
+  it("holds through the whole of a day, to the last minute of Sunday", () => {
+    expect(weekKey(new Date(2026, 10, 16, 0, 0, 0))).toBe("2026-W47");
+    expect(weekKey(new Date(2026, 10, 22, 23, 59, 59))).toBe("2026-W47");
+  });
+
+  it("gives the days around New Year their ISO week-year", () => {
+    expect(weekKey(new Date(2026, 11, 28))).toBe("2026-W53");
+    expect(weekKey(new Date(2027, 0, 1))).toBe("2026-W53");
+    expect(weekKey(new Date(2027, 0, 3))).toBe("2026-W53");
+    expect(weekKey(new Date(2027, 0, 4))).toBe("2027-W01");
+    // A year whose first days belong to week 1 of the next.
+    expect(weekKey(new Date(2024, 11, 30))).toBe("2025-W01");
+  });
+});
+
+describe("pickCover (#697, this week's cover bird)", () => {
+  const birds = [
+    "Cardinalis cardinalis",
+    "Poecile atricapillus",
+    "Sitta carolinensis",
+    "Cyanocitta cristata",
+    "Zenaida macroura",
+    "Haemorhous mexicanus",
+  ].map((id) => ({ id }));
+  const monday = new Date(2026, 10, 16);
+
+  it("has nothing to pick from an empty list", () => {
+    expect(pickCover([], monday)).toBeNull();
+  });
+
+  it("picks the only candidate", () => {
+    expect(pickCover([birds[0]], monday)).toBe(birds[0]);
+  });
+
+  it("does not depend on the order the candidates arrive in", () => {
+    const pick = pickCover(birds, monday);
+    expect(pickCover([...birds].reverse(), monday)).toBe(pick);
+    expect(pickCover([...birds.slice(3), ...birds.slice(0, 3)], monday)).toBe(
+      pick,
+    );
+  });
+
+  it("holds one pick from Monday to Sunday", () => {
+    const pick = pickCover(birds, monday);
+    for (let d = 0; d < 7; d++)
+      expect(pickCover(birds, new Date(2026, 10, 16 + d, 13, 30))).toBe(pick);
   });
 });
