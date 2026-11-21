@@ -2824,11 +2824,59 @@ export function aviaryTitle(title?: string | null): string {
 export function stationBrandingFromEnv(): {
   stationName: string | undefined;
   title: string;
+  /** This box is a field station (#697): MERLE_STATION_ID is in the unit's
+   * environment there and nowhere else. A station has a porch at `/`
+   * (#696), so its masthead offers a way back to it; the house does not. */
+  onStation: boolean;
 } {
   const env = process.env;
   const stationName = (env["MERLE_STATION_NAME"] ?? "").trim() || undefined;
   const title = aviaryTitle(env["MERLE_AVIARY_TITLE"]);
-  return { stationName, title };
+  const onStation = (env["MERLE_STATION_ID"] ?? "").trim() !== "";
+  return { stationName, title, onStation };
+}
+
+// --- The porch's cover bird (#697) -------------------------------------------
+
+/**
+ * The number of the week a date's local calendar day falls in, counting
+ * Mondays: it goes up by one at Monday 00:00 local and never repeats. The
+ * arithmetic runs on UTC fields built from the local parts, so a
+ * daylight-saving hour never moves a day.
+ */
+export function weekIndex(date: Date): number {
+  const days = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
+  return Math.floor((days + 3) / 7); // day 0, 1970-01-01, was a Thursday
+}
+
+/** One round's shuffle: the highest hash of the round and the id first, ties to the lowest id. */
+function coverRound<T extends { id: string }>(candidates: readonly T[], round: number): T[] {
+  return candidates
+    .map((c) => ({ c, score: fnv1a(`${round}:${c.id}`) }))
+    .sort((a, b) => b.score - a.score || (a.c.id < b.c.id ? -1 : 1))
+    .map((s) => s.c);
+}
+
+/**
+ * This week's pick, or null with nothing to pick from. A rotation: the
+ * candidates are shuffled, shown one a week until each has had its turn, then
+ * shuffled again, so the same one never shows two weeks running and none
+ * waits longer than two rounds. The shuffle is a hash of the round and each
+ * id, so nothing is stored and the order the candidates arrive in does not
+ * matter. Where a round would open with the one the last round closed on,
+ * its first two trade places; two candidates simply alternate.
+ */
+export function pickCover<T extends { id: string }>(candidates: readonly T[], date: Date): T | null {
+  const n = candidates.length;
+  if (n === 0) return null;
+  if (n === 1) return candidates[0];
+  const week = weekIndex(date);
+  const turn = ((week % n) + n) % n;
+  if (n === 2) return [...candidates].sort((a, b) => (a.id < b.id ? -1 : 1))[turn];
+  const round = Math.floor(week / n);
+  const order = coverRound(candidates, round);
+  if (order[0].id === coverRound(candidates, round - 1)[n - 1].id) [order[0], order[1]] = [order[1], order[0]];
+  return order[turn];
 }
 
 
