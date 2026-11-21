@@ -1,0 +1,318 @@
+/* The porch (#696). Hand-written CSS in a static page: there is no build here
+   on purpose, so no Tailwind. The values are the Quarry's design language
+   (reclinerhead/quarry design/tokens.css), light and built for older eyes. */
+
+@font-face{font-family:"Zilla Slab";font-style:normal;font-weight:600;font-display:swap;src:url("/porch/fonts/zilla-slab-600-latin.woff2") format("woff2")}
+@font-face{font-family:"Atkinson Hyperlegible";font-style:normal;font-weight:400;font-display:swap;src:url("/porch/fonts/atkinson-hyperlegible-400-latin.woff2") format("woff2")}
+@font-face{font-family:"Atkinson Hyperlegible";font-style:normal;font-weight:700;font-display:swap;src:url("/porch/fonts/atkinson-hyperlegible-700-latin.woff2") format("woff2")}
+@font-face{font-family:"Courier Prime";font-style:normal;font-weight:400;font-display:swap;src:url("/porch/fonts/courier-prime-400-latin.woff2") format("woff2")}
+@font-face{font-family:"Courier Prime";font-style:normal;font-weight:700;font-display:swap;src:url("/porch/fonts/courier-prime-700-latin.woff2") format("woff2")}
+
+:root {
+  --ground: #F5F1EA;
+  --surface: #FFFFFF;
+  --label: #FFFDF8;
+  --line: #DDD3C3;
+  --line-2: #CFC3AF;
+  --line-strong: #A8977C;
+  --ink: #2A2622;
+  --ink-2: #5A5048;
+  --well: #3A342E;
+  --azurite: #2D5B8A;
+  --azurite-deep: #1F4468;
+  --font-display: "Zilla Slab", Georgia, serif;
+  --font-sans: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-label: "Courier Prime", "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; }
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+.wrap {
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* --- Top bar ------------------------------------------------------------ */
+
+.bar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.bar-row {
+  min-height: 72px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 24px;
+  row-gap: 4px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.station {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.station svg { flex: none; }
+
+.station-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 28px;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.today {
+  font-size: 18px;
+  color: var(--ink-2);
+}
+
+/* --- Greeting ----------------------------------------------------------- */
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.hello {
+  padding-top: 36px;
+  padding-bottom: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.greeting {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(34px, 4.2vw, 46px);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.ask {
+  margin: 0;
+  font-size: 21px;
+  color: var(--ink-2);
+}
+
+/* --- Tiles --------------------------------------------------------------
+   At 980 px and wider the three tiles share the height the bar, the greeting
+   and the footer leave, so the page does not scroll on a laptop or a
+   landscape tablet. Below that they stack at a fixed height. */
+
+.tiles {
+  flex: 1;
+  min-height: 400px;
+  max-height: 700px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px;
+}
+
+.tile {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 22px;
+  background: var(--well);
+  color: var(--ink);
+  text-decoration: none;
+  transition: box-shadow 160ms ease-out, border-color 160ms ease-out;
+}
+
+.tile:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 18px rgb(60 45 30 / 0.12);
+}
+
+.tile:focus-visible {
+  outline: 3px solid var(--azurite);
+  outline-offset: 4px;
+}
+
+.tile-photo {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 40%;
+}
+
+#tile-aviary .tile-photo { object-position: 50% 22%; }
+#tile-quarry .tile-photo { object-position: 50% 40%; }
+#tile-conservatory .tile-photo { object-position: 50% 45%; }
+
+/* A live cover is any photo the app picked, so it takes one safe position. */
+.tile .tile-photo.is-live { object-position: 50% 40%; }
+
+/* The caption dab: what is in the photo, and whose photo it is when that has
+   to be said. */
+.dab {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  max-width: calc(100% - 28px);
+  display: flex;
+  flex-direction: column;
+  background: var(--label);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-family: var(--font-label);
+  line-height: 1.4;
+}
+
+.dab-caption {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.dab-credit {
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.dab-credit[hidden] { display: none; }
+
+/* The label plate: a paper label with a gutter and an inner rule. */
+.plate {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  display: block;
+  background: var(--label);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 8px;
+  box-shadow: 0 2px 10px rgb(30 26 22 / 0.22);
+}
+
+.plate-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--line);
+  padding: 12px 16px 14px;
+}
+
+.plate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.plate-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(26px, 2.6vw, 36px);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.go {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--azurite);
+  color: #FFFFFF;
+}
+
+.tile:hover .go { background: var(--azurite-deep); }
+
+.plate-line {
+  font-size: 18px;
+  color: var(--ink-2);
+}
+
+/* --- Footer ------------------------------------------------------------- */
+
+.foot {
+  display: flex;
+  padding-top: 10px;
+  padding-bottom: 14px;
+}
+
+.powered {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 16px;
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 4px;
+}
+
+.powered:focus-visible {
+  outline: 3px solid var(--azurite);
+  outline-offset: 4px;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+
+/* --- Narrow screens ----------------------------------------------------- */
+
+@media (max-width: 979px) {
+  .tiles {
+    flex: none;
+    min-height: 0;
+    max-height: none;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+  .tile { height: 320px; }
+  .plate {
+    right: auto;
+    width: min(340px, calc(100% - 28px));
+  }
+  .plate-name { font-size: 30px; }
+}
+
+@media (max-width: 600px) {
+  .wrap { padding: 0 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile { transition: none; }
+}

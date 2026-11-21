@@ -1,4 +1,4 @@
-# The station's front door (issue #302, epic #212; the porch retired in #666).
+# The station's front door (issue #302, epic #212; the porch of #696).
 #
 # Canonical copy lives in the repo at Servers/Caddyfile.station; the live
 # copy is /etc/caddy/Caddyfile on the station. Same manual-sync posture as
@@ -11,13 +11,25 @@
 # One origin, no names: a station can't assume a local DNS server exists, so
 # it answers on :80 whatever the visitor typed -- a bare IP, a router-assigned
 # name, or the front door's redirect (aviary.toddtech.llc/<station>, #545).
-# Everything but two paths is the web app (aviary-web, `next start` on
-# :3000): the Aviary, its weather tab, their API routes, /_next assets,
-# /clips. `/` is the app's own server-side redirect to /aviary (#628) -- the
-# porch that used to own `/` here (Homestead's tile page) retired at the
-# cutover, so there is no file_server and no root. The broker's websocket
-# (:9001) is deliberately NOT proxied: the browser dials it direct
-# (lib/bus.ts's fallback).
+# Everything but the porch and two paths is the web app (aviary-web, `next
+# start` on :3000): the Aviary, its weather tab, their API routes, /_next
+# assets, /clips. The broker's websocket (:9001) is deliberately NOT proxied:
+# the browser dials it direct (lib/bus.ts's fallback).
+#
+# The porch (#696) is the launcher: one static page with a tile each for the
+# Aviary, the Quarry and the Conservatory, so the one bookmark a household
+# has reaches all three. Caddy serves it itself, from porch/ in this
+# checkout -- no build, no unit, no port, so it stays up when any of the
+# three apps is down. It claims exactly `/` and /porch/*, and nothing else
+# under the checkout is reachable: the matcher is the whole exposure, and
+# earl.db and weather.db sit in that root. /porch/station.json is rewritten
+# to porch/stations/<this box's hostname>.json, so the page learns whose
+# house it is in from a file, never from code; a hostname with no file is a
+# 404 there and the page says "Home". The Aviary's own `/` redirect to
+# /aviary (#628) is still in the app -- orchid needs it -- and simply never
+# answers here. Caddy reads the files as the caddy user, which needs to
+# traverse /home/todd (the runbook's setfacl line): without it every porch
+# request is a 403 and nothing logs why.
 #
 # The two paths are the twins (#684): the Quarry at /quarry (:3020,
 # reclinerhead/quarry#101) and, in spring, the Conservatory at /conservatory
@@ -42,6 +54,15 @@
 	# session. encode only touches compressible content types; portraits and
 	# clips (and their 206 range answers) pass through untouched.
 	encode zstd gzip
+
+	# The porch: `/` and /porch/*, static, from the checkout.
+	@porch path / /porch/*
+	handle @porch {
+		root * /home/todd/aviary
+		rewrite / /porch/index.html
+		rewrite /porch/station.json /porch/stations/{system.hostname}.json
+		file_server
+	}
 
 	# The twins, ahead of the catch-all. Same fixed ports on every box.
 	handle /quarry* {

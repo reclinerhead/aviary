@@ -45,6 +45,8 @@ Every box runs the first five. Each is a systemd unit running a module from the 
 
 `frontdoor/` is the one piece that runs somewhere else: a tiny Next.js app on Vercel that answers `https://aviary.toddtech.llc/<station>` with a redirect to the address the station last reported.
 
+On a station that redirect lands on `/`, which is the **porch**: a static launcher page served by Caddy from `porch/`, with a tile for the Aviary and one each for the two other apps a station hosts, the Quarry (`/quarry`) and the Conservatory (`/conservatory`), which live in their own repos. It is not a service: there is no unit and no build.
+
 ## The bus
 
 Each box has its own Mosquitto broker. `bus.py` holds every topic name, and every process imports its topics from there. The bus is live transport only; SQLite is the archive.
@@ -84,6 +86,7 @@ Because any merge restarts the Earl units, and a restarted listener is deaf for 
 | `flyway/` | `liveness.py`, `checkin.py`, `netwatch.py` |
 | `web/` | The Next.js app (App Router, TypeScript, Tailwind 4, pnpm). Its own lockfile and Vitest suite |
 | `frontdoor/` | The station front door (Next.js on Vercel). Its own lockfile and Vitest suite |
+| `porch/` | The station launcher: a static page Caddy serves at `/` on a station, with a tile each for the Aviary, the Quarry and the Conservatory. No build ([web.md](docs/guide/web.md)) |
 | `Servers/` | What a box runs or copies from the checkout: `autodeploy.sh`, `deploy-web.sh`, `Caddyfile.station`, the station Mosquitto config, the netwatch units |
 | `tools/`, `fixtures/` | A one-off probe and a test fixture |
 | repo root | `bus.py`, `feeds.py` and the registries (`feeds.yml` for the house, `feeds.station.yml`, `feeds.kestrel.yml`), the model clients (`ollama_client.py`, `gateway_client.py`), `station.env.example`, `requirements.txt`, and every `test_*.py` |
