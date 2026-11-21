@@ -2824,11 +2824,66 @@ export function aviaryTitle(title?: string | null): string {
 export function stationBrandingFromEnv(): {
   stationName: string | undefined;
   title: string;
+  /** This box is a field station (#697): MERLE_STATION_ID is in the unit's
+   * environment there and nowhere else. A station has a porch at `/`
+   * (#696), so its masthead offers a way back to it; the house does not. */
+  onStation: boolean;
 } {
   const env = process.env;
   const stationName = (env["MERLE_STATION_NAME"] ?? "").trim() || undefined;
   const title = aviaryTitle(env["MERLE_AVIARY_TITLE"]);
-  return { stationName, title };
+  const onStation = (env["MERLE_STATION_ID"] ?? "").trim() !== "";
+  return { stationName, title, onStation };
+}
+
+// --- The porch's cover bird (#697) -------------------------------------------
+
+/** The ISO-8601 week of a date's LOCAL calendar day, as "2026-W47". The week
+ * turns over at Monday 00:00 local, and the days around New Year take the
+ * ISO week-year (2027-01-01 is "2026-W53"). Calendar arithmetic on UTC
+ * fields built from the local parts, so a DST hour never moves a day. */
+export function weekKey(date: Date): string {
+  const day = new Date(
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+  );
+  // Thursday of this ISO week decides the week-year.
+  const weekday = (day.getUTCDay() + 6) % 7; // Monday 0 .. Sunday 6
+  day.setUTCDate(day.getUTCDate() - weekday + 3);
+  const year = day.getUTCFullYear();
+  const jan1 = Date.UTC(year, 0, 1);
+  const week = Math.floor((day.getTime() - jan1) / 86_400_000 / 7) + 1;
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+/** One week's ranking: highest score first, ties to the lowest id. */
+function coverRanking<T extends { id: string }>(
+  candidates: readonly T[],
+  week: string,
+): T[] {
+  return candidates
+    .map((c) => ({ c, score: fnv1a(`${week}:${c.id}`) }))
+    .sort((a, b) => b.score - a.score || (a.c.id < b.c.id ? -1 : 1))
+    .map((s) => s.c);
+}
+
+/** This week's cover: not stored and not random, so every device shows the
+ * same bird all week. Each candidate scores as a hash of the week and its
+ * id, and the highest wins. With two or more, a winner that also won the
+ * week before gives way to the runner-up. */
+export function pickCover<T extends { id: string }>(
+  candidates: readonly T[],
+  date: Date,
+): T | null {
+  if (candidates.length === 0) return null;
+  const ranked = coverRanking(candidates, weekKey(date));
+  if (ranked.length < 2) return ranked[0];
+  const lastWeek = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate() - 7,
+  );
+  const before = coverRanking(candidates, weekKey(lastWeek))[0];
+  return ranked[0].id === before.id ? ranked[1] : ranked[0];
 }
 
 
