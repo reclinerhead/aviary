@@ -204,18 +204,48 @@ body {
   line-height: 1.4;
 }
 
+/* One line on every tile, so the three dabs are the same height. */
 .dab-caption {
+  max-width: 100%;
+  overflow: hidden;
   font-weight: 700;
   font-size: 15px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
+/* Whose photo it is, when that has to be said (#704): a second slip of the
+   same paper under the dab, shown while the pointer is on the tile or the
+   tile has the keyboard. It takes no room in the dab. A screen that cannot
+   hover gets the credit in the footer instead. */
 .dab-credit {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -1px;
+  width: max-content;
+  max-width: 280px;
+  background: var(--label);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 3px 9px;
   font-weight: 400;
   font-size: 13px;
   color: var(--ink-2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+
+.tile:hover .dab-credit,
+.tile:focus-visible .dab-credit {
+  opacity: 1;
 }
 
 .dab-credit[hidden] { display: none; }
+
+@media (hover: none) {
+  .dab-credit { display: none; }
+}
 
 /* The label plate: a paper label with a gutter and an inner rule. */
 .plate {
@@ -279,8 +309,30 @@ body {
 
 .foot {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 24px;
   padding-top: 10px;
   padding-bottom: 14px;
+}
+
+/* Photo credits, only where a tile cannot show its own on hover. */
+.foot-credit {
+  display: none;
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--font-label);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+@media (hover: none) {
+  .foot-credit { display: block; }
+  .foot-credit[hidden] { display: none; }
+  /* Until the tiles are settled the line would name the default photo. */
+  .js .foot-credit:not(.is-ready) { visibility: hidden; }
 }
 
 .powered {
@@ -332,4 +384,5 @@ body {
   .tile { transition: none; }
   .js .tile.is-settled .tile-photo,
   .js .tile.is-settled .dab { transition: none; }
+  .dab-credit { transition: none; }
 }

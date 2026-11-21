@@ -108,6 +108,27 @@
   // and the caption from then on.
   function settle(tile) {
     tile.classList.add("is-settled");
+    updateFootCredit();
+  }
+
+  // The footer's credit line, for a screen that cannot hover (#704): every
+  // settled tile's caption and credit, where it has one. Empty, it is hidden.
+  function updateFootCredit() {
+    var line = document.getElementById("foot-credit");
+    if (!line) return;
+    var tiles = document.querySelectorAll(".tile");
+    var parts = [];
+    var pending = false;
+    Array.prototype.forEach.call(tiles, function (tile) {
+      if (!tile.classList.contains("is-settled")) { pending = true; return; }
+      var credit = tile.querySelector(".dab-credit");
+      if (!credit || credit.hidden || !credit.textContent) return;
+      var caption = tile.querySelector(".dab-caption").textContent;
+      parts.push(caption ? caption + ", " + credit.textContent : credit.textContent);
+    });
+    line.textContent = parts.join("; ");
+    line.hidden = parts.length === 0;
+    if (!pending) line.classList.add("is-ready");
   }
 
   function loadCover(cover, origin) {
