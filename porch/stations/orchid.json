@@ -1,0 +1,8 @@
+{
+  "station": "Orchid",
+  "greetingName": "Todd",
+  "apps": {
+    "quarry": "https://quarry.lan",
+    "conservatory": "https://conservatory.lan"
+  }
+}
