@@ -7,6 +7,11 @@
 
   var COVER_TIMEOUT_MS = 4000;
 
+  // How long a tile holds its photo back for its cover (#702). A cover that
+  // is slower than this still swaps in when it comes; the tile just stops
+  // waiting for it and shows the default meanwhile.
+  var HOLD_MS = 1500;
+
   // Each app answers { src, caption, credit } for this week's photo. The
   // routes are the apps' own (aviary #697 and its twins); this page ships
   // before them.
@@ -98,6 +103,13 @@
   // the twins' on). The photo is a path too, read against the app's own
   // origin when it has one: the twins there answer /media/..., at the root
   // of their own name.
+  // A tile is settled when the photo it will show is known: its cover has
+  // loaded, or there is none to wait for. The stylesheet shows the photo
+  // and the caption from then on.
+  function settle(tile) {
+    tile.classList.add("is-settled");
+  }
+
   function loadCover(cover, origin) {
     var tile = document.getElementById(cover.tile);
     if (!tile) return;
@@ -105,7 +117,7 @@
     getJson(cover.url, COVER_TIMEOUT_MS)
       .then(function (data) {
         var src = cleanString(data && data.src);
-        if (!src || !isLocalPath(src)) return;
+        if (!src || !isLocalPath(src)) return settle(tile);
         if (origin) src = origin + src;
         var caption = cleanString(data.caption);
         var credit = cleanString(data.credit);
@@ -121,14 +133,22 @@
           creditEl.textContent = credit || "";
           creditEl.hidden = !credit;
           dab.hidden = !caption && !credit;
+          settle(tile);
         };
+        probe.onerror = function () { settle(tile); };
         probe.src = src;
       })
-      .catch(function () {});
+      .catch(function () { settle(tile); });
   }
 
   setDate();
   setGreeting(null);
+  setTimeout(function () {
+    COVERS.forEach(function (cover) {
+      var tile = document.getElementById(cover.tile);
+      if (tile) settle(tile);
+    });
+  }, HOLD_MS);
   loadStation().then(function (origins) {
     COVERS.forEach(function (cover) { loadCover(cover, origins[cover.app]); });
   });

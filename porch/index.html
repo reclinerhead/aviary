@@ -6,8 +6,13 @@
 <title>Home</title>
 <link rel="preload" href="/porch/fonts/zilla-slab-600-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/porch/fonts/atkinson-hyperlegible-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<!-- With scripts on, each tile holds its photo back until its cover is
+     settled (#702), so the default is a fallback and not a first frame. The
+     class goes on before the first paint, and comes off again if the script
+     that would lift the hold never loads. -->
+<script>document.documentElement.className = "js";</script>
 <link rel="stylesheet" href="/porch/porch.css">
-<script src="/porch/porch.js" defer></script>
+<script src="/porch/porch.js" defer onerror="document.documentElement.className = ''"></script>
 </head>
 <body>
   <!-- The porch (#696): the station's launcher, served by Caddy itself from
