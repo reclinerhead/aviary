@@ -7,10 +7,13 @@
 
   var COVER_TIMEOUT_MS = 4000;
 
-  // How long a tile holds its photo back for its cover (#702). A cover that
-  // is slower than this still swaps in when it comes; the tile just stops
-  // waiting for it and shows the default meanwhile.
-  var HOLD_MS = 1500;
+  // How long a tile holds its photo back for its cover (#702, #708). A tile
+  // whose app answers "no cover" stops waiting at once; this is the wait for
+  // a cover that is on its way. Past it the tile shows its default and keeps
+  // it for this visit: a page that has painted does not change. The late
+  // photo still finishes loading, into the browser's cache, so the next
+  // visit has it in time.
+  var HOLD_MS = 4000;
 
   // Each app answers { src, caption, credit } for this week's photo. The
   // routes are the apps' own (aviary #697 and its twins); this page ships
@@ -103,12 +106,32 @@
   // the twins' on). The photo is a path too, read against the app's own
   // origin when it has one: the twins there answer /media/..., at the root
   // of their own name.
-  // A tile is settled when the photo it will show is known: its cover has
-  // loaded, or there is none to wait for. The stylesheet shows the photo
-  // and the caption from then on.
+  // A tile is settled when the photo it will show has loaded: its cover,
+  // or its default. The stylesheet shows the photo and the caption from
+  // then on, and nothing replaces them.
   function settle(tile) {
     tile.classList.add("is-settled");
     updateFootCredit();
+  }
+
+  // A tile is decided once it is known which photo it will show. The first
+  // caller wins: a cover that loads after its tile went to the default is
+  // not swapped in.
+  function decide(tile) {
+    if (tile.getAttribute("data-decided")) return false;
+    tile.setAttribute("data-decided", "1");
+    return true;
+  }
+
+  // The default photo is asked for only here (#708), so it costs nothing on
+  // a load where the cover comes.
+  function showDefault(tile) {
+    if (!decide(tile)) return;
+    var photo = tile.querySelector(".tile-photo");
+    var src = photo.getAttribute("data-default");
+    if (!src || photo.getAttribute("src")) return settle(tile);
+    photo.onload = photo.onerror = function () { settle(tile); };
+    photo.src = src;
   }
 
   // The footer's credit line, for a screen that cannot hover (#704): every
@@ -138,13 +161,14 @@
     getJson(cover.url, COVER_TIMEOUT_MS)
       .then(function (data) {
         var src = cleanString(data && data.src);
-        if (!src || !isLocalPath(src)) return settle(tile);
+        if (!src || !isLocalPath(src)) return showDefault(tile);
         if (origin) src = origin + src;
         var caption = cleanString(data.caption);
         var credit = cleanString(data.credit);
         // Swap only once the photo has loaded, so a tile is never empty.
         var probe = new Image();
         probe.onload = function () {
+          if (!decide(tile)) return;
           var photo = tile.querySelector(".tile-photo");
           var dab = tile.querySelector(".dab");
           var creditEl = tile.querySelector(".dab-credit");
@@ -156,10 +180,10 @@
           dab.hidden = !caption && !credit;
           settle(tile);
         };
-        probe.onerror = function () { settle(tile); };
+        probe.onerror = function () { showDefault(tile); };
         probe.src = src;
       })
-      .catch(function () { settle(tile); });
+      .catch(function () { showDefault(tile); });
   }
 
   setDate();
@@ -167,7 +191,7 @@
   setTimeout(function () {
     COVERS.forEach(function (cover) {
       var tile = document.getElementById(cover.tile);
-      if (tile) settle(tile);
+      if (tile) showDefault(tile);
     });
   }, HOLD_MS);
   loadStation().then(function (origins) {

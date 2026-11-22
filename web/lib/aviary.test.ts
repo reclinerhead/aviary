@@ -98,6 +98,7 @@ import {
   smoothPath,
   smoothSegments,
   speciesImageName,
+  speciesCoverName,
   speciesThumbName,
   LIFE_LIST_QUERY_KEY,
   readLifeListQuery,
@@ -425,6 +426,31 @@ describe("portraitUrl", () => {
   });
 });
 
+describe("speciesCoverName", () => {
+  it("mirrors the pass's cover_name exactly", () => {
+    expect(speciesCoverName("Cardinalis_cardinalis.jpg")).toBe(
+      "Cardinalis_cardinalis-cover.jpg",
+    );
+    expect(speciesCoverName("a_b-c.jpg")).toMatch(/^[A-Za-z0-9_-]+\.jpg$/);
+  });
+
+  it("is asked for by portraitUrl's cover option, with the version", () => {
+    expect(portraitUrl("Cardinalis cardinalis", { cover: true })).toBe(
+      "/aviary/portrait/Cardinalis%20cardinalis?size=cover",
+    );
+    expect(
+      portraitUrl("Cardinalis cardinalis", { cover: true, v: "1-2.3-4" }),
+    ).toBe("/aviary/portrait/Cardinalis%20cardinalis?size=cover&v=1-2.3-4");
+  });
+
+  it("changes the cover URL's version when the sibling lands", () => {
+    const full = { mtimeMs: 1000, size: 200 };
+    expect(portraitVersion(full, null)).not.toBe(
+      portraitVersion(full, { mtimeMs: 3000, size: 90 }),
+    );
+  });
+});
+
 describe("speciesThumbName", () => {
   it("mirrors the pass's thumb_name exactly", () => {
     expect(speciesThumbName("Cardinalis_cardinalis.jpg")).toBe(
@@ -548,7 +574,11 @@ describe("removalPlan", () => {
     // thumb never written is a missing file the delete loop forgives.
     expect(removalPlan([], "Aix_sparsa.jpg")).toEqual({
       moves: [],
-      deletes: ["species/Aix_sparsa.jpg", "species/Aix_sparsa-thumb.jpg"],
+      deletes: [
+        "species/Aix_sparsa.jpg",
+        "species/Aix_sparsa-thumb.jpg",
+        "species/Aix_sparsa-cover.jpg",
+      ],
     });
   });
   it("refuses a portrait filename that could step off the shelf", () => {

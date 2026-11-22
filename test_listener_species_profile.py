@@ -1120,3 +1120,63 @@ def test_write_thumb_missing_original_is_a_status_not_a_raise(tmp_path):
     _shelf(tmp_path)
     assert species_profile.write_thumb(
         str(tmp_path), "Gone_Bird.jpg") == "missing"
+
+
+# --- The porch-sized cover sibling (#708) ------------------------------------
+
+def test_cover_name_mirrors_the_web_route():
+    # The TS mirror (speciesCoverName in lib/aviary.ts) asserts this pair.
+    assert species_profile.cover_name(
+        species_profile.image_filename("Cardinalis cardinalis")
+    ) == "Cardinalis_cardinalis-cover.jpg"
+
+
+def test_cover_size_caps_at_960_and_never_upscales():
+    cap = species_profile.COVER_WIDTH
+    assert cap == 960
+    assert species_profile.thumb_size(1536, 2048, cap=cap) == (960, 1280)
+    assert species_profile.thumb_size(960, 1536, cap=cap) == (960, 1536)
+    assert species_profile.thumb_size(640, 1024, cap=cap) == (640, 1024)
+
+
+def test_cover_worklist_wants_missing_and_stale_siblings(tmp_path):
+    shelf = _shelf(tmp_path, "A.jpg", "A-thumb.jpg", "B.jpg", "B-cover.jpg",
+                   "C.jpg", "C-cover.jpg")
+    now = 1_700_000_000
+    for name in ("A.jpg", "A-thumb.jpg", "B.jpg", "B-cover.jpg",
+                 "C-cover.jpg"):
+        os.utime(shelf / name, (now, now))
+    os.utime(shelf / "C.jpg", (now + 60, now + 60))
+    # A has a thumb but no cover: one sibling does not stand in for the other.
+    assert species_profile.cover_worklist(str(tmp_path)) == ["A.jpg", "C.jpg"]
+
+
+def test_no_worklist_takes_a_sibling_for_an_original(tmp_path):
+    # A -cover file must not earn a -cover-thumb, nor a -thumb a -thumb-cover.
+    _shelf(tmp_path, "A-thumb.jpg", "A-cover.jpg", "notes.txt")
+    assert species_profile.thumb_worklist(str(tmp_path)) == []
+    assert species_profile.cover_worklist(str(tmp_path)) == []
+
+
+def test_write_cover_writes_a_capped_progressive_sibling(tmp_path):
+    PIL = pytest.importorskip("PIL.Image")
+    shelf = tmp_path / species_profile.SPECIES_DIR
+    shelf.mkdir()
+    src = PIL.new("RGB", (species_profile.COVER_WIDTH * 2, 400), "#804000")
+    src.save(shelf / "Big_Bird.jpg", "JPEG")
+    before = (shelf / "Big_Bird.jpg").read_bytes()
+    assert species_profile.write_cover(str(tmp_path), "Big_Bird.jpg") == "cover"
+    with PIL.open(shelf / "Big_Bird-cover.jpg") as out:
+        assert (out.width, out.height) == (species_profile.COVER_WIDTH, 200)
+        assert out.info.get("progressive")
+    assert (shelf / "Big_Bird.jpg").read_bytes() == before   # read-only input
+    assert species_profile.cover_worklist(str(tmp_path)) == []
+    # The thumb is its own sibling, still owed.
+    assert species_profile.thumb_worklist(str(tmp_path)) == ["Big_Bird.jpg"]
+
+
+def test_write_cover_missing_original_is_a_status_not_a_raise(tmp_path):
+    pytest.importorskip("PIL.Image")
+    _shelf(tmp_path)
+    assert species_profile.write_cover(
+        str(tmp_path), "Gone_Bird.jpg") == "missing"
