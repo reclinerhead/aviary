@@ -228,18 +228,20 @@ export function speciesImageName(sci: string): string | null {
 }
 
 /** The grid/profile URL for one species' portrait. The small surfaces ask
- * for the tile-sized sibling (#495, `thumb`); `v` is the shelf version the
+ * for the tile-sized sibling (#495, `thumb`), the porch for the 960 px one
+ * (#708, `cover`); `v` is the shelf version the
  * roster carries -- present, the URL names exact bytes and the route
  * answers it immutable, and a replaced portrait changes the version, so
  * freshness rides the URL instead of a revalidation. A bare call keeps the
  * original URL byte-for-byte (the pre-#495 callers and the 86400 policy). */
 export function portraitUrl(
   sci: string,
-  opts?: { thumb?: boolean; v?: string | null },
+  opts?: { thumb?: boolean; cover?: boolean; v?: string | null },
 ): string {
   const base = `/aviary/portrait/${encodeURIComponent(sci)}`;
   const params = new URLSearchParams();
   if (opts?.thumb) params.set("size", "thumb");
+  else if (opts?.cover) params.set("size", "cover");
   if (opts?.v) params.set("v", opts.v);
   const q = params.toString();
   return q ? `${base}?${q}` : base;
@@ -254,12 +256,21 @@ export function speciesThumbName(imageName: string): string {
   return `${imageName.slice(0, -".jpg".length)}-thumb.jpg`;
 }
 
+/** 'Cardinalis_cardinalis.jpg' -> 'Cardinalis_cardinalis-cover.jpg': the
+ * pass's porch-sized sibling (#708), 960 px wide, what /aviary/cover hands
+ * the station launcher. Same construction as the thumb's, and it must match
+ * the pass's cover_name() exactly. */
+export function speciesCoverName(imageName: string): string {
+  return `${imageName.slice(0, -".jpg".length)}-cover.jpg`;
+}
+
 /** The portrait shelf version the roster ships (#495): an opaque token
  * from both files' stat facts that changes whenever either byte-stream
  * does -- an enrichment refresh, an owner drop, a thumb backfill landing.
  * That last one matters: "no thumb yet" is versioned too ("0-0"), so the
  * sibling arriving busts a cached full-size fallback instead of hiding
- * behind a year of immutable. */
+ * behind a year of immutable. The cover route passes the -cover sibling's
+ * stats in the thumb's place (#708), for the same reason. */
 export function portraitVersion(
   full: { mtimeMs: number; size: number },
   thumb: { mtimeMs: number; size: number } | null,
@@ -332,6 +343,7 @@ export function removalPlan(
     // the -enh precedent: the pass keeps no registry, and a sibling never
     // written is just a missing file the delete loop already forgives.
     deletes.push(`${SPECIES_DIR}/${speciesThumbName(imageFile)}`);
+    deletes.push(`${SPECIES_DIR}/${speciesCoverName(imageFile)}`);
   }
   return { moves, deletes };
 }

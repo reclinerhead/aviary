@@ -169,10 +169,10 @@ body {
 #tile-quarry .tile-photo { object-position: 50% 40%; }
 #tile-conservatory .tile-photo { object-position: 50% 45%; }
 
-/* Until a tile's cover is settled (#702) its photo and caption wait, so the
-   default never shows for a moment before this week's photo. The tile's
-   dark well stands in, and the photo fades up over it. Only with scripts
-   on: without them the defaults are the page. */
+/* Until a tile's photo is settled (#702, #708) the photo and caption wait,
+   so the default never shows for a moment before this week's photo. The
+   tile's dark well stands in, and the photo fades up over it, once. Only
+   with scripts on: without them the defaults are the page. */
 .js .tile-photo,
 .js .dab {
   opacity: 0;

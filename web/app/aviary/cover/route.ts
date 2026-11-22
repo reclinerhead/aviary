@@ -3,7 +3,9 @@
 //
 // GET /aviary/cover  ->  { src, caption, credit }
 //
-// `src` is a same-origin path to the species' full-size portrait, `caption`
+// `src` is a same-origin path to the species' cover-sized portrait (#708:
+// the 960 px -cover sibling, or the full file until the enrichment pass has
+// written it -- the portrait route decides), `caption`
 // its common name, `credit` the portrait's stored attribution. Who
 // qualifies: species on the life list that have a portrait on the shelf and
 // were heard in the last seven days; if there are none, every species on
@@ -22,7 +24,7 @@ import {
   pickCover,
   portraitUrl,
   portraitVersion,
-  speciesThumbName,
+  speciesCoverName,
 } from "@/lib/aviary";
 
 export const dynamic = "force-dynamic";
@@ -111,11 +113,16 @@ export async function GET() {
   const pick = pickCover(thisWeek.length > 0 ? thisWeek : withPortrait, now);
   if (!pick) return cover();
 
-  const thumb = await statFacts(
-    path.join(shelf, speciesThumbName(pick.image_file)),
+  // The version covers the -cover sibling, so the sibling landing mints a
+  // new URL rather than hiding behind the full file's immutable answer.
+  const sized = await statFacts(
+    path.join(shelf, speciesCoverName(pick.image_file)),
   );
   return cover(
-    portraitUrl(pick.species_sci, { v: portraitVersion(pick.full, thumb) }),
+    portraitUrl(pick.species_sci, {
+      cover: true,
+      v: portraitVersion(pick.full, sized),
+    }),
     pick.species_common ?? pick.species_sci,
     pick.image_attribution,
   );

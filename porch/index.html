@@ -8,11 +8,24 @@
 <link rel="preload" href="/porch/fonts/atkinson-hyperlegible-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- With scripts on, each tile holds its photo back until its cover is
      settled (#702), so the default is a fallback and not a first frame. The
-     class goes on before the first paint, and comes off again if the script
-     that would lift the hold never loads. -->
-<script>document.documentElement.className = "js";</script>
-<link rel="stylesheet" href="/porch/porch.css">
-<script src="/porch/porch.js" defer onerror="document.documentElement.className = ''"></script>
+     class goes on before the first paint. The default photos are not
+     fetched up front either (#708): each <img> names its default in
+     data-default, and porch.js asks for it only when a tile needs it, so
+     the defaults do not share a slow link with the covers. Scripts off,
+     the <noscript> copies are the page. If the script that would lift the
+     hold never loads, porchDefaults() puts the defaults in and takes the
+     class off. The ?v on the two files changes with them, so a cached
+     porch.js is never run against a newer page. -->
+<script>
+document.documentElement.className = "js";
+function porchDefaults() {
+  document.documentElement.className = "";
+  var photos = document.querySelectorAll("img[data-default]");
+  for (var i = 0; i < photos.length; i++) photos[i].src = photos[i].getAttribute("data-default");
+}
+</script>
+<link rel="stylesheet" href="/porch/porch.css?v=708">
+<script src="/porch/porch.js?v=708" defer onerror="porchDefaults()"></script>
 </head>
 <body>
   <!-- The porch (#696): the station's launcher, served by Caddy itself from
@@ -39,7 +52,8 @@
 
     <div class="tiles">
         <a class="tile" id="tile-aviary" href="/aviary" aria-label="Aviary: the birds at your window">
-          <img class="tile-photo" src="/porch/covers/aviary.jpg" alt="">
+          <img class="tile-photo" data-default="/porch/covers/aviary.jpg" alt="">
+          <noscript><img class="tile-photo" src="/porch/covers/aviary.jpg" alt=""></noscript>
           <span class="dab">
             <span class="dab-caption">Northern Cardinal</span>
             <span class="dab-credit">photo: Rhododendrites · CC BY-SA 4.0 · via Wikipedia</span>
@@ -58,7 +72,8 @@
         </a>
 
         <a class="tile" id="tile-quarry" href="/quarry" aria-label="Quarry: your rocks and minerals">
-          <img class="tile-photo" src="/porch/covers/quarry.jpg" alt="">
+          <img class="tile-photo" data-default="/porch/covers/quarry.jpg" alt="">
+          <noscript><img class="tile-photo" src="/porch/covers/quarry.jpg" alt=""></noscript>
           <span class="dab">
             <span class="dab-caption">Amethyst on matrix</span>
             <span class="dab-credit" hidden></span>
@@ -77,7 +92,8 @@
         </a>
 
         <a class="tile" id="tile-conservatory" href="/conservatory" aria-label="Conservatory: your plants and flowers">
-          <img class="tile-photo" src="/porch/covers/conservatory.jpg" alt="">
+          <img class="tile-photo" data-default="/porch/covers/conservatory.jpg" alt="">
+          <noscript><img class="tile-photo" src="/porch/covers/conservatory.jpg" alt=""></noscript>
           <span class="dab">
             <span class="dab-caption">Lipstick echeveria</span>
             <span class="dab-credit" hidden></span>

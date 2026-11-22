@@ -21,6 +21,8 @@
 #      included), directly after profiles so a brand-new lifer's portrait
 #      gets its tile thumb in the same tick. Lazy Pillow, the clip pass's
 #      numpy shape: a box without it logs one line and the rest still runs.
+#      The cover pass (#708) follows it the same way: the porch-sized
+#      -cover sibling /aviary/cover hands the station launcher.
 #   2. Clip pass (#325) -- drain clip_enhance.worklist(), bounded per tick:
 #      every original without a current -enh sibling gets one. Purely
 #      local, so it always runs; automatic on both roles because pearl's
@@ -236,26 +238,39 @@ def run_thumb_pass(cap=None):
     write_thumb's own lazy import: without it a Pillow-less box would log
     one ImportError PER FILE per tick instead of one loud pass-level line
     through tick()'s catch."""
+    return _run_sibling_pass("thumb", species_profile.thumb_worklist,
+                             species_profile.write_thumb, cap)
+
+
+def run_cover_pass(cap=None):
+    """Drain the cover worklist (#708): every shelf original without a
+    current -cover sibling gets the porch-sized one. The thumb pass's
+    shape, bound and guard."""
+    return _run_sibling_pass("cover", species_profile.cover_worklist,
+                             species_profile.write_cover, cap)
+
+
+def _run_sibling_pass(label, worklist, write, cap):
     from PIL import Image  # noqa: F401 -- probe: fail the PASS once, not per file
 
     cap = THUMB_TICK_CAP if cap is None else cap
     media = species_profile.clips_dir()
-    todo = species_profile.thumb_worklist(media)
+    todo = worklist(media)
     counts = {}
     if len(todo) > cap:
         counts["deferred"] = len(todo) - cap   # no silent caps; next tick
         todo = todo[:cap]
     for name in todo:
         try:
-            status = species_profile.write_thumb(media, name)
+            status = write(media, name)
         except Exception as e:
-            print(f"[enrich] thumb {name}: FAILED ({e}) -- staying on the "
+            print(f"[enrich] {label} {name}: FAILED ({e}) -- staying on the "
                   "worklist", flush=True)
             counts["failed"] = counts.get("failed", 0) + 1
             continue
         counts[status] = counts.get(status, 0) + 1
     if counts:
-        print("[enrich] thumbs: " + ", ".join(
+        print(f"[enrich] {label}s: " + ", ".join(
             f"{v} {k}" for k, v in sorted(counts.items())), flush=True)
     return counts
 
@@ -656,6 +671,10 @@ def tick(now=None):
         results["thumbs"] = run_thumb_pass()
     except Exception as e:
         print(f"[enrich] thumb pass FAILED ({e})", flush=True)
+    try:
+        results["covers"] = run_cover_pass()
+    except Exception as e:
+        print(f"[enrich] cover pass FAILED ({e})", flush=True)
     try:
         results["clips"] = run_clip_pass()
     except Exception as e:

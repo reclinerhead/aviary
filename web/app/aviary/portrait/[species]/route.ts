@@ -5,7 +5,7 @@
 // missing/unsafe, and the client renders the reserved placeholder block,
 // never a broken image.
 //
-// GET /aviary/portrait/<species_sci>[?size=thumb][&v=<shelf version>]
+// GET /aviary/portrait/<species_sci>[?size=thumb|cover][&v=<shelf version>]
 //
 // The URL carries the SCIENTIFIC NAME, not a filename: speciesImageName()
 // re-derives the pass's scrubbed filename (the two mirror one regex), so
@@ -18,6 +18,8 @@
 // #331 idiom's honesty), but the answer costs one request instead of two
 // on every un-backfilled species, and the roster's version token -- which
 // covers the thumb's stats too -- is what tells caches the sibling landed.
+// `size=cover` is the same arrangement for the porch-sized -cover sibling
+// (#708): the sibling, or the full file until the pass has written it.
 //
 // Cache (#432 / #433; versioned tier #495): portraits are a durable shelf,
 // not clips. Version-less URLs keep the #432 policy -- public + day-long
@@ -31,7 +33,11 @@
 
 import { promises as fs } from "fs";
 import path from "path";
-import { speciesImageName, speciesThumbName } from "@/lib/aviary";
+import {
+  speciesCoverName,
+  speciesImageName,
+  speciesThumbName,
+} from "@/lib/aviary";
 
 const SPECIES_DIR = "species";
 
@@ -57,10 +63,15 @@ export async function GET(
   if (!dir || !name) return new Response(null, { status: 404 });
 
   const query = new URL(req.url).searchParams;
-  // The thumb ask tries the sibling first, then the full file (the
-  // route-side fallback above); a full-size ask never sees the sibling.
+  // A sized ask tries its sibling first, then the full file (the
+  // route-side fallback above); a full-size ask never sees a sibling.
+  const size = query.get("size");
   const candidates =
-    query.get("size") === "thumb" ? [speciesThumbName(name), name] : [name];
+    size === "thumb"
+      ? [speciesThumbName(name), name]
+      : size === "cover"
+        ? [speciesCoverName(name), name]
+        : [name];
   const cacheControl = query.get("v") ? CACHE_CONTROL_VERSIONED : CACHE_CONTROL;
 
   let filePath: string | null = null;

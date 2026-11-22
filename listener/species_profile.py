@@ -134,6 +134,21 @@ THUMB_SUFFIX = "-thumb.jpg"
 THUMB_WIDTH = 640
 THUMB_QUALITY = 78
 
+# The cover-sized sibling (#708): what /aviary/cover hands the porch. A
+# porch tile is at most ~410 CSS px wide, so 960 px covers a 2x tablet --
+# and 960 is the width the Wikipedia portraits already are, so the cover
+# bird is as sharp as the full file. What this buys is on the owner photos
+# and wider originals (a 1536 px upload re-encodes to about a sixth of its
+# bytes) and in the progressive encoding. The 640 px thumb is not used for
+# the tile: at 2x it is visibly softer.
+COVER_SUFFIX = "-cover.jpg"
+COVER_WIDTH = 960
+COVER_QUALITY = 82
+
+# Every derived file's suffix: a worklist must never take one sibling for an
+# original and derive a sibling of it.
+SIBLING_SUFFIXES = (THUMB_SUFFIX, COVER_SUFFIX)
+
 # --- Animal Diversity Web, the third tier (issue #318) ------------------------
 
 ADW_ACCOUNT = "https://animaldiversity.org/accounts/"
@@ -362,6 +377,13 @@ def thumb_name(image_file):
     allowlist by construction ('-' has always been in it). Must match the
     MCC route's mirror (speciesThumbName) exactly."""
     return f"{image_file[:-len('.jpg')]}{THUMB_SUFFIX}"
+
+
+def cover_name(image_file):
+    """'X.jpg' -> 'X-cover.jpg': the porch-sized sibling's shelf name (#708).
+    Same construction as thumb_name, and the same mirror on the web side
+    (speciesCoverName)."""
+    return f"{image_file[:-len('.jpg')]}{COVER_SUFFIX}"
 
 
 def thumb_size(w, h, cap=THUMB_WIDTH):
@@ -758,11 +780,11 @@ def all_species(conn):
         " ORDER BY species_common")]
 
 
-def thumb_worklist(media_dir):
-    """Shelf originals whose -thumb sibling is missing or older (#495).
+def _sibling_worklist(media_dir, name_fn):
+    """Shelf originals whose sibling (named by name_fn) is missing or older.
     File mtime is the whole state -- the clip pass's idiom: no schema, no
     column, and an owner photo dropped onto the shelf by hand is newer than
-    its stale thumb, so it earns a fresh one on the next tick with the
+    its stale sibling, so it earns a fresh one on the next tick with the
     original never touched. A sibling newer than (or as new as) its
     original is current and skipped."""
     shelf = os.path.join(media_dir, SPECIES_DIR)
@@ -772,42 +794,69 @@ def thumb_worklist(media_dir):
         return []   # no shelf yet -- day one, not an error
     todo = []
     for name in names:
-        if not name.endswith(".jpg") or name.endswith(THUMB_SUFFIX):
+        if not name.endswith(".jpg") or name.endswith(SIBLING_SUFFIXES):
             continue
-        sibling = os.path.join(shelf, thumb_name(name))
+        sibling = os.path.join(shelf, name_fn(name))
         try:
             if (not os.path.exists(sibling)
                     or os.path.getmtime(sibling)
                     < os.path.getmtime(os.path.join(shelf, name))):
                 todo.append(name)
         except OSError:
-            todo.append(name)   # unreadable stat: let write_thumb decide
+            todo.append(name)   # unreadable stat: let the writer decide
     return todo
 
 
-def write_thumb(media_dir, image_file):
-    """Write one original's -thumb sibling (#495). Returns a status word:
-      'thumb'   -- sibling written
-      'missing' -- the original isn't on the shelf (nothing to derive)
+def thumb_worklist(media_dir):
+    """Shelf originals whose -thumb sibling is missing or older (#495)."""
+    return _sibling_worklist(media_dir, thumb_name)
+
+
+def cover_worklist(media_dir):
+    """Shelf originals whose -cover sibling is missing or older (#708)."""
+    return _sibling_worklist(media_dir, cover_name)
+
+
+def _write_sibling(media_dir, image_file, sibling, width, **save):
+    """Write one original's width-capped sibling. Returns True, or False
+    when the original isn't on the shelf (nothing to derive).
     Exceptions propagate: the bulk loops log and move on. Lazy Pillow
     import (the clip pass's numpy precedent) so this module stays
     importable -- and every other pass runnable -- on a box without it.
-    The original is opened READ-ONLY, owner photos included: a thumb is
+    The original is opened READ-ONLY, owner photos included: a sibling is
     derived output, so the owner rule holds without an owner check."""
     from PIL import Image
 
     shelf = os.path.join(media_dir, SPECIES_DIR)
     src = os.path.join(shelf, image_file)
     if not os.path.exists(src):
-        return "missing"
+        return False
     with Image.open(src) as im:
         out = im.convert("RGB")
-        w, h = thumb_size(out.width, out.height)
+        w, h = thumb_size(out.width, out.height, cap=width)
         if (w, h) != (out.width, out.height):
             out = out.resize((w, h), Image.LANCZOS)
-        out.save(os.path.join(shelf, thumb_name(image_file)),
-                 "JPEG", quality=THUMB_QUALITY, optimize=True)
-    return "thumb"
+        out.save(os.path.join(shelf, sibling), "JPEG", optimize=True, **save)
+    return True
+
+
+def write_thumb(media_dir, image_file):
+    """Write one original's -thumb sibling (#495). Returns a status word:
+      'thumb'   -- sibling written
+      'missing' -- the original isn't on the shelf"""
+    done = _write_sibling(media_dir, image_file, thumb_name(image_file),
+                          THUMB_WIDTH, quality=THUMB_QUALITY)
+    return "thumb" if done else "missing"
+
+
+def write_cover(media_dir, image_file):
+    """Write one original's -cover sibling (#708): 'cover' or 'missing'.
+    Progressive, so a slow link paints it whole and sharpens rather than
+    unrolling it from the top."""
+    done = _write_sibling(media_dir, image_file, cover_name(image_file),
+                          COVER_WIDTH, quality=COVER_QUALITY,
+                          progressive=True)
+    return "cover" if done else "missing"
 
 
 def owner_locked(conn, sci):
@@ -933,9 +982,11 @@ def enrich_species(conn, media_dir, sci, *, fetch_json=get_json,
             # The tile-sized sibling rides the fetch (#495), best-effort: a
             # box without Pillow (or a download PIL can't parse) leaves the
             # thumb to the loop's backfill arm -- one log line, never a
-            # failed profile over a derived file.
+            # failed profile over a derived file. The cover sibling (#708)
+            # rides with it.
             try:
                 write_thumb(media_dir, filename)
+                write_cover(media_dir, filename)
             except Exception as e:
                 print(f"[species] thumb {filename}: deferred ({e})",
                       flush=True)
