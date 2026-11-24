@@ -135,6 +135,15 @@ import {
   earlierLabel,
   type JournalEntry,
 } from "@/lib/aviary";
+import {
+  QUIZ_DISMISS_COOKIE,
+  QUIZ_DISMISS_MAX_AGE_S,
+  quizIdOf,
+  revealHeadline,
+  tallyLines,
+  yardRevealLine,
+  type QuizAnswerResult,
+} from "@/lib/quiz";
 import { VisitsChart } from "@/components/VisitsChart";
 
 // Ticker sizing: hydrate the newest 50, let live arrivals grow it to 80
@@ -1183,6 +1192,12 @@ const NOTICE_INK_CLASSES: Record<
     edge: "border-fact/40",
     button: "border-fact/40 hover:border-fact",
   },
+  quiz: {
+    card: "border-quiz bg-quizwash",
+    stamp: "text-quiz",
+    edge: "border-quiz/40",
+    button: "border-quiz/40 hover:border-quiz",
+  },
 };
 
 /** notice-out's duration in globals.css (#648): the ✕ fades the card out,
@@ -1206,6 +1221,15 @@ function AviaryNoticeStrip({
   // The notice whose card is fading out (#648). An id, not a flag, so a
   // notice the queue swaps in mid-fade is never born faded.
   const [leavingId, setLeavingId] = useState<string | null>(null);
+  // The question of the day (#719). The result is kept here, by notice id,
+  // not in the card: an event that takes the strip mid-reveal hands it back
+  // with the reveal still showing.
+  const [quizResult, setQuizResult] = useState<{
+    id: string;
+    result: QuizAnswerResult;
+  } | null>(null);
+  const [quizBusy, setQuizBusy] = useState(false);
+  const [quizFailed, setQuizFailed] = useState(false);
   if (!notice) return null;
   const leaving = leavingId === notice.id;
   const dismiss = () => {
@@ -1227,8 +1251,138 @@ function AviaryNoticeStrip({
         ? "new best recording"
         : notice.kind === "fun_fact"
           ? "did you know?"
-          : "notice";
-  const portraitSci = notice.species_sci;
+          : notice.kind === "quiz"
+            ? "question of the day"
+            : "notice";
+  const isQuiz = notice.kind === "quiz";
+  const revealed =
+    isQuiz && quizResult !== null && quizResult.id === notice.id
+      ? quizResult.result
+      : null;
+  const answer = (choice: string) => {
+    if (quizBusy) return;
+    const id = notice.id;
+    setQuizBusy(true);
+    setQuizFailed(false);
+    // A promise chain, not try/finally: the React Compiler skips a function
+    // that holds one (#680).
+    fetch("/aviary/quiz/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ choice }),
+    })
+      .then((r) =>
+        r.ok
+          ? (r.json() as Promise<QuizAnswerResult>)
+          : Promise.reject(new Error(String(r.status))),
+      )
+      .then((result) => setQuizResult({ id, result }))
+      .catch(() => setQuizFailed(true))
+      .then(() => setQuizBusy(false));
+  };
+  // Before the answer the tile is a question mark (a portrait would give
+  // the bird away); the reveal puts the answer's portrait in the same box.
+  const portraitSci = revealed ? revealed.answer.species_sci : notice.species_sci;
+  // The quiz is the one kind whose body holds controls (#719, the amended
+  // strip contract): the question as the headline and four real buttons
+  // under it, one column on a phone and two by two on a wider strip, each
+  // at least 44px tall. The reveal takes the buttons' own grid cell, with
+  // the buttons kept in it unseen, so the card's box is the same before and
+  // after the answer and nothing under the strip moves.
+  const quizBody = isQuiz ? (
+    <>
+      {portraitSci ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={portraitUrl(portraitSci, { thumb: true })}
+          alt=""
+          className={`notice-in h-12 w-12 shrink-0 rounded-sm border ${ink.edge} object-cover object-top bg-panel2`}
+        />
+      ) : (
+        <span
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-sm border ${ink.edge} bg-panel2 text-2xl ${ink.stamp}`}
+          style={{ fontFamily: "var(--font-display)" }}
+          aria-hidden
+        >
+          ?
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <span className="stamp block truncate text-xs">
+          <span className={ink.stamp}>{kindLabel}</span>
+          {quizFailed && !revealed ? (
+            <span className="ml-2 text-inkdim">
+              that didn&apos;t save, try again
+            </span>
+          ) : null}
+        </span>
+        <span
+          className="mt-0.5 block text-sm text-ink"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {notice.title}
+        </span>
+        <div className="mt-2 grid">
+          <div
+            className={`col-start-1 row-start-1 grid grid-cols-1 content-start gap-2 sm:grid-cols-2 ${revealed ? "invisible" : ""}`}
+          >
+            {(notice.options ?? []).map((o) => (
+              <button
+                key={o.species_sci}
+                type="button"
+                disabled={quizBusy || revealed !== null}
+                onClick={() => answer(o.species_sci)}
+                className={`min-h-11 rounded-sm border ${ink.button} bg-panel2/60 px-3 py-2 text-left text-xs text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-quiz disabled:opacity-60`}
+              >
+                {o.species_common}
+              </button>
+            ))}
+          </div>
+          {revealed ? (
+            <div className="notice-in col-start-1 row-start-1 min-w-0">
+              <span
+                className="block text-sm text-ink"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                <span className={`mr-1.5 ${ink.stamp}`} aria-hidden>
+                  {revealed.correct ? "✓" : "◇"}
+                </span>
+                {revealHeadline(
+                  revealed.correct,
+                  revealed.answer.species_common,
+                )}
+              </span>
+              <span className="mt-1 block text-xs text-inkdim">
+                {revealed.reveal.kind === "fact"
+                  ? revealed.reveal.text
+                  : yardRevealLine(
+                      revealed.reveal,
+                      revealed.answer.species_common,
+                      dayWithYearOf,
+                    )}
+                {revealed.reveal.kind === "fact" && revealed.reveal.text ? (
+                  <span className="text-inkfaint"> From Wikipedia.</span>
+                ) : null}
+              </span>
+              <span className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs">
+                {tallyLines(revealed).map((line) => (
+                  <span key={line} className="text-ink">
+                    {line}
+                  </span>
+                ))}
+                <Link
+                  href={`/aviary/${encodeURIComponent(revealed.answer.species_sci)}`}
+                  className={`underline decoration-quiz/50 underline-offset-2 transition-colors hover:text-squirrel ${ink.stamp}`}
+                >
+                  Read more about the {revealed.answer.species_common}
+                </Link>
+              </span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </>
+  ) : null;
   const body = (
     <>
       {portraitSci ? (
@@ -1295,7 +1449,9 @@ function AviaryNoticeStrip({
         key={notice.id}
         className={`flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5 ${held ? "invisible" : leaving ? "notice-out" : "notice-in"}`}
       >
-        {notice.href ? (
+        {quizBody ? (
+          <div className="flex min-w-0 flex-1 items-start gap-3">{quizBody}</div>
+        ) : notice.href ? (
           <Link
             href={notice.href}
             className="flex min-w-0 flex-1 items-center gap-3 transition-colors hover:text-squirrel"
@@ -1313,7 +1469,7 @@ function AviaryNoticeStrip({
         <button
           type="button"
           onClick={dismiss}
-          className={`stamp shrink-0 self-center rounded-sm border ${ink.button} px-2.5 py-2 text-xs text-inkdim transition-colors hover:text-ink`}
+          className={`stamp shrink-0 ${isQuiz ? "self-start" : "self-center"} rounded-sm border ${ink.button} px-2.5 py-2 text-xs text-inkdim transition-colors hover:text-ink`}
           aria-label="Dismiss notice"
         >
           ✕
@@ -1346,7 +1502,7 @@ function writeCookie(name: string, value: string, maxAgeS: number) {
 function useAviaryNoticeStrip(
   queued: AviaryNotice[] = [],
   samples: RosterEntry[] = [],
-  ambient: AviaryNotice | null = null,
+  seeds: AviaryNotice[] = [],
   settled = true,
 ) {
   // The one exception to post-mount selection: the server's fun fact
@@ -1354,7 +1510,11 @@ function useAviaryNoticeStrip(
   // HTML and hydrates identically. It needs no localStorage read -- its
   // dismissal is a cookie the server has already honoured -- and it
   // carries no `ts`, so the strip makes no locale call for it.
-  const [visible, setVisible] = useState<AviaryNotice | null>(ambient);
+  // The question of the day (#719) is seeded the same way, ahead of the
+  // fact: the caller lists the seeds highest rank first.
+  const [visible, setVisible] = useState<AviaryNotice | null>(
+    seeds[0] ?? null,
+  );
   // Held until the queue settles (#668): the seeded fact keeps its box in
   // the first paint, unseen, so a fact about to lose to a rare visitor
   // never flashes. State, not `!settled`, because the hold must lift in the
@@ -1363,7 +1523,8 @@ function useAviaryNoticeStrip(
   const [held, setHeld] = useState(!settled);
   // Set once the fact was dismissed: it never comes back this load. An
   // event on screen does NOT retire it (#668) -- it waits behind them.
-  const ambientRetired = useRef(false);
+  // The same holds for the quiz. Ids, since there are two seeds.
+  const seedsRetired = useRef<Set<string>>(new Set());
   const queuedKey = queued.map((n) => n.id).join("|");
   // The current candidates, kept for dismiss to re-pick from (#549): closing
   // the visible notice reveals the next one the queue holds, in rank order,
@@ -1402,7 +1563,7 @@ function useAviaryNoticeStrip(
       }
       all.push(d);
     }
-    if (ambient && !ambientRetired.current) all.push(ambient);
+    for (const s of seeds) if (!seedsRetired.current.has(s.id)) all.push(s);
     const { chain, cut: over } = noticeChain(
       all,
       (id) => cut.current.has(id) || isNoticeDismissed(localStorage, id),
@@ -1425,7 +1586,7 @@ function useAviaryNoticeStrip(
     // Batched with the pick above, so the first unheld paint is already
     // the settled winner.
     if (settled) setHeld(false);
-  }, [queued, queuedKey, samples, ambient, settled]);
+  }, [queued, queuedKey, samples, seeds, settled]);
 
   const onDismiss = useCallback((id: string) => {
     const dismissed = candidates.current.find((n) => n.id === id);
@@ -1433,8 +1594,13 @@ function useAviaryNoticeStrip(
       // A fact's dismissal ends facts for the day: the cookie holds its id,
       // and tomorrow's fact is a different id by construction. Never
       // localStorage -- the server makes the pick and can't read it.
-      ambientRetired.current = true;
-      writeCookie(FACT_DISMISS_COOKIE, factIdOf(id), FACT_DISMISS_MAX_AGE_S);
+      // The quiz has the same idiom and its own cookie (#719): dismissed
+      // before answering, today's question is skipped on this device.
+      seedsRetired.current.add(id);
+      if (dismissed.kind === "quiz")
+        writeCookie(QUIZ_DISMISS_COOKIE, quizIdOf(id), QUIZ_DISMISS_MAX_AGE_S);
+      else
+        writeCookie(FACT_DISMISS_COOKIE, factIdOf(id), FACT_DISMISS_MAX_AGE_S);
       candidates.current = candidates.current.filter((n) => n.id !== id);
     } else {
       dismissNotice(localStorage, id);
@@ -1805,11 +1971,15 @@ export function Aviary({
   stationName,
   title,
   funFact = null,
+  quiz = null,
 }: {
   stationName?: string;
   title?: string;
   /** Today's fun fact, picked by the page's server (#422), or null. */
   funFact?: AviaryNotice | null;
+  /** Today's question (#719), picked by the page's server, or null. It
+   * carries the question and its four birds, never the answer. */
+  quiz?: AviaryNotice | null;
 } = {}) {
   // The roster by species key; the grid's ORDER is separate state on
   // purpose -- it changes only on a sort click (and appends lifers), so
@@ -1879,11 +2049,16 @@ export function Aviary({
           ).map((e) => rareReturnNotice(e, dayWithYearOf));
     return [...rare, ...newBestQueue];
   }, [rosterEntries, nowTs, newBestQueue]);
+  // The server's seeds, highest rank first: the question, then the fact.
+  const noticeSeeds = useMemo(
+    () => [quiz, funFact].filter((n) => n !== null),
+    [quiz, funFact],
+  );
   const {
     notice,
     held: noticeHeld,
     onDismiss,
-  } = useAviaryNoticeStrip(noticeQueue, rosterEntries, funFact, loaded);
+  } = useAviaryNoticeStrip(noticeQueue, rosterEntries, noticeSeeds, loaded);
 
   // Session-persist the life-list query (#410): same post-mount pattern as
   // clip gain -- sessionStorage is not available on the server render, so
