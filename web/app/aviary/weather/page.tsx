@@ -48,12 +48,11 @@ function hasWeatherJournal(path: string | undefined): boolean {
 }
 
 export default function AviaryWeatherPage() {
-  const { stationName, title, onStation } = stationBrandingFromEnv();
+  const { stationName, title } = stationBrandingFromEnv();
   return (
     <AviaryWeather
       stationName={stationName}
       title={title}
-      onStation={onStation}
       // Bracket access: a static process.env.FOO is inlined at build time
       // (stationBrandingFromEnv's story); this must be the unit's live env.
       weatherJournal={hasWeatherJournal(process.env["MERLE_EARL_DB"])}

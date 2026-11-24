@@ -20,12 +20,11 @@ export function generateMetadata(): Metadata {
 }
 
 export default function AviaryMaskPage() {
-  const { stationName, title, onStation } = stationBrandingFromEnv();
+  const { stationName, title } = stationBrandingFromEnv();
   return (
     <AviaryMask
       stationName={stationName}
       title={title}
-      onStation={onStation}
     />
   );
 }
