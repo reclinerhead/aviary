@@ -81,7 +81,7 @@ Because any merge restarts the Earl units, and a restarted listener is deaf for 
 
 | Path | Holds |
 | --- | --- |
-| `listener/` | Earl and everything built on the bird record: `earl.py` (the daemon), `gate.py` (the pure accept/reject core), `sightings.py` (the record), `mic_by_mac.py`, `masked_report.py`, the enrichment loop and its passes (`species_profile.py`, `clip_enhance.py`, `clip_vocal_fill.py`, `clip_showcase.py`, `fun_facts.py`), and the field journal (`findings.py`, `editor.py`, `species_analysis.py`, `notes_validate.py`, `region_prior.py`, `solar.py`) |
+| `listener/` | Earl and everything built on the bird record: `earl.py` (the daemon), `gate.py` (the pure accept/reject core), `sightings.py` (the record), `mic_by_mac.py`, `masked_report.py`, the enrichment loop and its passes (`species_profile.py`, `clip_enhance.py`, `clip_vocal_fill.py`, `clip_showcase.py`, `fun_facts.py`), the hand-run quiz question writer (`quiz.py`), and the field journal (`findings.py`, `editor.py`, `species_analysis.py`, `notes_validate.py`, `region_prior.py`, `solar.py`) |
 | `weatherpost/` | `weather.py` (Willard) and `weather_archive.py` |
 | `flyway/` | `liveness.py`, `checkin.py`, `netwatch.py` |
 | `web/` | The Next.js app (App Router, TypeScript, Tailwind 4, pnpm). Its own lockfile and Vitest suite |
