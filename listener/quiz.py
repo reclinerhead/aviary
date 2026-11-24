@@ -112,16 +112,24 @@ distinctive: true only if the fact is particular to this bird: a nickname, a \
 record, a named event, a piece of history, an odd behavior. false if it is a \
 general trait many birds share ("eats insects and spiders", "usually mates \
 for life"), or if you can think of several birds on the list it is also true \
-of. When in doubt, false.
+of. Also false if the fact would not make a question a family could enjoy \
+guessing at: one that takes a field guide to follow (ranges, taxonomy, \
+hybrids, subspecies), or whose point is lost without its technical detail. \
+When in doubt, false.
 
 question: one sentence of at most 140 characters, in plain American English, \
 that the fact answers.
+- A single question that begins with the asking ("Which bird...?") and ends \
+with a question mark. Never a statement followed by "Which bird?".
+- Keep the one detail that makes the fact memorable and drop the rest: no \
+percentages or study figures, no side clauses. Use words a ten-year-old \
+knows.
 - Never name the bird, and don't give the answer away another way.
 - A word of the bird's name may appear only when every candidate you give \
 shares that word ("Which woodpecker..." with only woodpeckers as candidates). \
 Otherwise use none: not "finches" for a House Finch, not "red" for a \
 Red-tailed Hawk.
-- Restate the fact and nothing more. Add no claim the fact does not make.
+- Say only what the fact says. Add no claim the fact does not make.
 - Don't begin with "Did you know". No stock phrases.
 
 candidates: six to eight birds from the list, names copied exactly, that a \
@@ -162,7 +170,10 @@ doubt, "unsure".
 
 Answer with JSON only, no prose around it, one item per claim:
 {"verdicts": [{"id": "...", "verdict": "no", "reason": "..."}]}
-The reason is one plain sentence of at most 120 characters saying why."""
+The reason is one plain sentence of at most 120 characters about the \
+candidate itself: what is true of this bird instead, or what its article \
+says. "That fact belongs to the other bird" is not a reason; you were told \
+that already, and it does not show the claim is false of this one."""
 
 
 # --- Pure pieces (test_listener_quiz.py) --------------------------------------
