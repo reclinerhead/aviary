@@ -2836,16 +2836,11 @@ export function aviaryTitle(title?: string | null): string {
 export function stationBrandingFromEnv(): {
   stationName: string | undefined;
   title: string;
-  /** This box is a field station (#697): MERLE_STATION_ID is in the unit's
-   * environment there and nowhere else. A station has a porch at `/`
-   * (#696), so its masthead offers a way back to it; the house does not. */
-  onStation: boolean;
 } {
   const env = process.env;
   const stationName = (env["MERLE_STATION_NAME"] ?? "").trim() || undefined;
   const title = aviaryTitle(env["MERLE_AVIARY_TITLE"]);
-  const onStation = (env["MERLE_STATION_ID"] ?? "").trim() !== "";
-  return { stationName, title, onStation };
+  return { stationName, title };
 }
 
 // --- The porch's cover bird (#697) -------------------------------------------

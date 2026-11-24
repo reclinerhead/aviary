@@ -20,12 +20,11 @@ export function generateMetadata(): Metadata {
 }
 
 export default function AviaryEventsPage() {
-  const { stationName, title, onStation } = stationBrandingFromEnv();
+  const { stationName, title } = stationBrandingFromEnv();
   return (
     <AviaryEvents
       stationName={stationName}
       title={title}
-      onStation={onStation}
     />
   );
 }

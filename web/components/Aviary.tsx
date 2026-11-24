@@ -1460,7 +1460,6 @@ function AviaryMasthead({
   jumps,
   stationName,
   title,
-  onStation = false,
   tab = "aviary",
   notice = null,
   noticeHeld = false,
@@ -1486,9 +1485,6 @@ function AviaryMasthead({
   stationName?: string;
   /** H1 text (MERLE_AVIARY_TITLE on stations). Default "The Aviary". */
   title?: string;
-  /** A field station (#697): the masthead offers Home, the way back to the
-   * porch at `/` (#696). The house has no porch and shows no link. */
-  onStation?: boolean;
   /** Which tab is underlined (#357, resemanticed by #359): the current
    * *section*, not the current page -- every tab is a live link, the
    * underlined one included (the GitHub-tabs model), so a drill-down keeps
@@ -1515,36 +1511,34 @@ function AviaryMasthead({
           "Karen's Yard" and the tab bar jumped when drilling in and back
           (house rule #1). Nested under the h1, the sub's offset is always
           mt-1 from the title whether or not Earl is showing. */}
-      {/* Home (#697), on a station only: the way back to the porch, the
-          launcher at `/` that Caddy serves there (#696). A plain <a>, not
-          <Link>: the porch is not a route of this app. Its own row above
+      {/* Home (#697; on every box since #713): the way back to the porch,
+          the launcher at `/` that Caddy serves on a station (#696) and at
+          the house (#700). A plain <a>, not <Link>: the porch is not a
+          route of this app, and `/` is Caddy's, so a <Link> would land on
+          this app's own `/`, which redirects back here. Its own row above
           the title, so it reads as a way out and the title row is the same
           on every page; 44px tall for a thumb. */}
-      {onStation && (
-        // A full page load on purpose: on a station `/` is Caddy's, and a
-        // <Link> would land on this app's own `/`, which redirects back here.
-        // eslint-disable-next-line @next/next/no-html-link-for-pages
-        <a
-          href="/"
-          className="stamp -mt-2 inline-flex min-h-11 items-center gap-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+      <a
+        href="/"
+        className="stamp -mt-2 inline-flex min-h-11 items-center gap-1.5 text-xs text-inkdim transition-colors hover:text-squirrel"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          className="h-4 w-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
         >
-          <svg
-            viewBox="0 0 24 24"
-            className="h-4 w-4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M3 11.5 12 4l9 7.5" />
-            <path d="M5.5 10v9.5h13V10" />
-            <path d="M10 19.5v-5h4v5" />
-          </svg>
-          home
-        </a>
-      )}
+          <path d="M3 11.5 12 4l9 7.5" />
+          <path d="M5.5 10v9.5h13V10" />
+          <path d="M10 19.5v-5h4v5" />
+        </svg>
+        home
+      </a>
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <div className="min-w-0">
           <h1
@@ -1810,12 +1804,10 @@ function ArchiveHero({
 export function Aviary({
   stationName,
   title,
-  onStation,
   funFact = null,
 }: {
   stationName?: string;
   title?: string;
-  onStation?: boolean;
   /** Today's fun fact, picked by the page's server (#422), or null. */
   funFact?: AviaryNotice | null;
 } = {}) {
@@ -2164,7 +2156,6 @@ export function Aviary({
         lamp={{ busUp, status: earlStatus, sources: earlSources, now: nowTs }}
         stationName={stationName}
         title={title}
-        onStation={onStation}
         jumps={[
           { href: "#latest-events", label: "events ↓" },
           { href: "#new-arrivals", label: "arrivals ↓" },
@@ -3130,12 +3121,10 @@ export function SpeciesProfile({
   sci,
   stationName,
   title,
-  onStation,
 }: {
   sci: string;
   stationName?: string;
   title?: string;
-  onStation?: boolean;
 }) {
   // Announcement strip (#447 Phase 1) -- same shell as the dashboard.
   const { notice, onDismiss } = useAviaryNoticeStrip([]);
@@ -3398,7 +3387,6 @@ export function SpeciesProfile({
       <AviaryMasthead
         stationName={stationName}
         title={title}
-        onStation={onStation}
         notice={notice}
         onDismissNotice={onDismiss}
       />
@@ -4132,11 +4120,9 @@ export function SpeciesProfile({
 export function AviaryEvents({
   stationName,
   title,
-  onStation,
 }: {
   stationName?: string;
   title?: string;
-  onStation?: boolean;
 } = {}) {
   const [roster, setRoster] = useState<Record<string, RosterEntry>>({});
   // Pill order: most-visited first, computed once at load (rosterOrder --
@@ -4352,7 +4338,7 @@ export function AviaryEvents({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead stationName={stationName} title={title} onStation={onStation} tab="record" />
+      <AviaryMasthead stationName={stationName} title={title} tab="record" />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Full Record"
@@ -4663,11 +4649,9 @@ function MaskTile({ e }: { e: MaskEntry }) {
 export function AviaryMask({
   stationName,
   title,
-  onStation,
 }: {
   stationName?: string;
   title?: string;
-  onStation?: boolean;
 } = {}) {
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   // Null until the mask fetch lands (the reserved in-flight frame); the
@@ -4794,7 +4778,7 @@ export function AviaryMask({
 
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead stationName={stationName} title={title} onStation={onStation} tab="mask" />
+      <AviaryMasthead stationName={stationName} title={title} tab="mask" />
       <section className="panel rounded-sm border border-line bg-panel">
         <PanelLabel
           title="The Species Mask"
@@ -4897,12 +4881,10 @@ export function AviaryMask({
 export function AviaryWeather({
   stationName,
   title,
-  onStation,
   weatherJournal = false,
 }: {
   stationName?: string;
   title?: string;
-  onStation?: boolean;
   /** The page's server read (#655): does this box's journal carry weather? */
   weatherJournal?: boolean;
 } = {}) {
@@ -4919,7 +4901,7 @@ export function AviaryWeather({
   } = useWeatherFeed();
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6">
-      <AviaryMasthead stationName={stationName} title={title} onStation={onStation} tab="weather" />
+      <AviaryMasthead stationName={stationName} title={title} tab="weather" />
       <WeatherStationView
         current={current}
         history={history}

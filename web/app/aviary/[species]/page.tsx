@@ -20,13 +20,12 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
 export default async function SpeciesPage({ params }: Params) {
   const { species } = await params;
-  const { stationName, title, onStation } = stationBrandingFromEnv();
+  const { stationName, title } = stationBrandingFromEnv();
   return (
     <SpeciesProfile
       sci={decodeURIComponent(species)}
       stationName={stationName}
       title={title}
-      onStation={onStation}
     />
   );
 }
