@@ -1244,6 +1244,10 @@ export type AviaryNotice = {
   /** The four answers of a quiz notice (#719), in display order. The
    * answer itself never rides a notice: see lib/quiz.ts. */
   options?: { species_sci: string; species_common: string }[];
+  /** Whether a quiz notice's answer tiles carry portraits (#721): true only
+   * when all four options hold one on this box. Decided on the server, so
+   * the card's box is right in the first paint. */
+  option_portraits?: boolean;
 };
 
 /** localStorage key prefix for dismissed notice ids. */

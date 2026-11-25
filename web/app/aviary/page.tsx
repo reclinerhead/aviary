@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Aviary } from "@/components/Aviary";
 import pool from "@/data/fun-facts.json";
@@ -8,6 +10,7 @@ import {
   FACT_DISMISS_COOKIE,
   funFactFor,
   localDayNumber,
+  speciesImageName,
   stationBrandingFromEnv,
   tallyVisits,
   type AviaryNotice,
@@ -22,6 +25,7 @@ import {
   quizDayRow,
   quizFor,
   quizFromRow,
+  quizOptionPortraits,
   quizSeed,
   type QuizDayRow,
   type QuizPool,
@@ -257,6 +261,21 @@ function cookieText(value: string | undefined): string | undefined {
   }
 }
 
+/** Which of these birds hold a portrait on this box (#721). The portrait
+ * route's own rule: the file is on the shelf under MERLE_EARL_CLIPS, by the
+ * name speciesImageName derives. Existence is the only state consulted, so
+ * what this says is what that route will answer. */
+function shelfPortraitsOf(scis: readonly string[]): Set<string> {
+  const dir = process.env.MERLE_EARL_CLIPS;
+  if (!dir) return new Set();
+  return new Set(
+    scis.filter((sci) => {
+      const name = speciesImageName(sci);
+      return name !== null && existsSync(path.join(dir, "species", name));
+    }),
+  );
+}
+
 /** Today's question for this request (#719), as a notice carrying the
  * question and its four birds and nothing else, or null: no store, nothing
  * eligible today, or this device has dismissed or answered it. */
@@ -278,7 +297,18 @@ function todaysQuiz(
     question = quizFromRow(read.row);
     answered = read.answered;
   }
-  return quizFor({ question, dismissedId: cookieText(dismissed), answered });
+  const notice = quizFor({ question, dismissedId: cookieText(dismissed), answered });
+  if (!notice) return null;
+  // The tiles' portraits are decided here (#721), all four or none, so the
+  // card's box is right in the first paint.
+  const options = notice.options ?? [];
+  return {
+    ...notice,
+    option_portraits: quizOptionPortraits(
+      options,
+      shelfPortraitsOf(options.map((o) => o.species_sci)),
+    ),
+  };
 }
 
 export default async function AviaryPage() {
