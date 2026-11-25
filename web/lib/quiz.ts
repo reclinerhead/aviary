@@ -623,6 +623,16 @@ export function quizNotice(q: Pick<QuizQuestion, "id" | "question" | "options">)
   };
 }
 
+/** Whether the answer tiles carry portraits (#721): all four or none. A
+ * wrong answer can be a bird this box has never heard, with no portrait
+ * here, and three photos beside one blank would mark the blank as wrong. */
+export function quizOptionPortraits(
+  options: readonly QuizBird[],
+  withPortrait: ReadonlySet<string>,
+): boolean {
+  return options.length > 0 && options.every((o) => withPortrait.has(o.species_sci));
+}
+
 /** The server's whole decision for one page load: no quiz when there is no
  * question today, when this device dismissed it, or when this device has
  * answered it (the fun fact takes the strip). */

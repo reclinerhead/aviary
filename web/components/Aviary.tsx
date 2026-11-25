@@ -1205,12 +1205,24 @@ const NOTICE_INK_CLASSES: Record<
  * dismiss never hangs on an animation that didn't run. */
 const NOTICE_OUT_MS = 140;
 
+/** The longest fact a reveal can hold (#721), as filler that breaks
+ * anywhere. Prose wastes the end of each line and this wastes none, so it
+ * is longer than any fact: 184 characters is the least that takes as many
+ * lines as the worst fact in the pool at every width from 24 to 220
+ * characters a line (a greedy wrap of all 601 facts with "From
+ * Wikipedia.", scaled to the pool's 140-character cap). The body face is
+ * monospaced, which is what makes a character count a width. */
+const QUIZ_REVEAL_SIZER = "m".repeat(184);
+
 function AviaryNoticeStrip({
   notice,
   held = false,
   onDismiss,
   player,
+  roster,
 }: {
+  /** The dashboard's roster, for the answer tiles' versioned thumbs (#721). */
+  roster?: Record<string, RosterEntry>;
   notice: AviaryNotice | null;
   /** The queue hasn't settled (#668): the card keeps its box but stays
    * unseen, so a seeded fact about to lose to an event never flashes. */
@@ -1230,6 +1242,8 @@ function AviaryNoticeStrip({
   } | null>(null);
   const [quizBusy, setQuizBusy] = useState(false);
   const [quizFailed, setQuizFailed] = useState(false);
+  // The notice whose answer tiles lost a portrait (#721): all four go.
+  const [tilesLost, setTilesLost] = useState<string | null>(null);
   if (!notice) return null;
   const leaving = leavingId === notice.id;
   const dismiss = () => {
@@ -1283,14 +1297,75 @@ function AviaryNoticeStrip({
   // Before the answer the tile is a question mark (a portrait would give
   // the bird away); the reveal puts the answer's portrait in the same box.
   const portraitSci = revealed ? revealed.answer.species_sci : notice.species_sci;
-  // The quiz is the one kind whose body holds controls (#719, the amended
-  // strip contract): the question as the headline and four real buttons
-  // under it, one column on a phone and two by two on a wider strip, each
-  // at least 44px tall. The reveal takes the buttons' own grid cell, with
-  // the buttons kept in it unseen, so the card's box is the same before and
-  // after the answer and nothing under the strip moves.
-  const quizBody = isQuiz ? (
+  // The answer tiles wear portraits only when the server found all four on
+  // the shelf (#721): three photos and a blank would mark the blank as a
+  // wrong answer. A photo that then fails takes all four down with it, the
+  // boxes kept, for the same reason.
+  const tilePortraits =
+    notice.option_portraits === true && tilesLost !== notice.id;
+  const options = notice.options ?? [];
+  const longestName = options.reduce(
+    (m, o) => (o.species_common.length > m.length ? o.species_common : m),
+    "",
+  );
+  // One block, drawn twice (#721): once as the reveal, and once unseen from
+  // the first paint with the longest text a reveal can hold, so the tile
+  // row is already as tall as its reveal and never grows at the answer.
+  const revealBlock = (r: {
+    mark: string;
+    headline: string;
+    text: string;
+    wikipedia: boolean;
+    /** The unseen sizer's text breaks anywhere; a real fact never does. */
+    filler?: boolean;
+    lines: string[];
+    more: string;
+    href: string | null;
+  }) => (
     <>
+      <span className="block text-sm text-ink" style={{ fontFamily: "var(--font-display)" }}>
+        <span className={`mr-1.5 ${ink.stamp}`} aria-hidden>
+          {r.mark}
+        </span>
+        {r.headline}
+      </span>
+      <span className={`mt-1 block text-sm text-inkdim ${r.filler ? "break-all" : ""}`}>
+        {r.text}
+        {r.wikipedia ? (
+          <span className="text-inkfaint"> From Wikipedia.</span>
+        ) : null}
+      </span>
+      <span className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs">
+        {r.lines.map((line) => (
+          <span key={line} className="text-ink">
+            {line}
+          </span>
+        ))}
+        {r.href ? (
+          <Link
+            href={r.href}
+            className={`underline decoration-quiz/50 underline-offset-2 transition-colors hover:text-squirrel ${ink.stamp}`}
+          >
+            {r.more}
+          </Link>
+        ) : (
+          <span className="underline">{r.more}</span>
+        )}
+      </span>
+    </>
+  );
+  // The quiz is the one kind whose body holds controls (#719, the amended
+  // strip contract): the question as the headline and four answer tiles
+  // under it (#721), each a real button at least 44px each way. Two by two
+  // up to lg, where the tiles span the card's full width on a phone (under
+  // the question mark too, so two columns have room for a whole name), and
+  // four across from lg. A tile is its bird's portrait and its name: the
+  // portrait above the name on a phone, beside it from sm. The reveal takes
+  // the tiles' own grid cell, with the tiles kept in it unseen, so the
+  // card's box is the same before and after the answer and nothing under
+  // the strip moves.
+  const quizBody = isQuiz ? (
+    <div className="grid min-w-0 flex-1 grid-cols-[3rem_minmax(0,1fr)] items-start gap-x-3">
       {portraitSci ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -1307,7 +1382,7 @@ function AviaryNoticeStrip({
           ?
         </span>
       )}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0">
         <span className="stamp block truncate text-xs">
           <span className={ink.stamp}>{kindLabel}</span>
           {quizFailed && !revealed ? (
@@ -1316,72 +1391,84 @@ function AviaryNoticeStrip({
             </span>
           ) : null}
         </span>
-        <span
-          className="mt-0.5 block text-sm text-ink"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
+        <span className="mt-0.5 block text-base leading-snug text-ink" style={{ fontFamily: "var(--font-display)" }}>
           {notice.title}
         </span>
-        <div className="mt-2 grid">
-          <div
-            className={`col-start-1 row-start-1 grid grid-cols-1 content-start gap-2 sm:grid-cols-2 ${revealed ? "invisible" : ""}`}
-          >
-            {(notice.options ?? []).map((o) => (
-              <button
-                key={o.species_sci}
-                type="button"
-                disabled={quizBusy || revealed !== null}
-                onClick={() => answer(o.species_sci)}
-                className={`min-h-11 rounded-sm border ${ink.button} bg-panel2/60 px-3 py-2 text-left text-xs text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-quiz disabled:opacity-60`}
-              >
-                {o.species_common}
-              </button>
-            ))}
-          </div>
-          {revealed ? (
-            <div className="notice-in col-start-1 row-start-1 min-w-0">
-              <span
-                className="block text-sm text-ink"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                <span className={`mr-1.5 ${ink.stamp}`} aria-hidden>
-                  {revealed.correct ? "✓" : "◇"}
+      </div>
+      <div className="col-span-2 mt-2.5 grid min-w-0 sm:col-span-1 sm:col-start-2">
+        <div
+          className={`col-start-1 row-start-1 grid auto-rows-fr grid-cols-2 gap-2 lg:grid-cols-4 ${revealed ? "invisible" : ""}`}
+        >
+          {options.map((o) => (
+            <button
+              key={o.species_sci}
+              type="button"
+              disabled={quizBusy || revealed !== null}
+              onClick={() => answer(o.species_sci)}
+              className={`flex min-h-11 min-w-0 rounded-sm border ${ink.button} bg-panel2/60 text-left text-ink transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-quiz disabled:opacity-60 ${notice.option_portraits ? "flex-col items-start gap-1.5 p-2 sm:flex-row sm:items-center sm:gap-2.5" : "items-center px-3 py-2"}`}
+            >
+              {notice.option_portraits ? (
+                // The box is reserved in the first paint; the photo arrives
+                // once the hold lifts, when the roster (and so the versioned
+                // URL the grid already fetched, #495) is in hand.
+                <span
+                  className={`block h-12 w-12 shrink-0 overflow-hidden rounded-sm border ${ink.edge} bg-panel2`}
+                >
+                  {tilePortraits && !held ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- the portrait route owns thumbs and versioned caching (#495)
+                    <img
+                      src={portraitUrl(o.species_sci, { thumb: true, v: roster?.[o.species_sci]?.image_v })}
+                      alt=""
+                      onError={() => setTilesLost(notice.id)}
+                      className="h-full w-full object-cover object-top"
+                    />
+                  ) : null}
                 </span>
-                {revealHeadline(
-                  revealed.correct,
-                  revealed.answer.species_common,
-                )}
+              ) : null}
+              <span className="min-w-0 break-words text-sm leading-snug sm:text-base" style={{ fontFamily: "var(--font-display)" }}>
+                {o.species_common}
               </span>
-              <span className="mt-1 block text-xs text-inkdim">
-                {revealed.reveal.kind === "fact"
+            </button>
+          ))}
+        </div>
+        <div className="invisible col-start-1 row-start-1 min-w-0" aria-hidden>
+          {revealBlock({
+            mark: "◇",
+            headline: revealHeadline(false, longestName),
+            text: QUIZ_REVEAL_SIZER,
+            wikipedia: false,
+            filler: true,
+            lines: ["You're 88 of 88 this month.", "This yard: 888 of 888."],
+            more: `Read more about the ${longestName}`,
+            href: null,
+          })}
+        </div>
+        {revealed ? (
+          <div className="notice-in col-start-1 row-start-1 min-w-0">
+            {revealBlock({
+              mark: revealed.correct ? "✓" : "◇",
+              headline: revealHeadline(
+                revealed.correct,
+                revealed.answer.species_common,
+              ),
+              text:
+                revealed.reveal.kind === "fact"
                   ? revealed.reveal.text
                   : yardRevealLine(
                       revealed.reveal,
                       revealed.answer.species_common,
                       dayWithYearOf,
-                    )}
-                {revealed.reveal.kind === "fact" && revealed.reveal.text ? (
-                  <span className="text-inkfaint"> From Wikipedia.</span>
-                ) : null}
-              </span>
-              <span className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs">
-                {tallyLines(revealed).map((line) => (
-                  <span key={line} className="text-ink">
-                    {line}
-                  </span>
-                ))}
-                <Link
-                  href={`/aviary/${encodeURIComponent(revealed.answer.species_sci)}`}
-                  className={`underline decoration-quiz/50 underline-offset-2 transition-colors hover:text-squirrel ${ink.stamp}`}
-                >
-                  Read more about the {revealed.answer.species_common}
-                </Link>
-              </span>
-            </div>
-          ) : null}
-        </div>
+                    ),
+              wikipedia:
+                revealed.reveal.kind === "fact" && !!revealed.reveal.text,
+              lines: tallyLines(revealed),
+              more: `Read more about the ${revealed.answer.species_common}`,
+              href: `/aviary/${encodeURIComponent(revealed.answer.species_sci)}`,
+            })}
+          </div>
+        ) : null}
       </div>
-    </>
+    </div>
   ) : null;
   const body = (
     <>
@@ -1450,7 +1537,7 @@ function AviaryNoticeStrip({
         className={`flex items-stretch gap-3 rounded-sm border ${ink.card} px-3 py-2.5 ${held ? "invisible" : leaving ? "notice-out" : "notice-in"}`}
       >
         {quizBody ? (
-          <div className="flex min-w-0 flex-1 items-start gap-3">{quizBody}</div>
+          quizBody
         ) : notice.href ? (
           <Link
             href={notice.href}
@@ -1631,7 +1718,10 @@ function AviaryMasthead({
   noticeHeld = false,
   onDismissNotice,
   player,
+  noticeRoster,
 }: {
+  /** The roster in hand, for the quiz tiles' versioned thumbs (#721). */
+  noticeRoster?: Record<string, RosterEntry>;
   lamp?: {
     busUp: boolean;
     status: string | null;
@@ -1787,6 +1877,7 @@ function AviaryMasthead({
         held={noticeHeld}
         onDismiss={onDismissNotice ?? (() => {})}
         player={player}
+        roster={noticeRoster}
       />
     </header>
   );
@@ -2339,6 +2430,7 @@ export function Aviary({
         noticeHeld={noticeHeld}
         onDismissNotice={onDismiss}
         player={player}
+        noticeRoster={roster}
       />
       {/* The whole record's numbers, above both columns (#260). */}
       <ArchiveHero roster={roster} loaded={loaded} now={nowTs} />

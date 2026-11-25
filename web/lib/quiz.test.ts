@@ -23,6 +23,7 @@ import {
   quizFromRow,
   quizIdOf,
   quizNotice,
+  quizOptionPortraits,
   quizNoticeId,
   quizSeed,
   quizTallies,
@@ -636,5 +637,26 @@ describe("the quiz on the strip", () => {
     const two = noticeChain([fact, quiz, events[0], events[2]], never, 3);
     expect(two.chain.map((x) => x.id)).toEqual(["r1", "b", quiz.id]);
     expect(two.cut.map((x) => x.id)).toEqual([fact.id]);
+  });
+});
+
+describe("quizOptionPortraits (#721)", () => {
+  const four = [0, 1, 2, 3].map((i) => ({ species_sci: sci(i), species_common: common(i) }));
+  const shelf = (...is: number[]) => new Set(is.map(sci));
+
+  it("is true when all four options hold a portrait", () => {
+    expect(quizOptionPortraits(four, shelf(0, 1, 2, 3, 4))).toBe(true);
+  });
+  it("is false when one wrong answer has none", () => {
+    expect(quizOptionPortraits(four, shelf(0, 1, 2))).toBe(false);
+  });
+  it("is false when only the answer has none", () => {
+    // The answer sits anywhere in display order; no position is special.
+    for (const missing of [0, 1, 2, 3])
+      expect(quizOptionPortraits(four, shelf(...[0, 1, 2, 3].filter((i) => i !== missing)))).toBe(false);
+  });
+  it("is false for an empty shelf and for no options", () => {
+    expect(quizOptionPortraits(four, new Set())).toBe(false);
+    expect(quizOptionPortraits([], shelf(0, 1, 2, 3))).toBe(false);
   });
 });
