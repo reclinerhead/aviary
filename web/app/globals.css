@@ -116,6 +116,32 @@
      the gold. The wash is the gold's recipe verbatim. */
   --fact: #c58fc7;
   --fact-wash: color-mix(in oklab, var(--fact) 9%, var(--panel-2));
+
+  /* Quiz ink (issue #719, epic #712). The strip's third ink, for its third
+     class: the question of the day is neither news (gold) nor knowledge
+     handed over (heather) but an invitation, the one card on the page that
+     asks for a tap. Blue, because gold, heather and green are spoken for
+     (green waits for a spring-arrivals kind), and a blue here has to stay
+     clear of the two blues that already mean something: --rain (measured
+     precipitation) and --sky (Willard's voice).
+
+     Measured, not eyeballed (the --rain rule), with the dataviz validator's
+     own arithmetic (OKLab distance x100, Machado CVD simulation). The room
+     is narrow, as --rain's note warns: a blue as light as the other inks
+     sits on top of --rain, so this one goes darker and more saturated, a
+     cobalt beside --rain's daylight. #6180fe is OKLCH L 0.641 / C 0.190 /
+     h 270: clears the 0.10 chroma floor; 5.0:1 on --panel, 4.7:1 on
+     --panel-2 and 4.2:1 on its own wash (the stamp is 12px, so that last
+     figure clears 3:1 but not AA's 4.5:1; the question and its buttons are
+     in --ink at 11.6:1). Separation, normal / protan / deutan: from --rain
+     15.7 / 16.0 / 16.4, from --sky 15.0 / 14.7 / 16.4, from --fact 17.6 /
+     12.3 / 18.3, against a target of 8 under simulation and a floor of 15
+     in full color. Tritan is its weak axis (6.5 from --sky, 10.6 from
+     --rain), which is why the quiz never shares a mark with either: it is
+     a card on the Aviary's strip, they are bars and a name stamp on the
+     weather tab. The wash is the gold's recipe verbatim. */
+  --quiz: #6180fe;
+  --quiz-wash: color-mix(in oklab, var(--quiz) 9%, var(--panel-2));
 }
 
 @theme inline {
@@ -138,6 +164,8 @@
   --color-noticewash: var(--notice-wash);
   --color-fact: var(--fact);
   --color-factwash: var(--fact-wash);
+  --color-quiz: var(--quiz);
+  --color-quizwash: var(--quiz-wash);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
 }

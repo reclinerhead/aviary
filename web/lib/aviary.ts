@@ -1215,7 +1215,12 @@ export function maskShown(
 // every consumer adds its row to both.
 
 /** Notice kinds the strip understands. More kinds are additive. */
-export type AviaryNoticeKind = "rare_return" | "new_best" | "fun_fact" | "demo";
+export type AviaryNoticeKind =
+  | "rare_return"
+  | "new_best"
+  | "quiz"
+  | "fun_fact"
+  | "demo";
 
 /** One message for the strip. `id` is stable for dismiss persistence. */
 export type AviaryNotice = {
@@ -1236,6 +1241,9 @@ export type AviaryNotice = {
    * visit opening, a new best's recording moment. The strip stamps it in
    * local date and time; null/absent renders a reserved empty line. */
   ts?: number | null;
+  /** The four answers of a quiz notice (#719), in display order. The
+   * answer itself never rides a notice: see lib/quiz.ts. */
+  options?: { species_sci: string; species_common: string }[];
 };
 
 /** localStorage key prefix for dismissed notice ids. */
@@ -1249,6 +1257,10 @@ export const NOTICE_DISMISS_PREFIX = "aviary.notice.dismissed.";
 const NOTICE_KIND_RANK: Record<AviaryNoticeKind, number> = {
   rare_return: 1,
   new_best: 3,
+  // The question of the day (#719): below every event, above the fun fact.
+  // The epic said 8, which demo already held; a kind never renumbers its
+  // neighbours.
+  quiz: 7,
   demo: 8,
   fun_fact: 9,
 };
@@ -1258,17 +1270,18 @@ const NOTICE_KIND_RANK: Record<AviaryNoticeKind, number> = {
  * fun fact wears `fact` (heather). A later kind picks one deliberately --
  * a new class, a new token pair in globals.css -- never by default. The
  * strip's geometry never varies by kind; only border, wash and stamp do. */
-export type NoticeInk = "notice" | "fact";
+export type NoticeInk = "notice" | "fact" | "quiz";
 export const NOTICE_KIND_INK: Record<AviaryNoticeKind, NoticeInk> = {
   rare_return: "notice",
   new_best: "notice",
   demo: "notice",
+  quiz: "quiz",
   fun_fact: "fact",
 };
 
 /** Ambient kinds fill a quiet strip; everything else is an event. */
 export function isAmbientKind(kind: AviaryNoticeKind): boolean {
-  return kind === "fun_fact";
+  return kind === "fun_fact" || kind === "quiz";
 }
 
 /** Stable dismiss key for a notice id. */
@@ -2449,7 +2462,7 @@ export type FunFactPool = { version?: number; species: FunFactSpecies[] };
 
 /** FNV-1a, 32-bit: small, stable across runtimes, plenty for spreading a
  * few hundred facts over 91 days. Not a security hash. */
-function fnv1a(s: string): number {
+export function fnv1a(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
